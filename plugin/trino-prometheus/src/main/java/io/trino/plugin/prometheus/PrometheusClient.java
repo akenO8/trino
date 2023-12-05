@@ -171,16 +171,9 @@ public class PrometheusClient
         Request.Builder requestBuilder = new Request.Builder().url(uri.toString());
         Response response = null;
         try {
-            System.out.println("--------------------------------iRequest1");
             Request iRequest = requestBuilder.build();
-            System.out.println("--------------------------------iRequest2");
             response = httpClient.newCall(iRequest).execute();
-            System.out.println("--------------------------------iRequest3");
             if (response.isSuccessful() && response.body() != null) {
-                System.out.println("--------------------------------response1");
-                System.out.println(response.body().toString());
-                System.out.println(response.body().string());
-                System.out.println("--------------------------------response2");
                 return response.body().bytes();
                 // for filter dirty metrics, deprecated
 //                String bodyString = new String(response.body().bytes(), StandardCharsets.UTF_8);

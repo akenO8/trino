@@ -34,6 +34,7 @@ import okhttp3.Response;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -77,6 +78,8 @@ public class PrometheusClient
         this.httpClient = clientBuilder.build();
 
         URI prometheusMetricsUri = getPrometheusMetricsURI(config.getPrometheusURI());
+        // for filter dirty metrics
+//        URI prometheusMetricsUriWithStart = URI.create(prometheusMetricsUri.toString() + "?start=1693497600");
         tableSupplier = Suppliers.memoizeWithExpiration(
                 () -> fetchMetrics(metricCodec, prometheusMetricsUri),
                 config.getCacheDuration().toMillis(),
@@ -157,20 +160,35 @@ public class PrometheusClient
 
     private Map<String, Object> fetchMetrics(JsonCodec<Map<String, Object>> metricsCodec, URI metadataUri)
     {
-        return metricsCodec.fromJson(fetchUri(metadataUri));
+//        return metricsCodec.fromJson(fetchUri(metadataUri));
+        String bodyString = new String(fetchUri(metadataUri), StandardCharsets.UTF_8);
+        bodyString = bodyString.replaceAll("[^\\x00-\\x7F]", "");
+        return metricsCodec.fromJson(bodyString.getBytes(UTF_8));
     }
 
     public byte[] fetchUri(URI uri)
     {
         Request.Builder requestBuilder = new Request.Builder().url(uri.toString());
-        try (Response response = httpClient.newCall(requestBuilder.build()).execute()) {
+        Response response = null;
+        try {
+            Request iRequest = requestBuilder.build();
+            response = httpClient.newCall(iRequest).execute();
             if (response.isSuccessful() && response.body() != null) {
                 return response.body().bytes();
+                // for filter dirty metrics, deprecated
+//                String bodyString = new String(response.body().bytes(), StandardCharsets.UTF_8);
+//                bodyString = bodyString.replaceAll("[^\\x00-\\x7F]", "");
+//                return bodyString.getBytes(UTF_8);
             }
             throw new TrinoException(PROMETHEUS_UNKNOWN_ERROR, "Bad response " + response.code() + " " + response.message());
         }
         catch (IOException e) {
             throw new TrinoException(PROMETHEUS_UNKNOWN_ERROR, "Error reading metrics", e);
+        }
+        finally {
+            if (response != null) {
+                response.close();
+            }
         }
     }
 

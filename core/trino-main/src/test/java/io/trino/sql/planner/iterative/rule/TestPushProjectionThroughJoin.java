@@ -51,7 +51,6 @@ import static io.trino.sql.tree.ArithmeticUnaryExpression.Sign.MINUS;
 import static io.trino.sql.tree.ArithmeticUnaryExpression.Sign.PLUS;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertTrue;
 
 public class TestPushProjectionThroughJoin
 {
@@ -59,7 +58,7 @@ public class TestPushProjectionThroughJoin
     public void testPushesProjectionThroughJoin()
     {
         PlanNodeIdAllocator idAllocator = new PlanNodeIdAllocator();
-        PlanBuilder p = new PlanBuilder(idAllocator, dummyMetadata(), TEST_SESSION);
+        PlanBuilder p = new PlanBuilder(idAllocator, PLANNER_CONTEXT, TEST_SESSION);
         Symbol a0 = p.symbol("a0");
         Symbol a1 = p.symbol("a1");
         Symbol a2 = p.symbol("a2");
@@ -91,7 +90,7 @@ public class TestPushProjectionThroughJoin
         Session session = testSessionBuilder().build();
         Optional<PlanNode> rewritten = pushProjectionThroughJoin(PLANNER_CONTEXT, planNode, noLookup(), idAllocator, session, createTestingTypeAnalyzer(
                 PLANNER_CONTEXT), p.getTypes());
-        assertTrue(rewritten.isPresent());
+        assertThat(rewritten.isPresent()).isTrue();
         assertPlan(
                 session,
                 dummyMetadata(),
@@ -119,7 +118,7 @@ public class TestPushProjectionThroughJoin
     @Test
     public void testDoesNotPushStraddlingProjection()
     {
-        PlanBuilder p = new PlanBuilder(new PlanNodeIdAllocator(), dummyMetadata(), TEST_SESSION);
+        PlanBuilder p = new PlanBuilder(new PlanNodeIdAllocator(), PLANNER_CONTEXT, TEST_SESSION);
         Symbol a = p.symbol("a");
         Symbol b = p.symbol("b");
         Symbol c = p.symbol("c");
@@ -139,7 +138,7 @@ public class TestPushProjectionThroughJoin
     @Test
     public void testDoesNotPushProjectionThroughOuterJoin()
     {
-        PlanBuilder p = new PlanBuilder(new PlanNodeIdAllocator(), dummyMetadata(), TEST_SESSION);
+        PlanBuilder p = new PlanBuilder(new PlanNodeIdAllocator(), PLANNER_CONTEXT, TEST_SESSION);
         Symbol a = p.symbol("a");
         Symbol b = p.symbol("b");
         Symbol c = p.symbol("c");

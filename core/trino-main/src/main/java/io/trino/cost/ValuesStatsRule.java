@@ -18,7 +18,7 @@ import io.trino.Session;
 import io.trino.cost.ComposableStatsCalculator.Rule;
 import io.trino.matching.Pattern;
 import io.trino.security.AllowAllAccessControl;
-import io.trino.spi.block.SingleRowBlock;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
@@ -68,16 +68,22 @@ public class ValuesStatsRule
         PlanNodeStatsEstimate.Builder statsBuilder = PlanNodeStatsEstimate.builder();
         statsBuilder.setOutputRowCount(node.getRowCount());
 
-        for (int symbolId = 0; symbolId < node.getOutputSymbols().size(); ++symbolId) {
-            Symbol symbol = node.getOutputSymbols().get(symbolId);
-            List<Object> symbolValues = getSymbolValues(
-                    node,
-                    symbolId,
-                    session,
-                    RowType.anonymous(node.getOutputSymbols().stream()
-                            .map(types::get)
-                            .collect(toImmutableList())));
-            statsBuilder.addSymbolStatistics(symbol, buildSymbolStatistics(symbolValues, types.get(symbol)));
+        try {
+            for (int symbolId = 0; symbolId < node.getOutputSymbols().size(); ++symbolId) {
+                Symbol symbol = node.getOutputSymbols().get(symbolId);
+                List<Object> symbolValues = getSymbolValues(
+                        node,
+                        symbolId,
+                        session,
+                        RowType.anonymous(node.getOutputSymbols().stream()
+                                .map(types::get)
+                                .collect(toImmutableList())));
+                statsBuilder.addSymbolStatistics(symbol, buildSymbolStatistics(symbolValues, types.get(symbol)));
+            }
+        }
+        catch (RuntimeException e) {
+            // prevent stats calculations (e.g. division by zero) from causing planning failures
+            return Optional.empty();
         }
 
         return Optional.of(statsBuilder.build());
@@ -95,8 +101,8 @@ public class ValuesStatsRule
         checkState(valuesNode.getRows().isPresent(), "rows is empty");
         return valuesNode.getRows().get().stream()
                 .map(row -> {
-                    Object rowValue = evaluateConstantExpression(row, rowType, plannerContext, session, new AllowAllAccessControl(), ImmutableMap.of());
-                    return readNativeValue(symbolType, (SingleRowBlock) rowValue, symbolId);
+                    SqlRow rowValue = (SqlRow) evaluateConstantExpression(row, rowType, plannerContext, session, new AllowAllAccessControl(), ImmutableMap.of());
+                    return readNativeValue(symbolType, rowValue.getRawFieldBlock(symbolId), rowValue.getRawIndex());
                 })
                 .collect(toList());
     }

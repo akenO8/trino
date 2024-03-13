@@ -19,8 +19,9 @@ import io.trino.plugin.hive.TestingHivePlugin;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,7 +33,6 @@ import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestIcebergMigrateProcedure
         extends AbstractTestQueryFramework
@@ -45,16 +45,17 @@ public class TestIcebergMigrateProcedure
     {
         dataDirectory = Files.createTempDirectory("_test_hidden");
         DistributedQueryRunner queryRunner = IcebergQueryRunner.builder().setMetastoreDirectory(dataDirectory.toFile()).build();
-        queryRunner.installPlugin(new TestingHivePlugin());
+        queryRunner.installPlugin(new TestingHivePlugin(dataDirectory));
         queryRunner.createCatalog("hive", "hive", ImmutableMap.<String, String>builder()
-                        .put("hive.metastore", "file")
-                        .put("hive.metastore.catalog.dir", dataDirectory.toString())
-                        .put("hive.security", "allow-all")
+//                .put("hive.metastore", "file")
+//                .put("hive.metastore.catalog.dir", dataDirectory.toString())
+                .put("hive.security", "allow-all")
                 .buildOrThrow());
         return queryRunner;
     }
 
-    @Test(dataProvider = "fileFormats")
+    @ParameterizedTest
+    @MethodSource("fileFormats")
     public void testMigrateTable(IcebergFileFormat fileFormat)
     {
         String tableName = "test_migrate_" + randomNameSuffix();
@@ -78,7 +79,8 @@ public class TestIcebergMigrateProcedure
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "fileFormats")
+    @ParameterizedTest
+    @MethodSource("fileFormats")
     public void testMigrateTableWithTinyintType(IcebergFileFormat fileFormat)
     {
         String tableName = "test_migrate_tinyint" + randomNameSuffix();
@@ -105,7 +107,8 @@ public class TestIcebergMigrateProcedure
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "fileFormats")
+    @ParameterizedTest
+    @MethodSource("fileFormats")
     public void testMigrateTableWithSmallintType(IcebergFileFormat fileFormat)
     {
         String tableName = "test_migrate_smallint" + randomNameSuffix();
@@ -132,7 +135,6 @@ public class TestIcebergMigrateProcedure
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @DataProvider
     public static Object[][] fileFormats()
     {
         return Stream.of(IcebergFileFormat.values())
@@ -283,8 +285,8 @@ public class TestIcebergMigrateProcedure
         assertUpdate("CREATE TABLE " + hiveTableName + "(col int COMMENT 'column comment') COMMENT 'table comment'");
         assertUpdate("CALL iceberg.system.migrate('tpch', '" + tableName + "')");
 
-        assertEquals(getTableComment(tableName), "table comment");
-        assertEquals(getColumnComment(tableName, "col"), "column comment");
+        assertThat(getTableComment(tableName)).isEqualTo("table comment");
+        assertThat(getColumnComment(tableName, "col")).isEqualTo("column comment");
 
         assertUpdate("DROP TABLE " + tableName);
     }

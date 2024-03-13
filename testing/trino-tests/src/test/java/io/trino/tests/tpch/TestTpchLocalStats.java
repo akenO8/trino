@@ -19,9 +19,11 @@ import io.trino.plugin.tpch.ColumnNaming;
 import io.trino.plugin.tpch.TpchConnectorFactory;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.statistics.StatisticsAssertion;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.SystemSessionProperties.COLLECT_PLAN_STATISTICS_FOR_ALL_QUERIES;
 import static io.trino.plugin.tpch.TpchConnectorFactory.TPCH_COLUMN_NAMING_PROPERTY;
@@ -36,12 +38,16 @@ import static io.trino.testing.statistics.Metrics.distinctValuesCount;
 import static io.trino.testing.statistics.Metrics.highValue;
 import static io.trino.testing.statistics.Metrics.lowValue;
 import static io.trino.testing.statistics.Metrics.nullsFraction;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestTpchLocalStats
 {
     private StatisticsAssertion statisticsAssertion;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         Session defaultSession = testSessionBuilder()
@@ -59,7 +65,7 @@ public class TestTpchLocalStats
         statisticsAssertion = new StatisticsAssertion(queryRunner);
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         statisticsAssertion.close();

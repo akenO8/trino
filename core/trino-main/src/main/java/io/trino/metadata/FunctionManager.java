@@ -15,6 +15,7 @@ package io.trino.metadata;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.util.concurrent.UncheckedExecutionException;
+import com.google.errorprone.annotations.FormatMethod;
 import com.google.inject.Inject;
 import io.trino.FeaturesConfig;
 import io.trino.cache.NonEvictableCache;
@@ -23,12 +24,12 @@ import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.function.AggregationImplementation;
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.FunctionDependencies;
-import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionProvider;
 import io.trino.spi.function.InOut;
 import io.trino.spi.function.InvocationConvention;
@@ -42,16 +43,15 @@ import io.trino.type.BlockTypeOperators;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodType;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.List;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.primitives.Primitives.wrap;
 import static io.trino.cache.CacheUtils.uncheckedCacheGet;
 import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.client.NodeVersion.UNKNOWN;
+import static io.trino.metadata.LanguageFunctionManager.isTrinoSqlLanguageFunction;
 import static io.trino.spi.StandardErrorCode.FUNCTION_IMPLEMENTATION_ERROR;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.lang.String.format;
@@ -61,14 +61,15 @@ import static java.util.concurrent.TimeUnit.HOURS;
 public class FunctionManager
 {
     private final NonEvictableCache<FunctionKey, ScalarFunctionImplementation> specializedScalarCache;
-    private final NonEvictableCache<FunctionKey, AggregationImplementation> specializedAggregationCache;
-    private final NonEvictableCache<FunctionKey, WindowFunctionSupplier> specializedWindowCache;
+    private final NonEvictableCache<ResolvedFunction, AggregationImplementation> specializedAggregationCache;
+    private final NonEvictableCache<ResolvedFunction, WindowFunctionSupplier> specializedWindowCache;
 
     private final CatalogServiceProvider<FunctionProvider> functionProviders;
     private final GlobalFunctionCatalog globalFunctionCatalog;
+    private final LanguageFunctionProvider languageFunctionProvider;
 
     @Inject
-    public FunctionManager(CatalogServiceProvider<FunctionProvider> functionProviders, GlobalFunctionCatalog globalFunctionCatalog)
+    public FunctionManager(CatalogServiceProvider<FunctionProvider> functionProviders, GlobalFunctionCatalog globalFunctionCatalog, LanguageFunctionProvider languageFunctionProvider)
     {
         specializedScalarCache = buildNonEvictableCache(CacheBuilder.newBuilder()
                 .maximumSize(1000)
@@ -84,6 +85,7 @@ public class FunctionManager
 
         this.functionProviders = requireNonNull(functionProviders, "functionProviders is null");
         this.globalFunctionCatalog = requireNonNull(globalFunctionCatalog, "globalFunctionCatalog is null");
+        this.languageFunctionProvider = requireNonNull(languageFunctionProvider, "functionProvider is null");
     }
 
     public ScalarFunctionImplementation getScalarFunctionImplementation(ResolvedFunction resolvedFunction, InvocationConvention invocationConvention)
@@ -100,11 +102,19 @@ public class FunctionManager
     private ScalarFunctionImplementation getScalarFunctionImplementationInternal(ResolvedFunction resolvedFunction, InvocationConvention invocationConvention)
     {
         FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
-        ScalarFunctionImplementation scalarFunctionImplementation = getFunctionProvider(resolvedFunction).getScalarFunctionImplementation(
-                resolvedFunction.getFunctionId(),
-                resolvedFunction.getSignature(),
-                functionDependencies,
-                invocationConvention);
+
+        ScalarFunctionImplementation scalarFunctionImplementation;
+        if (isTrinoSqlLanguageFunction(resolvedFunction.getFunctionId())) {
+            scalarFunctionImplementation = languageFunctionProvider.specialize(this, resolvedFunction, functionDependencies, invocationConvention);
+        }
+        else {
+            scalarFunctionImplementation = getFunctionProvider(resolvedFunction).getScalarFunctionImplementation(
+                    resolvedFunction.getFunctionId(),
+                    resolvedFunction.getSignature(),
+                    functionDependencies,
+                    invocationConvention);
+        }
+
         verifyMethodHandleSignature(resolvedFunction.getSignature(), scalarFunctionImplementation, invocationConvention);
         return scalarFunctionImplementation;
     }
@@ -112,7 +122,7 @@ public class FunctionManager
     public AggregationImplementation getAggregationImplementation(ResolvedFunction resolvedFunction)
     {
         try {
-            return uncheckedCacheGet(specializedAggregationCache, new FunctionKey(resolvedFunction), () -> getAggregationImplementationInternal(resolvedFunction));
+            return uncheckedCacheGet(specializedAggregationCache, resolvedFunction, () -> getAggregationImplementationInternal(resolvedFunction));
         }
         catch (UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), TrinoException.class);
@@ -132,7 +142,7 @@ public class FunctionManager
     public WindowFunctionSupplier getWindowFunctionSupplier(ResolvedFunction resolvedFunction)
     {
         try {
-            return uncheckedCacheGet(specializedWindowCache, new FunctionKey(resolvedFunction), () -> getWindowFunctionSupplierInternal(resolvedFunction));
+            return uncheckedCacheGet(specializedWindowCache, resolvedFunction, () -> getWindowFunctionSupplierInternal(resolvedFunction));
         }
         catch (UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), TrinoException.class);
@@ -237,7 +247,18 @@ public class FunctionManager
                 case BLOCK_POSITION_NOT_NULL:
                 case BLOCK_POSITION:
                     verifyFunctionSignature(parameterType.equals(Block.class) && methodType.parameterType(parameterIndex + 1).equals(int.class),
-                            "Expected %s argument types to be Block and int".formatted(argumentConvention));
+                            "Expected %s argument types to be Block and int", argumentConvention);
+                    break;
+                case VALUE_BLOCK_POSITION:
+                case VALUE_BLOCK_POSITION_NOT_NULL:
+                    verifyFunctionSignature(ValueBlock.class.isAssignableFrom(parameterType) && methodType.parameterType(parameterIndex + 1).equals(int.class),
+                            "Expected %s argument types to be ValueBlock and int", argumentConvention);
+                    break;
+                case FLAT:
+                    verifyFunctionSignature(parameterType.equals(byte[].class) &&
+                                    methodType.parameterType(parameterIndex + 1).equals(int.class) &&
+                                    methodType.parameterType(parameterIndex + 2).equals(byte[].class),
+                            "Expected FLAT argument types to be byte[], int, byte[]");
                     break;
                 case IN_OUT:
                     verifyFunctionSignature(parameterType.equals(InOut.class), "Expected IN_OUT argument type to be InOut");
@@ -270,11 +291,20 @@ public class FunctionManager
                 verifyFunctionSignature(methodType.returnType().equals(void.class),
                         "Expected return type to be void, but is %s", methodType.returnType());
                 break;
+            case FLAT_RETURN:
+                List<Class<?>> parameters = methodType.parameterList();
+                parameters = parameters.subList(parameters.size() - 4, parameters.size());
+                verifyFunctionSignature(parameters.equals(List.of(byte[].class, int.class, byte[].class, int.class)),
+                        "Expected last argument types to be (byte[], int, byte[], int), but is %s", methodType);
+                verifyFunctionSignature(methodType.returnType().equals(void.class),
+                        "Expected return type to be void, but is %s", methodType.returnType());
+                break;
             default:
                 throw new UnsupportedOperationException("Unknown return convention: " + convention.getReturnConvention());
         }
     }
 
+    @FormatMethod
     private static void verifyFunctionSignature(boolean check, String message, Object... args)
     {
         if (!check) {
@@ -282,67 +312,24 @@ public class FunctionManager
         }
     }
 
-    private static class FunctionKey
+    private record FunctionKey(ResolvedFunction resolvedFunction, InvocationConvention invocationConvention)
     {
-        private final FunctionId functionId;
-        private final BoundSignature boundSignature;
-        private final Optional<InvocationConvention> invocationConvention;
-
-        public FunctionKey(ResolvedFunction resolvedFunction)
+        private FunctionKey
         {
-            this(resolvedFunction.getFunctionId(), resolvedFunction.getSignature(), Optional.empty());
-        }
-
-        public FunctionKey(ResolvedFunction resolvedFunction, InvocationConvention invocationConvention)
-        {
-            this(resolvedFunction.getFunctionId(), resolvedFunction.getSignature(), Optional.of(invocationConvention));
-        }
-
-        public FunctionKey(FunctionId functionId, BoundSignature boundSignature, Optional<InvocationConvention> invocationConvention)
-        {
-            this.functionId = requireNonNull(functionId, "functionId is null");
-            this.boundSignature = requireNonNull(boundSignature, "boundSignature is null");
-            this.invocationConvention = requireNonNull(invocationConvention, "invocationConvention is null");
-        }
-
-        @Override
-        public boolean equals(Object o)
-        {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            FunctionKey that = (FunctionKey) o;
-            return functionId.equals(that.functionId) &&
-                    boundSignature.equals(that.boundSignature) &&
-                    invocationConvention.equals(that.invocationConvention);
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return Objects.hash(functionId, boundSignature, invocationConvention);
-        }
-
-        @Override
-        public String toString()
-        {
-            return toStringHelper(this).omitNullValues()
-                    .add("functionId", functionId)
-                    .add("boundSignature", boundSignature)
-                    .add("invocationConvention", invocationConvention.orElse(null))
-                    .toString();
+            requireNonNull(resolvedFunction, "resolvedFunction is null");
+            requireNonNull(invocationConvention, "invocationConvention is null");
         }
     }
 
     public static FunctionManager createTestingFunctionManager()
     {
         TypeOperators typeOperators = new TypeOperators();
-        GlobalFunctionCatalog functionCatalog = new GlobalFunctionCatalog();
+        GlobalFunctionCatalog functionCatalog = new GlobalFunctionCatalog(
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); });
         functionCatalog.addFunctions(SystemFunctionBundle.create(new FeaturesConfig(), typeOperators, new BlockTypeOperators(typeOperators), UNKNOWN));
         functionCatalog.addFunctions(new InternalFunctionBundle(new LiteralFunction(new InternalBlockEncodingSerde(new BlockEncodingManager(), TESTING_TYPE_MANAGER))));
-        return new FunctionManager(CatalogServiceProvider.fail(), functionCatalog);
+        return new FunctionManager(CatalogServiceProvider.fail(), functionCatalog, LanguageFunctionProvider.DISABLED);
     }
 }

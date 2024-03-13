@@ -46,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.trino.spi.connector.SaveMode.FAIL;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -91,7 +92,7 @@ public class TestMaterializedViews
                             ImmutableList.of(
                                     new ColumnMetadata("a", BIGINT),
                                     new ColumnMetadata("b", BIGINT))),
-                    false);
+                    FAIL);
             return null;
         });
 
@@ -105,7 +106,7 @@ public class TestMaterializedViews
                             ImmutableList.of(
                                     new ColumnMetadata("a", BIGINT),
                                     new ColumnMetadata("b", BIGINT))),
-                    false);
+                    FAIL);
             return null;
         });
 
@@ -119,7 +120,7 @@ public class TestMaterializedViews
                             ImmutableList.of(
                                     new ColumnMetadata("a", TINYINT),
                                     new ColumnMetadata("b", VARCHAR))),
-                    false);
+                    FAIL);
             return null;
         });
 
@@ -132,13 +133,14 @@ public class TestMaterializedViews
                 Optional.of(STALE_MV_STALENESS.plusHours(1)),
                 Optional.empty(),
                 Identity.ofUser("some user"),
-                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table")),
-                ImmutableMap.of());
+                ImmutableList.of(),
+                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table")));
         queryRunner.inTransaction(session -> {
             metadata.createMaterializedView(
                     session,
                     freshMaterializedView,
                     materializedViewDefinition,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
@@ -151,6 +153,7 @@ public class TestMaterializedViews
                     session,
                     notFreshMaterializedView,
                     materializedViewDefinition,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
@@ -164,14 +167,15 @@ public class TestMaterializedViews
                 Optional.empty(),
                 Optional.empty(),
                 Identity.ofUser("some user"),
-                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table_with_casts")),
-                ImmutableMap.of());
+                ImmutableList.of(),
+                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table_with_casts")));
         QualifiedObjectName materializedViewWithCasts = new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "materialized_view_with_casts");
         queryRunner.inTransaction(session -> {
             metadata.createMaterializedView(
                     session,
                     materializedViewWithCasts,
                     materializedViewDefinitionWithCasts,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
@@ -183,6 +187,7 @@ public class TestMaterializedViews
                     session,
                     new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "stale_materialized_view_with_casts"),
                     materializedViewDefinitionWithCasts,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
@@ -236,7 +241,7 @@ public class TestMaterializedViews
                 new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "materialized_view_with_casts"),
                 "a",
                 "user",
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "a + 1"));
+                ViewExpression.builder().expression("a + 1").build());
         assertPlan("SELECT * FROM materialized_view_with_casts",
                 anyTree(
                         project(

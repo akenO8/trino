@@ -3,7 +3,7 @@
 ## `node-scheduler.include-coordinator`
 
 - **Type:** {ref}`prop-type-boolean`
-- **Default value:** `false`
+- **Default value:** `true`
 
 Allows scheduling work on the coordinator so that a single machine can function
 as both coordinator and worker. For large clusters, processing work on the
@@ -16,7 +16,7 @@ managing, and monitoring query execution.
 ## `node-scheduler.max-splits-per-node`
 
 - **Type:** {ref}`prop-type-integer`
-- **Default value:** `100`
+- **Default value:** `256`
 
 The target value for the total number of splits that can be running for
 each worker node, assuming all splits have the standard split weight.
@@ -40,7 +40,7 @@ not higher.
 ## `node-scheduler.min-pending-splits-per-task`
 
 - **Type:** {ref}`prop-type-integer`
-- **Default value:** `10`
+- **Default value:** `16`
 
 The minimum number of outstanding splits with the standard split weight guaranteed to be scheduled on a node (even when the node
 is already at the limit for total number of splits) for a single task given the task has remaining splits to process.

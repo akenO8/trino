@@ -16,6 +16,7 @@ package io.trino.spi.type;
 import io.airlift.slice.Slice;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.VariableWidthBlock;
 import io.trino.spi.block.VariableWidthBlockBuilder;
 import io.trino.spi.connector.ConnectorSession;
 
@@ -23,6 +24,7 @@ public final class VarbinaryType
         extends AbstractVariableWidthType
 {
     private static final TypeOperatorDeclaration TYPE_OPERATOR_DECLARATION = TypeOperatorDeclaration.builder(Slice.class)
+            .addOperators(DEFAULT_READ_OPERATORS)
             .addOperators(DEFAULT_COMPARABLE_OPERATORS)
             .addOperators(DEFAULT_ORDERING_OPERATORS)
             .build();
@@ -32,15 +34,6 @@ public final class VarbinaryType
     private VarbinaryType()
     {
         super(new TypeSignature(StandardTypes.VARBINARY), Slice.class);
-    }
-
-    /**
-     * @deprecated Use {@code type instanceof VarbinaryType} instead.
-     */
-    @Deprecated
-    public static boolean isVarbinaryType(Type type)
-    {
-        return type instanceof VarbinaryType;
     }
 
     @Override
@@ -68,24 +61,15 @@ public final class VarbinaryType
             return null;
         }
 
-        return new SqlVarbinary(block.getSlice(position, 0, block.getSliceLength(position)).getBytes());
-    }
-
-    @Override
-    public void appendTo(Block block, int position, BlockBuilder blockBuilder)
-    {
-        if (block.isNull(position)) {
-            blockBuilder.appendNull();
-        }
-        else {
-            ((VariableWidthBlockBuilder) blockBuilder).buildEntry(valueBuilder -> block.writeSliceTo(position, 0, block.getSliceLength(position), valueBuilder));
-        }
+        return new SqlVarbinary(getSlice(block, position).getBytes());
     }
 
     @Override
     public Slice getSlice(Block block, int position)
     {
-        return block.getSlice(position, 0, block.getSliceLength(position));
+        VariableWidthBlock valueBlock = (VariableWidthBlock) block.getUnderlyingValueBlock();
+        int valuePosition = block.getUnderlyingValuePosition(position);
+        return valueBlock.getSlice(valuePosition);
     }
 
     @Override

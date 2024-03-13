@@ -35,6 +35,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.type.Type;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -45,7 +46,8 @@ import java.util.function.Function;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 
-public interface ThriftMetastore
+public sealed interface ThriftMetastore
+        permits ThriftHiveMetastore
 {
     void createDatabase(Database database);
 
@@ -108,8 +110,6 @@ public interface ThriftMetastore
     void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor);
 
     void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor);
-
-    Set<RoleGrant> listGrantedPrincipals(String role);
 
     Set<RoleGrant> listRoleGrants(HivePrincipal principal);
 
@@ -215,13 +215,18 @@ public interface ThriftMetastore
         throw new UnsupportedOperationException();
     }
 
-    default void alterPartitions(String dbName, String tableName, List<Partition> partitions, long writeId)
-    {
-        throw new UnsupportedOperationException();
-    }
-
     default void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, AcidOperation operation)
     {
         throw new UnsupportedOperationException();
     }
+
+    Optional<io.trino.hive.thrift.metastore.Function> getFunction(String databaseName, String functionName);
+
+    Collection<String> getFunctions(String databaseName, String functionNamePattern);
+
+    void createFunction(io.trino.hive.thrift.metastore.Function function);
+
+    void alterFunction(io.trino.hive.thrift.metastore.Function function);
+
+    void dropFunction(String databaseName, String functionName);
 }

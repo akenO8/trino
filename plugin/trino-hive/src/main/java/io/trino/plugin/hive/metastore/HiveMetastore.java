@@ -23,11 +23,14 @@ import io.trino.plugin.hive.acid.AcidOperation;
 import io.trino.plugin.hive.acid.AcidTransaction;
 import io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.RelationType;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.type.Type;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,26 +56,33 @@ public interface HiveMetastore
 
     void updateTableStatistics(String databaseName, String tableName, AcidTransaction transaction, Function<PartitionStatistics, PartitionStatistics> update);
 
-    default void updatePartitionStatistics(Table table, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
+    default void updatePartitionsStatistics(Table table, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
     {
         updatePartitionStatistics(table, ImmutableMap.of(partitionName, update));
     }
 
     void updatePartitionStatistics(Table table, Map<String, Function<PartitionStatistics, PartitionStatistics>> updates);
 
-    List<String> getAllTables(String databaseName);
+    List<String> getTables(String databaseName);
 
     /**
      * @return List of tables, views and materialized views names from all schemas or Optional.empty if operation is not supported
      */
     Optional<List<SchemaTableName>> getAllTables();
 
+    Map<String, RelationType> getRelationTypes(String databaseName);
+
+    /**
+     * @return empty if operation is not supported
+     */
+    Optional<Map<SchemaTableName, RelationType>> getAllRelationTypes();
+
     List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue);
 
     /**
      * Lists views and materialized views from given database.
      */
-    List<String> getAllViews(String databaseName);
+    List<String> getViews(String databaseName);
 
     /**
      * @return List of views including materialized views names from all schemas or Optional.empty if operation is not supported
@@ -143,8 +153,6 @@ public interface HiveMetastore
     void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor);
 
     void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor);
-
-    Set<RoleGrant> listGrantedPrincipals(String role);
 
     Set<RoleGrant> listRoleGrants(HivePrincipal principal);
 
@@ -224,11 +232,6 @@ public interface HiveMetastore
         throw new UnsupportedOperationException();
     }
 
-    default void alterPartitions(String dbName, String tableName, List<Partition> partitions, long writeId)
-    {
-        throw new UnsupportedOperationException();
-    }
-
     default void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, AcidOperation operation)
     {
         throw new UnsupportedOperationException();
@@ -238,4 +241,16 @@ public interface HiveMetastore
     {
         throw new UnsupportedOperationException();
     }
+
+    boolean functionExists(String databaseName, String functionName, String signatureToken);
+
+    Collection<LanguageFunction> getAllFunctions(String databaseName);
+
+    Collection<LanguageFunction> getFunctions(String databaseName, String functionName);
+
+    void createFunction(String databaseName, String functionName, LanguageFunction function);
+
+    void replaceFunction(String databaseName, String functionName, LanguageFunction function);
+
+    void dropFunction(String databaseName, String functionName, String signatureToken);
 }

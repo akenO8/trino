@@ -61,11 +61,11 @@ joins, aggregations, partitioned window functions and others.
 The minimum number of partitions to use for processing distributed operations in write queries,
 such as joins, aggregations, partitioned window functions and others.
 
-## `query.max-writer-tasks-count`
+## `query.max-writer-task-count`
 
 - **Type:** {ref}`prop-type-integer`
 - **Default value:** `100`
-- **Session property:** `max_writer_tasks_count`
+- **Session property:** `max_writer_task_count`
 
 The maximum number of tasks that will take part in writing data during
 `INSERT`, `CREATE TABLE AS SELECT` and `EXECUTE` queries.
@@ -251,6 +251,18 @@ The maximum size of a single request made by a remote task. Requires
 Determines the amount of headroom that should be allocated beyond the size of
 the request data. Requires `query.remote-task.enable-adaptive-request-size` to
 be enabled.
+
+## `query.info-url-template`
+
+- **Type:** {ref}`prop-type-string`
+- **Default value:** `(URL of the query info page on the coordinator)`
+
+Configure redirection of clients to an alternative location for query
+information. The URL must contain a query id placeholder `${QUERY_ID}`.
+
+For example `https://example.com/query/${QUERY_ID}`.
+
+The `${QUERY_ID}` gets replaced with the actual query's id.
 
 ## `retry-policy`
 

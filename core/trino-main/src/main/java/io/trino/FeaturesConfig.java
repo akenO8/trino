@@ -64,6 +64,8 @@ import static io.trino.sql.analyzer.RegexLibrary.JONI;
         "spill-window-operator",
         "experimental.spill-window-operator",
         "legacy.allow-set-view-authorization",
+        "parse-decimal-literals-as-double",
+        "experimental.late-materialization.enabled"
 })
 public class FeaturesConfig
 {
@@ -73,6 +75,7 @@ public class FeaturesConfig
     private boolean redistributeWrites = true;
     private boolean scaleWriters = true;
     private DataSize writerScalingMinDataProcessed = DataSize.of(120, DataSize.Unit.MEGABYTE);
+    private DataSize maxMemoryPerPartitionWriter = DataSize.of(256, DataSize.Unit.MEGABYTE);
     private DataIntegrityVerification exchangeDataIntegrityVerification = DataIntegrityVerification.ABORT;
     /**
      * default value is overwritten for fault tolerant execution in {@link #applyFaultTolerantExecutionDefaults()}}
@@ -92,8 +95,6 @@ public class FeaturesConfig
     private double spillMaxUsedSpaceThreshold = 0.9;
     private double memoryRevokingTarget = 0.5;
     private double memoryRevokingThreshold = 0.9;
-    private boolean parseDecimalLiteralsAsDouble;
-    private boolean lateMaterializationEnabled;
 
     private DataSize filterAndProjectMinOutputPageSize = DataSize.of(500, KILOBYTE);
     private int filterAndProjectMinOutputPageRowCount = 256;
@@ -173,6 +174,20 @@ public class FeaturesConfig
     public FeaturesConfig setWriterMinSize(DataSize writerMinSize)
     {
         this.writerScalingMinDataProcessed = succinctBytes(writerMinSize.toBytes() * 2);
+        return this;
+    }
+
+    @NotNull
+    public DataSize getMaxMemoryPerPartitionWriter()
+    {
+        return maxMemoryPerPartitionWriter;
+    }
+
+    @Config("max-memory-per-partition-writer")
+    @ConfigDescription("Estimated maximum memory required per partition writer in a single thread")
+    public FeaturesConfig setMaxMemoryPerPartitionWriter(DataSize maxMemoryPerPartitionWriter)
+    {
+        this.maxMemoryPerPartitionWriter = maxMemoryPerPartitionWriter;
         return this;
     }
 
@@ -337,18 +352,6 @@ public class FeaturesConfig
         return this;
     }
 
-    public boolean isParseDecimalLiteralsAsDouble()
-    {
-        return parseDecimalLiteralsAsDouble;
-    }
-
-    @Config("parse-decimal-literals-as-double")
-    public FeaturesConfig setParseDecimalLiteralsAsDouble(boolean parseDecimalLiteralsAsDouble)
-    {
-        this.parseDecimalLiteralsAsDouble = parseDecimalLiteralsAsDouble;
-        return this;
-    }
-
     public boolean isPagesIndexEagerCompactionEnabled()
     {
         return pagesIndexEagerCompactionEnabled;
@@ -411,19 +414,6 @@ public class FeaturesConfig
     public FeaturesConfig setMaxGroupingSets(int maxGroupingSets)
     {
         this.maxGroupingSets = maxGroupingSets;
-        return this;
-    }
-
-    public boolean isLateMaterializationEnabled()
-    {
-        return lateMaterializationEnabled;
-    }
-
-    @Config("experimental.late-materialization.enabled")
-    @LegacyConfig("experimental.work-processor-pipelines")
-    public FeaturesConfig setLateMaterializationEnabled(boolean lateMaterializationEnabled)
-    {
-        this.lateMaterializationEnabled = lateMaterializationEnabled;
         return this;
     }
 

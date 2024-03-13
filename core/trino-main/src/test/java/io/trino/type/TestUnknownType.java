@@ -29,7 +29,7 @@ public class TestUnknownType
                         .appendNull()
                         .appendNull()
                         .appendNull()
-                        .build());
+                        .buildValueBlock());
     }
 
     @Override
@@ -43,5 +43,13 @@ public class TestUnknownType
     {
         assertThat(type.getRange())
                 .isEmpty();
+    }
+
+    @Test
+    @Override
+    public void testFlat()
+            throws Throwable
+    {
+        // unknown is always mull, so flat methods don't work
     }
 }

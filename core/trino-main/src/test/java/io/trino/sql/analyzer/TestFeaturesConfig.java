@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import io.trino.FeaturesConfig;
 import io.trino.FeaturesConfig.DataIntegrityVerification;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -39,6 +39,7 @@ public class TestFeaturesConfig
                 .setRedistributeWrites(true)
                 .setScaleWriters(true)
                 .setWriterScalingMinDataProcessed(DataSize.of(120, MEGABYTE))
+                .setMaxMemoryPerPartitionWriter(DataSize.of(256, MEGABYTE))
                 .setRegexLibrary(JONI)
                 .setRe2JDfaStatesLimit(Integer.MAX_VALUE)
                 .setRe2JDfaRetries(5)
@@ -51,13 +52,11 @@ public class TestFeaturesConfig
                 .setMemoryRevokingTarget(0.5)
                 .setExchangeCompressionEnabled(false)
                 .setExchangeDataIntegrityVerification(DataIntegrityVerification.ABORT)
-                .setParseDecimalLiteralsAsDouble(false)
                 .setPagesIndexEagerCompactionEnabled(false)
                 .setFilterAndProjectMinOutputPageSize(DataSize.of(500, KILOBYTE))
                 .setFilterAndProjectMinOutputPageRowCount(256)
                 .setMaxRecursionDepth(10)
                 .setMaxGroupingSets(2048)
-                .setLateMaterializationEnabled(false)
                 .setOmitDateTimeTypePrecision(false)
                 .setLegacyCatalogRoles(false)
                 .setIncrementalHashArrayLoadFactorEnabled(true)
@@ -74,6 +73,7 @@ public class TestFeaturesConfig
                 .put("redistribute-writes", "false")
                 .put("scale-writers", "false")
                 .put("writer-scaling-min-data-processed", "4GB")
+                .put("max-memory-per-partition-writer", "4GB")
                 .put("regex-library", "RE2J")
                 .put("re2j.dfa-states-limit", "42")
                 .put("re2j.dfa-retries", "42")
@@ -86,13 +86,11 @@ public class TestFeaturesConfig
                 .put("memory-revoking-target", "0.8")
                 .put("exchange.compression-enabled", "true")
                 .put("exchange.data-integrity-verification", "RETRY")
-                .put("parse-decimal-literals-as-double", "true")
                 .put("pages-index.eager-compaction-enabled", "true")
                 .put("filter-and-project-min-output-page-size", "1MB")
                 .put("filter-and-project-min-output-page-row-count", "2048")
                 .put("max-recursion-depth", "8")
                 .put("analyzer.max-grouping-sets", "2047")
-                .put("experimental.late-materialization.enabled", "true")
                 .put("deprecated.omit-datetime-type-precision", "true")
                 .put("deprecated.legacy-catalog-roles", "true")
                 .put("incremental-hash-array-load-factor.enabled", "false")
@@ -106,6 +104,7 @@ public class TestFeaturesConfig
                 .setRedistributeWrites(false)
                 .setScaleWriters(false)
                 .setWriterScalingMinDataProcessed(DataSize.of(4, GIGABYTE))
+                .setMaxMemoryPerPartitionWriter(DataSize.of(4, GIGABYTE))
                 .setRegexLibrary(RE2J)
                 .setRe2JDfaStatesLimit(42)
                 .setRe2JDfaRetries(42)
@@ -118,13 +117,11 @@ public class TestFeaturesConfig
                 .setMemoryRevokingTarget(0.8)
                 .setExchangeCompressionEnabled(true)
                 .setExchangeDataIntegrityVerification(DataIntegrityVerification.RETRY)
-                .setParseDecimalLiteralsAsDouble(true)
                 .setPagesIndexEagerCompactionEnabled(true)
                 .setFilterAndProjectMinOutputPageSize(DataSize.of(1, MEGABYTE))
                 .setFilterAndProjectMinOutputPageRowCount(2048)
                 .setMaxRecursionDepth(8)
                 .setMaxGroupingSets(2047)
-                .setLateMaterializationEnabled(true)
                 .setOmitDateTimeTypePrecision(true)
                 .setLegacyCatalogRoles(true)
                 .setIncrementalHashArrayLoadFactorEnabled(false)

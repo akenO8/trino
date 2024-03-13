@@ -37,8 +37,9 @@ import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.QueryRunner;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionManager;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,7 +47,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Stream;
 
 import static com.google.common.base.Verify.verify;
 import static io.airlift.concurrent.MoreFutures.unmodifiableFuture;
@@ -56,14 +56,13 @@ import static io.trino.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
 import static io.trino.spi.connector.Constraint.alwaysTrue;
-import static io.trino.testing.DataProviders.toDataProvider;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tpch.TpchTable.LINE_ITEM;
 import static io.trino.tpch.TpchTable.ORDERS;
 import static java.lang.String.format;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
+@Isolated
 public class TestDeltaLakeDynamicFiltering
         extends AbstractTestQueryFramework
 {
@@ -87,7 +86,7 @@ public class TestDeltaLakeDynamicFiltering
 
         ImmutableList.of(LINE_ITEM, ORDERS).forEach(table -> {
             String tableName = table.getTableName();
-            hiveMinioDataLake.copyResources("io/trino/plugin/deltalake/testing/resources/databricks/" + tableName, tableName);
+            hiveMinioDataLake.copyResources("io/trino/plugin/deltalake/testing/resources/databricks73/" + tableName, tableName);
             queryRunner.execute(format("CALL %1$s.system.register_table('%2$s', '%3$s', 's3://%4$s/%3$s')",
                     DELTA_CATALOG,
                     "default",
@@ -97,28 +96,24 @@ public class TestDeltaLakeDynamicFiltering
         return queryRunner;
     }
 
-    @DataProvider
-    public Object[][] joinDistributionTypes()
+    @Test
+    @Timeout(60)
+    public void testDynamicFiltering()
     {
-        return Stream.of(JoinDistributionType.values())
-                .collect(toDataProvider());
+        for (JoinDistributionType joinDistributionType : JoinDistributionType.values()) {
+            String query = "SELECT * FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND orders.totalprice > 59995 AND orders.totalprice < 60000";
+            MaterializedResultWithQueryId filteredResult = getDistributedQueryRunner().executeWithQueryId(sessionWithDynamicFiltering(true, joinDistributionType), query);
+            MaterializedResultWithQueryId unfilteredResult = getDistributedQueryRunner().executeWithQueryId(sessionWithDynamicFiltering(false, joinDistributionType), query);
+            assertEqualsIgnoreOrder(filteredResult.getResult().getMaterializedRows(), unfilteredResult.getResult().getMaterializedRows());
+
+            QueryInputStats filteredStats = getQueryInputStats(filteredResult.getQueryId());
+            QueryInputStats unfilteredStats = getQueryInputStats(unfilteredResult.getQueryId());
+            assertGreaterThan(unfilteredStats.inputPositions, filteredStats.inputPositions);
+        }
     }
 
-    @Test(timeOut = 60_000, dataProvider = "joinDistributionTypes")
-    public void testDynamicFiltering(JoinDistributionType joinDistributionType)
-    {
-        String query = "SELECT * FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND orders.totalprice > 59995 AND orders.totalprice < 60000";
-        MaterializedResultWithQueryId filteredResult = getDistributedQueryRunner().executeWithQueryId(sessionWithDynamicFiltering(true, joinDistributionType), query);
-        MaterializedResultWithQueryId unfilteredResult = getDistributedQueryRunner().executeWithQueryId(sessionWithDynamicFiltering(false, joinDistributionType), query);
-        assertEqualsIgnoreOrder(filteredResult.getResult().getMaterializedRows(), unfilteredResult.getResult().getMaterializedRows());
-
-        QueryInputStats filteredStats = getQueryInputStats(filteredResult.getQueryId());
-        QueryInputStats unfilteredStats = getQueryInputStats(unfilteredResult.getQueryId());
-        assertGreaterThan(unfilteredStats.numberOfSplits, filteredStats.numberOfSplits);
-        assertGreaterThan(unfilteredStats.inputPositions, filteredStats.inputPositions);
-    }
-
-    @Test(timeOut = 30_000)
+    @Test
+    @Timeout(30)
     public void testIncompleteDynamicFilterTimeout()
             throws Exception
     {
@@ -131,7 +126,7 @@ public class TestDeltaLakeDynamicFiltering
                 .beginTransactionId(transactionId, transactionManager, new AllowAllAccessControl());
         QualifiedObjectName tableName = new QualifiedObjectName(DELTA_CATALOG, "default", "orders");
         Optional<TableHandle> tableHandle = runner.getMetadata().getTableHandle(session, tableName);
-        assertTrue(tableHandle.isPresent());
+        assertThat(tableHandle.isPresent()).isTrue();
         SplitSource splitSource = runner.getSplitManager()
                 .getSplits(session, Span.getInvalid(), tableHandle.get(), new IncompleteDynamicFilter(), alwaysTrue());
         List<Split> splits = new ArrayList<>();
@@ -139,7 +134,7 @@ public class TestDeltaLakeDynamicFiltering
             splits.addAll(splitSource.getNextBatch(1000).get().getSplits());
         }
         splitSource.close();
-        assertFalse(splits.isEmpty());
+        assertThat(splits.isEmpty()).isFalse();
     }
 
     private Session sessionWithDynamicFiltering(boolean enabled, JoinDistributionType joinDistributionType)

@@ -39,10 +39,11 @@ import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.TestingTransactionHandle;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Optional;
 
@@ -55,10 +56,20 @@ import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.testing.TestingHandles.createTestCatalogHandle;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestValidateScaledWritersUsage
         extends BasePlanTest
 {
+    private static final PartitioningHandle CUSTOM_HANDLE = new PartitioningHandle(
+            Optional.of(TEST_CATALOG_HANDLE),
+            Optional.of(new ConnectorTransactionHandle() { }),
+            new ConnectorPartitioningHandle() { },
+            true);
+
     private LocalQueryRunner queryRunner;
     private PlannerContext plannerContext;
     private PlanBuilder planBuilder;
@@ -67,7 +78,7 @@ public class TestValidateScaledWritersUsage
     private CatalogHandle catalog;
     private SchemaTableName schemaTableName;
 
-    @BeforeClass
+    @BeforeAll
     public void setup()
     {
         schemaTableName = new SchemaTableName("any", "any");
@@ -75,7 +86,7 @@ public class TestValidateScaledWritersUsage
         queryRunner = LocalQueryRunner.create(TEST_SESSION);
         queryRunner.createCatalog(catalog.getCatalogName(), createConnectorFactory(catalog.getCatalogName()), ImmutableMap.of());
         plannerContext = queryRunner.getPlannerContext();
-        planBuilder = new PlanBuilder(new PlanNodeIdAllocator(), plannerContext.getMetadata(), TEST_SESSION);
+        planBuilder = new PlanBuilder(new PlanNodeIdAllocator(), plannerContext, TEST_SESSION);
         TableHandle nationTableHandle = new TableHandle(
                 catalog,
                 new TpchTableHandle("sf1", "nation", 1.0),
@@ -85,7 +96,7 @@ public class TestValidateScaledWritersUsage
         tableScanNode = planBuilder.tableScan(nationTableHandle, ImmutableList.of(symbol), ImmutableMap.of(symbol, nationkeyColumnHandle));
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         queryRunner.close();
@@ -99,13 +110,20 @@ public class TestValidateScaledWritersUsage
     private MockConnectorFactory createConnectorFactory(String name)
     {
         return MockConnectorFactory.builder()
-                .withGetTableHandle(((session, schemaTableName) -> null))
+                .withGetTableHandle((session, schemaTableName) -> null)
                 .withName(name)
                 .build();
     }
 
-    @Test(dataProvider = "scaledWriterPartitioningHandles")
-    public void testScaledWritersUsedAndTargetSupportsIt(PartitioningHandle scaledWriterPartitionHandle)
+    @Test
+    public void testScaledWritersUsedAndTargetSupportsIt()
+    {
+        testScaledWritersUsedAndTargetSupportsIt(SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION);
+        testScaledWritersUsedAndTargetSupportsIt(SCALED_WRITER_HASH_DISTRIBUTION);
+        testScaledWritersUsedAndTargetSupportsIt(CUSTOM_HANDLE);
+    }
+
+    private void testScaledWritersUsedAndTargetSupportsIt(PartitioningHandle scaledWriterPartitionHandle)
     {
         PlanNode tableWriterSource = planBuilder.exchange(ex ->
                 ex
@@ -119,14 +137,21 @@ public class TestValidateScaledWritersUsage
         PlanNode root = planBuilder.output(
                 outputBuilder -> outputBuilder
                         .source(planBuilder.tableWithExchangeCreate(
-                                planBuilder.createTarget(catalog, schemaTableName, true, WriterScalingOptions.ENABLED),
+                                planBuilder.createTarget(catalog, schemaTableName, true, WriterScalingOptions.ENABLED, false),
                                 tableWriterSource,
                                 symbol)));
         validatePlan(root);
     }
 
-    @Test(dataProvider = "scaledWriterPartitioningHandles")
-    public void testScaledWritersUsedAndTargetDoesNotSupportScalingPerTask(PartitioningHandle scaledWriterPartitionHandle)
+    @Test
+    public void testScaledWritersUsedAndTargetDoesNotSupportScalingPerTask()
+    {
+        testScaledWritersUsedAndTargetDoesNotSupportScalingPerTask(SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION);
+        testScaledWritersUsedAndTargetDoesNotSupportScalingPerTask(SCALED_WRITER_HASH_DISTRIBUTION);
+        testScaledWritersUsedAndTargetDoesNotSupportScalingPerTask(CUSTOM_HANDLE);
+    }
+
+    private void testScaledWritersUsedAndTargetDoesNotSupportScalingPerTask(PartitioningHandle scaledWriterPartitionHandle)
     {
         PlanNode tableWriterSource = planBuilder.exchange(ex ->
                 ex
@@ -141,7 +166,7 @@ public class TestValidateScaledWritersUsage
         PlanNode root = planBuilder.output(
                 outputBuilder -> outputBuilder
                         .source(planBuilder.tableWithExchangeCreate(
-                                planBuilder.createTarget(catalog, schemaTableName, true, new WriterScalingOptions(true, false)),
+                                planBuilder.createTarget(catalog, schemaTableName, true, new WriterScalingOptions(true, false), false),
                                 tableWriterSource,
                                 symbol)));
         assertThatThrownBy(() -> validatePlan(root))
@@ -149,8 +174,15 @@ public class TestValidateScaledWritersUsage
                 .hasMessage("The scaled writer per task partitioning scheme is set but writer target catalog:INSTANCE doesn't support it");
     }
 
-    @Test(dataProvider = "scaledWriterPartitioningHandles")
-    public void testScaledWritersUsedAndTargetDoesNotSupportScalingAcrossTasks(PartitioningHandle scaledWriterPartitionHandle)
+    @Test
+    public void testScaledWritersUsedAndTargetDoesNotSupportScalingAcrossTasks()
+    {
+        testScaledWritersUsedAndTargetDoesNotSupportScalingAcrossTasks(SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION);
+        testScaledWritersUsedAndTargetDoesNotSupportScalingAcrossTasks(SCALED_WRITER_HASH_DISTRIBUTION);
+        testScaledWritersUsedAndTargetDoesNotSupportScalingAcrossTasks(CUSTOM_HANDLE);
+    }
+
+    private void testScaledWritersUsedAndTargetDoesNotSupportScalingAcrossTasks(PartitioningHandle scaledWriterPartitionHandle)
     {
         PlanNode tableWriterSource = planBuilder.exchange(ex ->
                 ex
@@ -165,7 +197,7 @@ public class TestValidateScaledWritersUsage
         PlanNode root = planBuilder.output(
                 outputBuilder -> outputBuilder
                         .source(planBuilder.tableWithExchangeCreate(
-                                planBuilder.createTarget(catalog, schemaTableName, true, new WriterScalingOptions(false, true)),
+                                planBuilder.createTarget(catalog, schemaTableName, true, new WriterScalingOptions(false, true), false),
                                 tableWriterSource,
                                 symbol)));
         assertThatThrownBy(() -> validatePlan(root))
@@ -173,8 +205,15 @@ public class TestValidateScaledWritersUsage
                 .hasMessage("The scaled writer across tasks partitioning scheme is set but writer target catalog:INSTANCE doesn't support it");
     }
 
-    @Test(dataProvider = "scaledWriterPartitioningHandles")
-    public void testScaledWriterUsedAndTargetDoesNotSupportMultipleWritersPerPartition(PartitioningHandle scaledWriterPartitionHandle)
+    @Test
+    public void testScaledWriterUsedAndTargetDoesNotSupportMultipleWritersPerPartition()
+    {
+        testScaledWriterUsedAndTargetDoesNotSupportMultipleWritersPerPartition(SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION);
+        testScaledWriterUsedAndTargetDoesNotSupportMultipleWritersPerPartition(SCALED_WRITER_HASH_DISTRIBUTION);
+        testScaledWriterUsedAndTargetDoesNotSupportMultipleWritersPerPartition(CUSTOM_HANDLE);
+    }
+
+    private void testScaledWriterUsedAndTargetDoesNotSupportMultipleWritersPerPartition(PartitioningHandle scaledWriterPartitionHandle)
     {
         PlanNode tableWriterSource = planBuilder.exchange(ex ->
                 ex
@@ -188,7 +227,7 @@ public class TestValidateScaledWritersUsage
         PlanNode root = planBuilder.output(
                 outputBuilder -> outputBuilder
                         .source(planBuilder.tableWithExchangeCreate(
-                                planBuilder.createTarget(catalog, schemaTableName, false, WriterScalingOptions.ENABLED),
+                                planBuilder.createTarget(catalog, schemaTableName, false, WriterScalingOptions.ENABLED, false),
                                 tableWriterSource,
                                 symbol)));
 
@@ -202,8 +241,15 @@ public class TestValidateScaledWritersUsage
         }
     }
 
-    @Test(dataProvider = "scaledWriterPartitioningHandles")
-    public void testScaledWriterWithMultipleSourceExchangesAndTargetDoesNotSupportMultipleWritersPerPartition(PartitioningHandle scaledWriterPartitionHandle)
+    @Test
+    public void testScaledWriterWithMultipleSourceExchangesAndTargetDoesNotSupportMultipleWritersPerPartition()
+    {
+        testScaledWriterWithMultipleSourceExchangesAndTargetDoesNotSupportMultipleWritersPerPartition(SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION);
+        testScaledWriterWithMultipleSourceExchangesAndTargetDoesNotSupportMultipleWritersPerPartition(SCALED_WRITER_HASH_DISTRIBUTION);
+        testScaledWriterWithMultipleSourceExchangesAndTargetDoesNotSupportMultipleWritersPerPartition(CUSTOM_HANDLE);
+    }
+
+    private void testScaledWriterWithMultipleSourceExchangesAndTargetDoesNotSupportMultipleWritersPerPartition(PartitioningHandle scaledWriterPartitionHandle)
     {
         PlanNode tableWriterSource = planBuilder.exchange(ex ->
                 ex
@@ -223,7 +269,7 @@ public class TestValidateScaledWritersUsage
         PlanNode root = planBuilder.output(
                 outputBuilder -> outputBuilder
                         .source(planBuilder.tableWithExchangeCreate(
-                                planBuilder.createTarget(catalog, schemaTableName, false, WriterScalingOptions.ENABLED),
+                                planBuilder.createTarget(catalog, schemaTableName, false, WriterScalingOptions.ENABLED, false),
                                 tableWriterSource,
                                 symbol)));
 
@@ -235,20 +281,6 @@ public class TestValidateScaledWritersUsage
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("The hash scaled writer partitioning scheme is set for the partitioned write but writer target catalog:INSTANCE doesn't support multiple writers per partition");
         }
-    }
-
-    @DataProvider
-    public Object[][] scaledWriterPartitioningHandles()
-    {
-        return new Object[][] {
-                {SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION},
-                {SCALED_WRITER_HASH_DISTRIBUTION},
-                {new PartitioningHandle(
-                        Optional.of(TEST_CATALOG_HANDLE),
-                        Optional.of(new ConnectorTransactionHandle() {}),
-                        new ConnectorPartitioningHandle() {},
-                        true)}
-        };
     }
 
     private void validatePlan(PlanNode root)

@@ -23,7 +23,8 @@ import io.trino.spi.QueryId;
 import io.trino.testing.DistributedQueryRunner;
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.time.ZoneId;
 import java.util.Locale;
@@ -34,11 +35,12 @@ import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.client.StatementClientFactory.newStatementClient;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestFinalQueryInfo
 {
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testFinalQueryInfoSetOnAbort()
             throws Exception
     {
@@ -54,7 +56,7 @@ public class TestFinalQueryInfo
             // wait for final query info
             QueryInfo finalQueryInfo = tryGetFutureValue(finalQueryInfoFuture, 10, SECONDS)
                     .orElseThrow(() -> new AssertionError("Final query info never set"));
-            assertTrue(finalQueryInfo.isFinalQueryInfo());
+            assertThat(finalQueryInfo.isFinalQueryInfo()).isTrue();
         }
     }
 

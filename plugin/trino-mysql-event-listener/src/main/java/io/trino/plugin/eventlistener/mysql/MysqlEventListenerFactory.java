@@ -34,6 +34,7 @@ import org.jdbi.v3.core.Jdbi;
 import org.jdbi.v3.sqlobject.SqlObjectPlugin;
 
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.util.Map;
 import java.util.Set;
 
@@ -85,7 +86,15 @@ public class MysqlEventListenerFactory
         @Singleton
         @Provides
         public ConnectionFactory createConnectionFactory(MysqlEventListenerConfig config)
+                throws SQLException
         {
+            try {
+                new com.mysql.cj.jdbc.Driver();
+            }
+            catch (SQLException e) {
+                throw e;
+            }
+
             return () -> DriverManager.getConnection(config.getUrl());
         }
 

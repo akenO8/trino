@@ -24,28 +24,32 @@ import io.trino.testing.PlanDeterminismChecker;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingAccessControlManager.TestingPrivilege;
 import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.List;
 
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestQueryPlanDeterminism
         extends AbstractTestQueries
 {
     private PlanDeterminismChecker determinismChecker;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         determinismChecker = new PlanDeterminismChecker((LocalQueryRunner) getQueryRunner());
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         determinismChecker = null;
@@ -264,10 +268,20 @@ public class TestQueryPlanDeterminism
                 "    )\n");
     }
 
+    @Test
     @Override
-    public void testLargeIn(int valuesCount)
+    public void testLargeIn()
     {
         // testLargeIn is expensive
-        throw new SkipException("Skipping testLargeIn");
+        Assumptions.abort("Skipping testLargeIn");
+    }
+
+    @Test
+    @Override
+    public void testUnionAllAboveBroadcastJoin()
+    {
+        // TODO: https://github.com/trinodb/trino/issues/20043
+        assertThatThrownBy(super::testUnionAllAboveBroadcastJoin)
+                .hasMessageContaining("bytes is negative");
     }
 }

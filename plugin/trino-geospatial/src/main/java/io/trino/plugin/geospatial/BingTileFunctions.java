@@ -17,11 +17,13 @@ import com.esri.core.geometry.Envelope;
 import com.esri.core.geometry.Point;
 import com.esri.core.geometry.ogc.OGCGeometry;
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.FormatMethod;
 import io.airlift.slice.Slice;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.BufferedRowValueBuilder;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.function.Description;
 import io.trino.spi.function.ScalarFunction;
 import io.trino.spi.function.SqlType;
@@ -116,7 +118,7 @@ public final class BingTileFunctions
         }
 
         @SqlType("row(x integer,y integer)")
-        public Block bingTileCoordinates(@SqlType(BingTileType.NAME) long input)
+        public SqlRow bingTileCoordinates(@SqlType(BingTileType.NAME) long input)
         {
             BingTile tile = BingTile.decode(input);
             return rowValueBuilder.build(fields -> {
@@ -699,6 +701,12 @@ public final class BingTileFunctions
         }
     }
 
+    private static void checkCondition(boolean condition, String message)
+    {
+        checkCondition(condition, "%s", message);
+    }
+
+    @FormatMethod
     private static void checkCondition(boolean condition, String formatString, Object... args)
     {
         if (!condition) {

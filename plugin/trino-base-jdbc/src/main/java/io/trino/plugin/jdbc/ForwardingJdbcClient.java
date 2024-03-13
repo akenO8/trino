@@ -125,6 +125,12 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
+    public Optional<Type> getSupportedType(ConnectorSession session, Type type)
+    {
+        return delegate().getSupportedType(session, type);
+    }
+
+    @Override
     public boolean supportsAggregationPushdown(ConnectorSession session, JdbcTableHandle table, List<AggregateFunction> aggregates, Map<String, ColumnHandle> assignments, List<List<ColumnHandle>> groupingSets)
     {
         return delegate().supportsAggregationPushdown(session, table, aggregates, assignments, groupingSets);
@@ -428,6 +434,12 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
+    public OptionalLong update(ConnectorSession session, JdbcTableHandle handle)
+    {
+        return delegate().update(session, handle);
+    }
+
+    @Override
     public void truncateTable(ConnectorSession session, JdbcTableHandle handle)
     {
         delegate().truncateTable(session, handle);
@@ -437,5 +449,11 @@ public abstract class ForwardingJdbcClient
     public OptionalInt getMaxWriteParallelism(ConnectorSession session)
     {
         return delegate().getMaxWriteParallelism(session);
+    }
+
+    @Override
+    public OptionalInt getMaxColumnNameLength(ConnectorSession session)
+    {
+        return delegate().getMaxColumnNameLength(session);
     }
 }

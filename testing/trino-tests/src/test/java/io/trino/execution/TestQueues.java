@@ -26,7 +26,8 @@ import io.trino.spi.resourcegroups.ResourceGroupId;
 import io.trino.spi.session.ResourceEstimates;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.tests.tpch.TpchQueryRunnerBuilder;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.Optional;
 import java.util.Set;
@@ -47,16 +48,15 @@ import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 // run single threaded to avoid creating multiple query runners at once
-@Test(singleThreaded = true)
 public class TestQueues
 {
     private static final String LONG_LASTING_QUERY = "SELECT COUNT(*) FROM lineitem";
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testResourceGroupManager()
             throws Exception
     {
@@ -95,7 +95,8 @@ public class TestQueues
         }
     }
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testExceedSoftLimits()
             throws Exception
     {
@@ -159,7 +160,8 @@ public class TestQueues
         return createQuery(queryRunner, newSession("scheduled", ImmutableSet.of(), null), LONG_LASTING_QUERY);
     }
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testResourceGroupManagerWithTwoDashboardQueriesRequestedAtTheSameTime()
             throws Exception
     {
@@ -176,7 +178,8 @@ public class TestQueues
         }
     }
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testResourceGroupManagerWithTooManyQueriesScheduled()
             throws Exception
     {
@@ -195,14 +198,16 @@ public class TestQueues
         }
     }
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testResourceGroupManagerRejection()
             throws Exception
     {
         testRejection();
     }
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testClientTagsBasedSelection()
             throws Exception
     {
@@ -216,7 +221,8 @@ public class TestQueues
         }
     }
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testSelectorResourceEstimateBasedSelection()
             throws Exception
     {
@@ -272,7 +278,8 @@ public class TestQueues
         }
     }
 
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testQueryTypeBasedSelection()
             throws Exception
     {
@@ -294,8 +301,12 @@ public class TestQueues
         QueryId queryId = createQuery(queryRunner, session, query);
         waitForQueryState(queryRunner, queryId, ImmutableSet.of(RUNNING, FINISHING, FINISHED));
         Optional<ResourceGroupId> resourceGroupId = queryRunner.getCoordinator().getQueryManager().getFullQueryInfo(queryId).getResourceGroupId();
-        assertTrue(resourceGroupId.isPresent(), "Query should have a resource group");
-        assertEquals(resourceGroupId.get(), expectedResourceGroup, format("Expected: '%s' resource group, found: %s", expectedResourceGroup, resourceGroupId.get()));
+        assertThat(resourceGroupId.isPresent())
+                .describedAs("Query should have a resource group")
+                .isTrue();
+        assertThat(resourceGroupId.get())
+                .describedAs(format("Expected: '%s' resource group, found: %s", expectedResourceGroup, resourceGroupId.get()))
+                .isEqualTo(expectedResourceGroup);
     }
 
     private void testRejection()
@@ -308,7 +319,7 @@ public class TestQueues
             QueryId queryId = createQuery(queryRunner, newRejectionSession(), LONG_LASTING_QUERY);
             waitForQueryState(queryRunner, queryId, FAILED);
             DispatchManager dispatchManager = queryRunner.getCoordinator().getDispatchManager();
-            assertEquals(dispatchManager.getQueryInfo(queryId).getErrorCode(), QUERY_REJECTED.toErrorCode());
+            assertThat(dispatchManager.getQueryInfo(queryId).getErrorCode()).isEqualTo(QUERY_REJECTED.toErrorCode());
         }
     }
 

@@ -17,17 +17,15 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
 import io.trino.security.AllowAllAccessControl;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.Optional;
 
-import static io.trino.transaction.TransactionBuilder.transaction;
+import static io.trino.testing.TransactionBuilder.transaction;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertTrue;
 
-@Test(singleThreaded = true)
 public class TestMinimalFunctionality
         extends AbstractTestMinimalFunctionality
 {
@@ -41,11 +39,11 @@ public class TestMinimalFunctionality
     public void testTableExists()
     {
         QualifiedObjectName name = new QualifiedObjectName("redis", "default", tableName);
-        transaction(queryRunner.getTransactionManager(), new AllowAllAccessControl())
+        transaction(queryRunner.getTransactionManager(), queryRunner.getMetadata(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(SESSION, session -> {
                     Optional<TableHandle> handle = queryRunner.getServer().getMetadata().getTableHandle(session, name);
-                    assertTrue(handle.isPresent());
+                    assertThat(handle).isPresent();
                 });
     }
 

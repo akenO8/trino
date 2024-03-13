@@ -22,7 +22,6 @@ import io.trino.spi.type.Int128;
 import io.trino.spi.type.SqlTimestampWithTimeZone;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
-import io.trino.sql.parser.ParsingOptions;
 import io.trino.sql.parser.SqlParser;
 import io.trino.sql.planner.ExpressionInterpreter;
 import io.trino.sql.planner.Symbol;
@@ -36,12 +35,12 @@ import io.trino.sql.tree.NodeRef;
 import io.trino.sql.tree.StringLiteral;
 import io.trino.sql.tree.SymbolReference;
 import io.trino.transaction.TestingTransactionManager;
-import io.trino.transaction.TransactionBuilder;
 import org.intellij.lang.annotations.Language;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
 import org.joda.time.LocalTime;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.Map;
 import java.util.Optional;
@@ -70,18 +69,17 @@ import static io.trino.sql.ExpressionTestUtils.assertExpressionEquals;
 import static io.trino.sql.ExpressionTestUtils.getTypes;
 import static io.trino.sql.ExpressionTestUtils.resolveFunctionCalls;
 import static io.trino.sql.ExpressionUtils.rewriteIdentifiersToSymbolReferences;
-import static io.trino.sql.ParsingUtil.createParsingOptions;
-import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
+import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
 import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
+import static io.trino.testing.TransactionBuilder.transaction;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
 import static io.trino.type.DateTimes.scaleEpochMillisToMicros;
 import static io.trino.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.function.Function.identity;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.joda.time.DateTimeZone.UTC;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
 
 public class TestExpressionInterpreter
 {
@@ -150,6 +148,10 @@ public class TestExpressionInterpreter
     };
 
     private static final SqlParser SQL_PARSER = new SqlParser();
+    private static final TestingTransactionManager TRANSACTION_MANAGER = new TestingTransactionManager();
+    private static final PlannerContext PLANNER_CONTEXT = plannerContextBuilder()
+            .withTransactionManager(TRANSACTION_MANAGER)
+            .build();
 
     @Test
     public void testAnd()
@@ -402,9 +404,9 @@ public class TestExpressionInterpreter
 
         // evaluate should execute
         Object value = evaluate("random()");
-        assertTrue(value instanceof Double);
+        assertThat(value instanceof Double).isTrue();
         double randomValue = (double) value;
-        assertTrue(0 <= randomValue && randomValue < 1);
+        assertThat(0 <= randomValue && randomValue < 1).isTrue();
     }
 
     @Test
@@ -1873,7 +1875,8 @@ public class TestExpressionInterpreter
         optimize("MAP(ARRAY[ARRAY[1,1]], ARRAY['a'])[ARRAY[1,1]]");
     }
 
-    @Test(timeOut = 60000)
+    @Test
+    @Timeout(60)
     public void testLikeInvalidUtf8()
     {
         assertLike(new byte[] {'a', 'b', 'c'}, "%b%", true);
@@ -1892,7 +1895,7 @@ public class TestExpressionInterpreter
         optimize("INTERVAL '3' DAY * unbound_long");
         optimize("INTERVAL '3' YEAR * unbound_long");
 
-        assertEquals(optimize("X'1234'"), Slices.wrappedBuffer((byte) 0x12, (byte) 0x34));
+        assertThat(optimize("X'1234'")).isEqualTo(Slices.wrappedBuffer((byte) 0x12, (byte) 0x34));
     }
 
     private static void assertLike(byte[] value, String pattern, boolean expected)
@@ -1901,7 +1904,7 @@ public class TestExpressionInterpreter
                 rawStringLiteral(Slices.wrappedBuffer(value)),
                 new StringLiteral(pattern),
                 Optional.empty());
-        assertEquals(evaluate(predicate), expected);
+        assertThat(evaluate(predicate)).isEqualTo(expected);
     }
 
     private static StringLiteral rawStringLiteral(Slice slice)
@@ -1911,7 +1914,7 @@ public class TestExpressionInterpreter
 
     private static void assertOptimizedEquals(@Language("SQL") String actual, @Language("SQL") String expected)
     {
-        assertEquals(optimize(actual), optimize(expected));
+        assertThat(optimize(actual)).isEqualTo(optimize(expected));
     }
 
     private static void assertOptimizedMatches(@Language("SQL") String actual, @Language("SQL") String expected)
@@ -1923,7 +1926,7 @@ public class TestExpressionInterpreter
                         .map(Symbol::getName)
                         .collect(toImmutableMap(identity(), SymbolReference::new)));
 
-        Expression rewrittenExpected = rewriteIdentifiersToSymbolReferences(SQL_PARSER.createExpression(expected, new ParsingOptions()));
+        Expression rewrittenExpected = rewriteIdentifiersToSymbolReferences(SQL_PARSER.createExpression(expected));
         assertExpressionEquals(actualOptimized, rewrittenExpected, aliases.build());
     }
 
@@ -1944,10 +1947,10 @@ public class TestExpressionInterpreter
     // TODO replace that method with io.trino.sql.ExpressionTestUtils.planExpression
     static Expression planExpression(@Language("SQL") String expression)
     {
-        return TransactionBuilder.transaction(new TestingTransactionManager(), new AllowAllAccessControl())
+        return transaction(TRANSACTION_MANAGER, PLANNER_CONTEXT.getMetadata(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(TEST_SESSION, transactionSession -> {
-                    Expression parsedExpression = SQL_PARSER.createExpression(expression, createParsingOptions(transactionSession));
+                    Expression parsedExpression = SQL_PARSER.createExpression(expression);
                     parsedExpression = rewriteIdentifiersToSymbolReferences(parsedExpression);
                     parsedExpression = resolveFunctionCalls(PLANNER_CONTEXT, transactionSession, SYMBOL_TYPES, parsedExpression);
                     parsedExpression = CanonicalizeExpressionRewriter.rewrite(
@@ -1962,24 +1965,23 @@ public class TestExpressionInterpreter
 
     private static void assertEvaluatedEquals(@Language("SQL") String actual, @Language("SQL") String expected)
     {
-        assertEquals(evaluate(actual), evaluate(expected));
+        assertThat(evaluate(actual)).isEqualTo(evaluate(expected));
     }
 
     private static Object evaluate(String expression)
     {
         assertRoundTrip(expression);
 
-        Expression parsedExpression = ExpressionTestUtils.createExpression(expression, PLANNER_CONTEXT, SYMBOL_TYPES);
+        Expression parsedExpression = ExpressionTestUtils.createExpression(expression, TRANSACTION_MANAGER, PLANNER_CONTEXT, SYMBOL_TYPES);
 
         return evaluate(parsedExpression);
     }
 
     private static void assertRoundTrip(String expression)
     {
-        ParsingOptions parsingOptions = createParsingOptions(TEST_SESSION);
-        Expression parsed = SQL_PARSER.createExpression(expression, parsingOptions);
+        Expression parsed = SQL_PARSER.createExpression(expression);
         String formatted = formatExpression(parsed);
-        assertEquals(parsed, SQL_PARSER.createExpression(formatted, parsingOptions));
+        assertThat(parsed).isEqualTo(SQL_PARSER.createExpression(formatted));
     }
 
     private static Object evaluate(Expression expression)

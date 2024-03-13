@@ -17,10 +17,11 @@ import com.google.common.collect.Lists;
 import com.google.common.math.IntMath;
 import io.trino.Session;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DataProviders;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 
@@ -38,8 +39,6 @@ import static java.math.RoundingMode.UP;
 import static java.util.stream.Collectors.joining;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotEquals;
 
 public class TestIcebergStatistics
         extends AbstractTestQueryFramework
@@ -53,7 +52,8 @@ public class TestIcebergStatistics
                 .build();
     }
 
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
     public void testAnalyze(boolean collectOnStatsOnWrites)
     {
         Session writeSession = withStatsOnWrite(getSession(), collectOnStatsOnWrites);
@@ -172,7 +172,8 @@ public class TestIcebergStatistics
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
     public void testAnalyzePartitioned(boolean collectOnStatsOnWrites)
     {
         Session writeSession = withStatsOnWrite(getSession(), collectOnStatsOnWrites);
@@ -298,7 +299,8 @@ public class TestIcebergStatistics
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "testCollectStatisticsOnWriteDataProvider")
+    @ParameterizedTest
+    @MethodSource("testCollectStatisticsOnWriteDataProvider")
     public void testCollectStatisticsOnWrite(boolean collectOnStatsOnCreateTable, boolean partitioned)
     {
         String tableName = "test_collect_stats_insert_" + collectOnStatsOnCreateTable + partitioned;
@@ -353,7 +355,8 @@ public class TestIcebergStatistics
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "testCollectStatisticsOnWriteDataProvider")
+    @ParameterizedTest
+    @MethodSource("testCollectStatisticsOnWriteDataProvider")
     public void testCollectStatisticsOnWriteToEmptyTable(boolean collectOnStatsOnCreateTable, boolean partitioned)
     {
         String tableName = "test_collect_stats_insert_into_empty_" + collectOnStatsOnCreateTable + partitioned;
@@ -389,13 +392,13 @@ public class TestIcebergStatistics
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @DataProvider
     public Object[][] testCollectStatisticsOnWriteDataProvider()
     {
         return cartesianProduct(trueFalse(), trueFalse());
     }
 
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
     public void testAnalyzeAfterStatsDrift(boolean withOptimize)
     {
         String tableName = "test_analyze_stats_drift_" + withOptimize;
@@ -718,10 +721,11 @@ public class TestIcebergStatistics
         assertUpdate("ANALYZE " + tableName);
         long analyzeSnapshot = getCurrentSnapshotId(tableName);
         // ANALYZE currently does not create a new snapshot
-        assertEquals(analyzeSnapshot, createSnapshot);
+        assertThat(analyzeSnapshot).isEqualTo(createSnapshot);
 
         assertUpdate("INSERT INTO " + tableName + " SELECT * FROM tpch.sf1.nation WHERE nationkey = 1", 1);
-        assertNotEquals(getCurrentSnapshotId(tableName), createSnapshot);
+        assertThat(getCurrentSnapshotId(tableName))
+                .isNotEqualTo(createSnapshot);
         // NDV information present after INSERT
         assertQuery(
                 "SHOW STATS FOR " + tableName,

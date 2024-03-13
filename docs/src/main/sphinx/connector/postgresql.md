@@ -51,6 +51,21 @@ determine the user credentials for the connection, often a service user. You can
 use {doc}`secrets </security/secrets>` to avoid actual values in the catalog
 properties files.
 
+### Access to system tables
+
+The PostgreSQL connector supports reading [PostgreSQ catalog
+tables](https://www.postgresql.org/docs/current/catalogs.html), such as
+`pg_namespace`. The functionality is turned off by default, and can be enabled
+using the `postgresql.include-system-tables` configuration property.
+
+You can see more details in the `pg_catalog` schema in the `example` catalog,
+for example about the `pg_namespace` system table:
+
+```sql
+SHOW TABLES FROM example.pg_catalog;
+SELECT * FROM example.pg_catalog.pg_namespace;
+```
+
 (postgresql-tls)=
 
 ### Connection security
@@ -119,82 +134,82 @@ each direction.
 The connector maps PostgreSQL types to the corresponding Trino types following
 this table:
 
-```{eval-rst}
-.. list-table:: PostgreSQL type to Trino type mapping
-  :widths: 30, 20, 50
-  :header-rows: 1
 
-  * - PostgreSQL type
-    - Trino type
-    - Notes
-  * - ``BIT``
-    - ``BOOLEAN``
-    -
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``SMALLINT``
-    - ``SMALLINT``
-    -
-  * - ``INTEGER``
-    - ``INTEGER``
-    -
-  * - ``BIGINT``
-    - ``BIGINT``
-    -
-  * - ``REAL``
-    - ``REAL``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``NUMERIC(p, s)``
-    - ``DECIMAL(p, s)``
-    - ``DECIMAL(p, s)`` is an alias of  ``NUMERIC(p, s)``. See
-      :ref:`postgresql-decimal-type-handling` for more information.
-  * - ``CHAR(n)``
-    - ``CHAR(n)``
-    -
-  * - ``VARCHAR(n)``
-    - ``VARCHAR(n)``
-    -
-  * - ``ENUM``
-    - ``VARCHAR``
-    -
-  * - ``BYTEA``
-    - ``VARBINARY``
-    -
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``TIME(n)``
-    - ``TIME(n)``
-    -
-  * - ``TIMESTAMP(n)``
-    - ``TIMESTAMP(n)``
-    -
-  * - ``TIMESTAMPTZ(n)``
-    - ``TIMESTAMP(n) WITH TIME ZONE``
-    -
-  * - ``MONEY``
-    - ``VARCHAR``
-    -
-  * - ``UUID``
-    - ``UUID``
-    -
-  * - ``JSON``
-    - ``JSON``
-    -
-  * - ``JSONB``
-    - ``JSON``
-    -
-  * - ``HSTORE``
-    - ``MAP(VARCHAR, VARCHAR)``
-    -
-  * - ``ARRAY``
-    - Disabled, ``ARRAY``, or ``JSON``
-    - See :ref:`postgresql-array-type-handling` for more information.
-```
+:::{list-table} PostgreSQL type to Trino type mapping
+:widths: 30, 30, 40
+:header-rows: 1
+
+* - PostgreSQL type
+  - Trino type
+  - Notes
+* - `BIT`
+  - `BOOLEAN`
+  -
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `SMALLINT`
+  - `SMALLINT`
+  -
+* - `INTEGER`
+  - `INTEGER`
+  -
+* - `BIGINT`
+  - `BIGINT`
+  -
+* - `REAL`
+  - `REAL`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `NUMERIC(p, s)`
+  - `DECIMAL(p, s)`
+  - `DECIMAL(p, s)` is an alias of `NUMERIC(p, s)`. See
+    [](postgresql-decimal-type-handling) for more information.
+* - `CHAR(n)`
+  - `CHAR(n)`
+  -
+* - `VARCHAR(n)`
+  - `VARCHAR(n)`
+  -
+* - `ENUM`
+  - `VARCHAR`
+  -
+* - `BYTEA`
+  - `VARBINARY`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `TIME(n)`
+  - `TIME(n)`
+  -
+* - `TIMESTAMP(n)`
+  - `TIMESTAMP(n)`
+  -
+* - `TIMESTAMPTZ(n)`
+  - `TIMESTAMP(n) WITH TIME ZONE`
+  -
+* - `MONEY`
+  - `VARCHAR`
+  -
+* - `UUID`
+  - `UUID`
+  -
+* - `JSON`
+  - `JSON`
+  -
+* - `JSONB`
+  - `JSON`
+  -
+* - `HSTORE`
+  - `MAP(VARCHAR, VARCHAR)`
+  -
+* - `ARRAY`
+  - Disabled, `ARRAY`, or `JSON`
+  - See [](postgresql-array-type-handling) for more information.
+:::
 
 No other types are supported.
 
@@ -203,67 +218,66 @@ No other types are supported.
 The connector maps Trino types to the corresponding PostgreSQL types following
 this table:
 
-```{eval-rst}
-.. list-table:: Trino type to PostgreSQL type mapping
-  :widths: 30, 20, 50
-  :header-rows: 1
+:::{list-table} Trino type to PostgreSQL type mapping
+:widths: 30, 30, 40
+:header-rows: 1
 
-  * - Trino type
-    - PostgreSQL type
-    - Notes
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``SMALLINT``
-    - ``SMALLINT``
-    -
-  * - ``TINYINT``
-    - ``SMALLINT``
-    -
-  * - ``INTEGER``
-    - ``INTEGER``
-    -
-  * - ``BIGINT``
-    - ``BIGINT``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``DECIMAL(p, s)``
-    - ``NUMERIC(p, s)``
-    - ``DECIMAL(p, s)`` is an alias of  ``NUMERIC(p, s)``. See
-      :ref:`postgresql-decimal-type-handling` for more information.
-  * - ``CHAR(n)``
-    - ``CHAR(n)``
-    -
-  * - ``VARCHAR(n)``
-    - ``VARCHAR(n)``
-    -
-  * - ``VARBINARY``
-    - ``BYTEA``
-    -
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``TIME(n)``
-    - ``TIME(n)``
-    -
-  * - ``TIMESTAMP(n)``
-    - ``TIMESTAMP(n)``
-    -
-  * - ``TIMESTAMP(n) WITH TIME ZONE``
-    - ``TIMESTAMPTZ(n)``
-    -
-  * - ``UUID``
-    - ``UUID``
-    -
-  * - ``JSON``
-    - ``JSONB``
-    -
-  * - ``ARRAY``
-    - ``ARRAY``
-    - See :ref:`postgresql-array-type-handling` for more information.
-```
+* - Trino type
+  - PostgreSQL type
+  - Notes
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `SMALLINT`
+  - `SMALLINT`
+  -
+* - `TINYINT`
+  - `SMALLINT`
+  -
+* - `INTEGER`
+  - `INTEGER`
+  -
+* - `BIGINT`
+  - `BIGINT`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `DECIMAL(p, s)`
+  - `NUMERIC(p, s)`
+  - `DECIMAL(p, s)` is an alias of  `NUMERIC(p, s)`. See
+    [](postgresql-decimal-type-handling) for more information.
+* - `CHAR(n)`
+  - `CHAR(n)`
+  -
+* - `VARCHAR(n)`
+  - `VARCHAR(n)`
+  -
+* - `VARBINARY`
+  - `BYTEA`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `TIME(n)`
+  - `TIME(n)`
+  -
+* - `TIMESTAMP(n)`
+  - `TIMESTAMP(n)`
+  -
+* - `TIMESTAMP(n) WITH TIME ZONE`
+  - `TIMESTAMPTZ(n)`
+  -
+* - `UUID`
+  - `UUID`
+  -
+* - `JSON`
+  - `JSONB`
+  -
+* - `ARRAY`
+  - `ARRAY`
+  - See [](postgresql-array-type-handling) for more information.
+::::
 
 No other types are supported.
 
@@ -332,9 +346,13 @@ PostgreSQL.  In addition to the {ref}`globally available
 statements, the connector supports the following features:
 
 - {doc}`/sql/insert`
+- {doc}`/sql/update`
 - {doc}`/sql/delete`
 - {doc}`/sql/truncate`
 - {ref}`sql-schema-table-management`
+
+```{include} sql-update-limitation.fragment
+```
 
 ```{include} sql-delete-limitation.fragment
 ```

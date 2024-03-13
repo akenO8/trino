@@ -16,14 +16,13 @@ package io.trino.plugin.ignite;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.jdbc.BaseJdbcConnectorTest;
+import io.trino.sql.planner.plan.FilterNode;
+import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import io.trino.testng.services.Flaky;
-import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Locale;
@@ -31,18 +30,16 @@ import java.util.Optional;
 
 import static com.google.common.base.Strings.nullToEmpty;
 import static io.trino.plugin.ignite.IgniteQueryRunner.createIgniteQueryRunner;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestIgniteConnectorTest
         extends BaseJdbcConnectorTest
 {
-    private static final String SCHEMA_CHANGE_OPERATION_FAIL_ISSUE = "https://github.com/trinodb/trino/issues/14391";
-    @Language("RegExp")
-    private static final String SCHEMA_CHANGE_OPERATION_FAIL_MATCH = "Schema change operation failed: Thread got interrupted while trying to acquire table lock.";
-
     private TestingIgniteServer igniteServer;
 
     @Override
@@ -63,55 +60,120 @@ public class TestIgniteConnectorTest
         return igniteServer::execute;
     }
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_TRUNCATE:
-                return false;
+        return switch (connectorBehavior) {
+            case SUPPORTS_AGGREGATION_PUSHDOWN,
+                    SUPPORTS_JOIN_PUSHDOWN,
+                    SUPPORTS_PREDICATE_EXPRESSION_PUSHDOWN_WITH_LIKE,
+                    SUPPORTS_TOPN_PUSHDOWN_WITH_VARCHAR -> true;
+            case SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT,
+                    SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE,
+                    SUPPORTS_ARRAY,
+                    SUPPORTS_COMMENT_ON_COLUMN,
+                    SUPPORTS_COMMENT_ON_TABLE,
+                    SUPPORTS_CREATE_SCHEMA,
+                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                    SUPPORTS_NATIVE_QUERY,
+                    SUPPORTS_NEGATIVE_DATE,
+                    SUPPORTS_RENAME_COLUMN,
+                    SUPPORTS_RENAME_TABLE,
+                    SUPPORTS_ROW_TYPE,
+                    SUPPORTS_SET_COLUMN_TYPE,
+                    SUPPORTS_TRUNCATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
+    }
 
-            case SUPPORTS_CREATE_SCHEMA:
-            case SUPPORTS_RENAME_TABLE:
-            case SUPPORTS_RENAME_COLUMN:
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-                return false;
+    @Test
+    public void testLikeWithEscape()
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_like_with_escape",
+                "(id int, a varchar(4))",
+                List.of(
+                        "1, 'abce'",
+                        "2, 'abcd'",
+                        "3, 'a%de'"))) {
+            String tableName = testTable.getName();
 
-            case SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT:
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-            case SUPPORTS_SET_COLUMN_TYPE:
-                return false;
+            assertThat(query("SELECT * FROM " + tableName + " WHERE a LIKE 'a%'"))
+                    .isFullyPushedDown();
+            assertThat(query("SELECT * FROM " + tableName + " WHERE a LIKE '%c%' ESCAPE '\\'"))
+                    .matches("VALUES (1, 'abce'), (2, 'abcd')")
+                    .isNotFullyPushedDown(node(FilterNode.class, node(TableScanNode.class)));
 
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-            case SUPPORTS_NEGATIVE_DATE:
-                return false;
+            assertThat(query("SELECT * FROM " + tableName + " WHERE a LIKE 'a\\%d%' ESCAPE '\\'"))
+                    .matches("VALUES (3, 'a%de')")
+                    .isNotFullyPushedDown(node(FilterNode.class, node(TableScanNode.class)));
 
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN:
-                return false;
+            assertThatThrownBy(() -> onRemoteDatabase().execute("SELECT * FROM " + tableName + " WHERE a LIKE 'a%' ESCAPE '\\'"))
+                    .hasMessageContaining("Failed to execute statement");
+        }
+    }
 
-            case SUPPORTS_JOIN_PUSHDOWN:
-            case SUPPORTS_PREDICATE_EXPRESSION_PUSHDOWN_WITH_LIKE:
-            case SUPPORTS_TOPN_PUSHDOWN_WITH_VARCHAR:
-                return true;
+    @Test
+    public void testIsNullPredicatePushdown()
+    {
+        assertThat(query("SELECT nationkey FROM nation WHERE name IS NULL")).isFullyPushedDown();
+        assertThat(query("SELECT nationkey FROM nation WHERE name IS NULL OR name = 'a' OR regionkey = 4")).isFullyPushedDown();
 
-            case SUPPORTS_NATIVE_QUERY:
-                return false;
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_is_null_predicate_pushdown",
+                "(a_int integer, a_varchar varchar(1))",
+                List.of(
+                        "1, 'A'",
+                        "2, 'B'",
+                        "1, NULL",
+                        "2, NULL"))) {
+            assertThat(query("SELECT a_int FROM " + table.getName() + " WHERE a_varchar IS NULL OR a_int = 1")).isFullyPushedDown();
+        }
+    }
 
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return true;
-            case SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION:
-                return false;
+    @Test
+    public void testIsNotNullPredicatePushdown()
+    {
+        assertThat(query("SELECT nationkey FROM nation WHERE name IS NOT NULL OR regionkey = 4")).isFullyPushedDown();
 
-            default:
-                return super.hasBehavior(connectorBehavior);
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_is_not_null_predicate_pushdown",
+                "(a_int integer, a_varchar varchar(1))",
+                List.of(
+                        "1, 'A'",
+                        "2, 'B'",
+                        "1, NULL",
+                        "2, NULL"))) {
+            assertThat(query("SELECT a_int FROM " + table.getName() + " WHERE a_varchar IS NOT NULL OR a_int = 1")).isFullyPushedDown();
+        }
+    }
+
+    @Test
+    public void testNotExpressionPushdown()
+    {
+        assertThat(query("SELECT nationkey FROM nation WHERE NOT(name LIKE '%A%')")).isFullyPushedDown();
+
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_is_not_predicate_pushdown",
+                "(a_int integer, a_varchar varchar(2))",
+                List.of(
+                        "1, 'Aa'",
+                        "2, 'Bb'",
+                        "1, NULL",
+                        "2, NULL"))) {
+            assertThat(query("SELECT a_int FROM " + table.getName() + " WHERE NOT(a_varchar LIKE 'A%') OR a_int = 2")).isFullyPushedDown();
+            assertThat(query("SELECT a_int FROM " + table.getName() + " WHERE NOT(a_varchar LIKE 'A%' OR a_int = 2)")).isFullyPushedDown();
         }
     }
 
@@ -136,8 +198,8 @@ public class TestIgniteConnectorTest
             assertThat((String) computeScalar("SHOW CREATE TABLE " + normalTableName)).contains("primary_key = ARRAY['a']");
             assertThat((String) computeScalar("SHOW CREATE TABLE " + underscoreTableName)).contains("primary_key = ARRAY['b']");
             assertThat((String) computeScalar("SHOW CREATE TABLE " + percentTableName)).contains("primary_key = ARRAY['c']");
-            assertQueryFails("SHOW CREATE TABLE " + "\"test%\"", ".*Table 'ignite.public.test%' does not exist");
-            assertQueryFails("SHOW COLUMNS FROM " + "\"test%\"", ".*Table 'ignite.public.test%' does not exist");
+            assertQueryFails("SHOW CREATE TABLE " + "\"test%\"", ".*Table 'ignite.public.\"test%\"' does not exist");
+            assertQueryFails("SHOW COLUMNS FROM " + "\"test%\"", ".*Table 'ignite.public.\"test%\"' does not exist");
         }
         finally {
             assertUpdate("DROP TABLE IF EXISTS " + normalTableName);
@@ -233,6 +295,7 @@ public class TestIgniteConnectorTest
                         "dummy_id varchar NOT NULL primary key)");
     }
 
+    @Test
     @Override
     public void testShowCreateTable()
     {
@@ -325,7 +388,6 @@ public class TestIgniteConnectorTest
 
     @Test
     @Override
-    @Flaky(issue = SCHEMA_CHANGE_OPERATION_FAIL_ISSUE, match = SCHEMA_CHANGE_OPERATION_FAIL_MATCH)
     public void testDropAndAddColumnWithSameName()
     {
         // Override because Ignite can access old data after dropping and adding a column with same name
@@ -338,49 +400,18 @@ public class TestIgniteConnectorTest
         }
     }
 
-    @Test
-    @Override
-    @Flaky(issue = SCHEMA_CHANGE_OPERATION_FAIL_ISSUE, match = SCHEMA_CHANGE_OPERATION_FAIL_MATCH)
-    public void testAddColumn()
-    {
-        super.testAddColumn();
-    }
-
-    @Test
-    @Override
-    @Flaky(issue = SCHEMA_CHANGE_OPERATION_FAIL_ISSUE, match = SCHEMA_CHANGE_OPERATION_FAIL_MATCH)
-    public void testDropColumn()
-    {
-        super.testDropColumn();
-    }
-
-    @Test
-    @Override
-    @Flaky(issue = SCHEMA_CHANGE_OPERATION_FAIL_ISSUE, match = SCHEMA_CHANGE_OPERATION_FAIL_MATCH)
-    public void testAlterTableAddLongColumnName()
-    {
-        super.testAlterTableAddLongColumnName();
-    }
-
-    @Test(dataProvider = "testColumnNameDataProvider")
-    @Override
-    @Flaky(issue = SCHEMA_CHANGE_OPERATION_FAIL_ISSUE, match = SCHEMA_CHANGE_OPERATION_FAIL_MATCH)
-    public void testAddAndDropColumnName(String columnName)
-    {
-        super.testAddAndDropColumnName(columnName);
-    }
-
     @Override
     protected TestTable simpleTable()
     {
         return new TestTable(onRemoteDatabase(), format("%s.simple_table", getSession().getSchema().orElseThrow()), "(col BIGINT, id bigint primary key)", ImmutableList.of("1, 1", "2, 2"));
     }
 
+    @Test
     @Override
     public void testCharVarcharComparison()
     {
         // Ignite will map char to varchar, skip
-        throw new SkipException("Ignite map char to varchar, skip test");
+        abort("Ignite map char to varchar, skip test");
     }
 
     @Override
@@ -389,10 +420,11 @@ public class TestIgniteConnectorTest
         return format("Failed to insert data: Null value is not allowed for column '%s'", columnName.toUpperCase(Locale.ENGLISH));
     }
 
+    @Test
     @Override
     public void testCharTrailingSpace()
     {
-        throw new SkipException("Ignite not support char trailing space");
+        abort("Ignite not support char trailing space");
     }
 
     @Override
@@ -418,6 +450,7 @@ public class TestIgniteConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
+    @Test
     @Override
     public void testDateYearOfEraPredicate()
     {

@@ -26,7 +26,8 @@ import io.trino.sql.tree.CoalesceExpression;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.LongLiteral;
 import io.trino.sql.tree.NodeRef;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.math.BigDecimal;
 import java.util.Map;
@@ -37,13 +38,14 @@ import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
 import static io.trino.sql.relational.Expressions.constant;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestSqlToRowExpressionTranslator
 {
     private final LiteralEncoder literalEncoder = new LiteralEncoder(PLANNER_CONTEXT);
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testPossibleExponentialOptimizationTime()
     {
         Expression expression = new LongLiteral("1");
@@ -60,22 +62,16 @@ public class TestSqlToRowExpressionTranslator
     public void testOptimizeDecimalLiteral()
     {
         // Short decimal
-        assertEquals(translateAndOptimize(expression("CAST(NULL AS DECIMAL(7,2))")), constant(null, createDecimalType(7, 2)));
-        assertEquals(translateAndOptimize(expression("DECIMAL '42'")), constant(42L, createDecimalType(2, 0)));
-        assertEquals(translateAndOptimize(expression("CAST(42 AS DECIMAL(7,2))")), constant(4200L, createDecimalType(7, 2)));
-        assertEquals(translateAndOptimize(simplifyExpression(expression("CAST(42 AS DECIMAL(7,2))"))), constant(4200L, createDecimalType(7, 2)));
+        assertThat(translateAndOptimize(expression("CAST(NULL AS DECIMAL(7,2))"))).isEqualTo(constant(null, createDecimalType(7, 2)));
+        assertThat(translateAndOptimize(expression("DECIMAL '42'"))).isEqualTo(constant(42L, createDecimalType(2, 0)));
+        assertThat(translateAndOptimize(expression("CAST(42 AS DECIMAL(7,2))"))).isEqualTo(constant(4200L, createDecimalType(7, 2)));
+        assertThat(translateAndOptimize(simplifyExpression(expression("CAST(42 AS DECIMAL(7,2))")))).isEqualTo(constant(4200L, createDecimalType(7, 2)));
 
         // Long decimal
-        assertEquals(translateAndOptimize(expression("CAST(NULL AS DECIMAL(35,2))")), constant(null, createDecimalType(35, 2)));
-        assertEquals(
-                translateAndOptimize(expression("DECIMAL '123456789012345678901234567890'")),
-                constant(Decimals.valueOf(new BigDecimal("123456789012345678901234567890")), createDecimalType(30, 0)));
-        assertEquals(
-                translateAndOptimize(expression("CAST(DECIMAL '123456789012345678901234567890' AS DECIMAL(35,2))")),
-                constant(Decimals.valueOf(new BigDecimal("123456789012345678901234567890.00")), createDecimalType(35, 2)));
-        assertEquals(
-                translateAndOptimize(simplifyExpression(expression("CAST(DECIMAL '123456789012345678901234567890' AS DECIMAL(35,2))"))),
-                constant(Decimals.valueOf(new BigDecimal("123456789012345678901234567890.00")), createDecimalType(35, 2)));
+        assertThat(translateAndOptimize(expression("CAST(NULL AS DECIMAL(35,2))"))).isEqualTo(constant(null, createDecimalType(35, 2)));
+        assertThat(translateAndOptimize(expression("DECIMAL '123456789012345678901234567890'"))).isEqualTo(constant(Decimals.valueOf(new BigDecimal("123456789012345678901234567890")), createDecimalType(30, 0)));
+        assertThat(translateAndOptimize(expression("CAST(DECIMAL '123456789012345678901234567890' AS DECIMAL(35,2))"))).isEqualTo(constant(Decimals.valueOf(new BigDecimal("123456789012345678901234567890.00")), createDecimalType(35, 2)));
+        assertThat(translateAndOptimize(simplifyExpression(expression("CAST(DECIMAL '123456789012345678901234567890' AS DECIMAL(35,2))")))).isEqualTo(constant(Decimals.valueOf(new BigDecimal("123456789012345678901234567890.00")), createDecimalType(35, 2)));
     }
 
     private RowExpression translateAndOptimize(Expression expression)
@@ -102,7 +98,7 @@ public class TestSqlToRowExpressionTranslator
         Map<NodeRef<Expression>, Type> expressionTypes = getExpressionTypes(expression);
         ExpressionInterpreter interpreter = new ExpressionInterpreter(expression, PLANNER_CONTEXT, TEST_SESSION, expressionTypes);
         Object value = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
-        return literalEncoder.toExpression(TEST_SESSION, value, expressionTypes.get(NodeRef.of(expression)));
+        return literalEncoder.toExpression(value, expressionTypes.get(NodeRef.of(expression)));
     }
 
     private Map<NodeRef<Expression>, Type> getExpressionTypes(Expression expression)

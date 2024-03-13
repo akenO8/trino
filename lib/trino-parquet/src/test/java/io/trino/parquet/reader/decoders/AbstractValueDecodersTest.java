@@ -17,10 +17,10 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.parquet.ParquetEncoding;
+import io.trino.parquet.ParquetTestUtils;
 import io.trino.parquet.PrimitiveField;
 import io.trino.parquet.dictionary.Dictionary;
 import io.trino.parquet.reader.SimpleSliceInputStream;
-import io.trino.parquet.reader.TestingColumnReader;
 import io.trino.parquet.reader.flat.ColumnAdapter;
 import io.trino.parquet.reader.flat.DictionaryDecoder;
 import io.trino.spi.type.DecimalType;
@@ -75,6 +75,7 @@ import static io.trino.testing.DataProviders.cartesianProduct;
 import static io.trino.testing.DataProviders.concat;
 import static io.trino.testing.DataProviders.toDataProvider;
 import static java.lang.Integer.MAX_VALUE;
+import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -134,7 +135,7 @@ public abstract class AbstractValueDecodersTest
         DataBuffer dataBuffer = inputDataProvider.write(valuesWriter, dataSize);
 
         Optional<io.trino.parquet.DictionaryPage> dictionaryPage = Optional.ofNullable(dataBuffer.dictionaryPage())
-                .map(TestingColumnReader::toTrinoDictionaryPage);
+                .map(ParquetTestUtils::toTrinoDictionaryPage);
         Optional<Dictionary> dictionary = dictionaryPage.map(page -> {
             try {
                 return encoding.initDictionary(field.getDescriptor(), page);
@@ -241,7 +242,7 @@ public abstract class AbstractValueDecodersTest
     static ValuesReader getApacheParquetReader(ParquetEncoding encoding, PrimitiveField field, Optional<Dictionary> dictionary)
     {
         if (encoding == RLE_DICTIONARY || encoding == PLAIN_DICTIONARY) {
-            return encoding.getDictionaryBasedValuesReader(field.getDescriptor(), VALUES, dictionary.orElseThrow());
+            return new DictionaryReader(dictionary.orElseThrow());
         }
         checkArgument(dictionary.isEmpty(), "dictionary should be empty");
         return encoding.getValuesReader(field.getDescriptor(), VALUES);
@@ -304,7 +305,7 @@ public abstract class AbstractValueDecodersTest
                 int i = 0;
                 while (i < size) {
                     if (random.nextBoolean()) {
-                        int readBatch = random.nextInt(1, batchSize + 2);
+                        int readBatch = random.nextInt(0, max(batchSize, 1) + 1);
                         decoder.read(data, i, min(readBatch, size - i));
                         i += readBatch;
                     }

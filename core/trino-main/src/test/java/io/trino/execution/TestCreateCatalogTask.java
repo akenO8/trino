@@ -28,9 +28,10 @@ import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.Property;
 import io.trino.sql.tree.StringLiteral;
 import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.net.URI;
 import java.util.Map;
@@ -41,10 +42,10 @@ import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
 import static java.util.Collections.emptyList;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.testng.Assert.assertTrue;
 
-@Test(singleThreaded = true)
+@TestInstance(TestInstance.Lifecycle.PER_METHOD)
 public class TestCreateCatalogTask
 {
     private static final String TEST_CATALOG = "test_catalog";
@@ -53,7 +54,7 @@ public class TestCreateCatalogTask
     protected LocalQueryRunner queryRunner;
     private QueryStateMachine queryStateMachine;
 
-    @BeforeMethod
+    @BeforeEach
     public void setUp()
     {
         queryRunner = LocalQueryRunner.create(TEST_SESSION);
@@ -78,7 +79,7 @@ public class TestCreateCatalogTask
                 new NodeVersion("test"));
     }
 
-    @AfterMethod(alwaysRun = true)
+    @AfterEach
     public void tearDown()
     {
         if (queryRunner != null) {
@@ -93,7 +94,7 @@ public class TestCreateCatalogTask
         CreateCatalogTask task = getCreateCatalogTask();
         CreateCatalog statement = new CreateCatalog(new Identifier(TEST_CATALOG), false, new Identifier("tpch"), TPCH_PROPERTIES, Optional.empty(), Optional.empty());
         getFutureValue(task.execute(statement, queryStateMachine, emptyList(), WarningCollector.NOOP));
-        assertTrue(queryRunner.getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG));
+        assertThat(queryRunner.getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG)).isTrue();
         assertThatExceptionOfType(TrinoException.class)
                 .isThrownBy(() -> getFutureValue(task.execute(statement, queryStateMachine, emptyList(), WarningCollector.NOOP)))
                 .withMessage("Catalog '%s' already exists", TEST_CATALOG);
@@ -105,9 +106,9 @@ public class TestCreateCatalogTask
         CreateCatalogTask task = getCreateCatalogTask();
         CreateCatalog statement = new CreateCatalog(new Identifier(TEST_CATALOG), true, new Identifier("tpch"), TPCH_PROPERTIES, Optional.empty(), Optional.empty());
         getFutureValue(task.execute(statement, queryStateMachine, emptyList(), WarningCollector.NOOP));
-        assertTrue(queryRunner.getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG));
+        assertThat(queryRunner.getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG)).isTrue();
         getFutureValue(task.execute(statement, queryStateMachine, emptyList(), WarningCollector.NOOP));
-        assertTrue(queryRunner.getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG));
+        assertThat(queryRunner.getMetadata().catalogExists(queryStateMachine.getSession(), TEST_CATALOG)).isTrue();
     }
 
     @Test

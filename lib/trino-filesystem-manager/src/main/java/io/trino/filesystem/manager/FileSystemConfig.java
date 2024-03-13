@@ -18,7 +18,9 @@ import io.airlift.configuration.Config;
 public class FileSystemConfig
 {
     private boolean hadoopEnabled = true;
+    private boolean nativeAzureEnabled;
     private boolean nativeS3Enabled;
+    private boolean nativeGcsEnabled;
 
     public boolean isHadoopEnabled()
     {
@@ -32,6 +34,18 @@ public class FileSystemConfig
         return this;
     }
 
+    public boolean isNativeAzureEnabled()
+    {
+        return nativeAzureEnabled;
+    }
+
+    @Config("fs.native-azure.enabled")
+    public FileSystemConfig setNativeAzureEnabled(boolean nativeAzureEnabled)
+    {
+        this.nativeAzureEnabled = nativeAzureEnabled;
+        return this;
+    }
+
     public boolean isNativeS3Enabled()
     {
         return nativeS3Enabled;
@@ -41,6 +55,18 @@ public class FileSystemConfig
     public FileSystemConfig setNativeS3Enabled(boolean nativeS3Enabled)
     {
         this.nativeS3Enabled = nativeS3Enabled;
+        return this;
+    }
+
+    public boolean isNativeGcsEnabled()
+    {
+        return nativeGcsEnabled;
+    }
+
+    @Config("fs.native-gcs.enabled")
+    public FileSystemConfig setNativeGcsEnabled(boolean nativeGcsEnabled)
+    {
+        this.nativeGcsEnabled = nativeGcsEnabled;
         return this;
     }
 }

@@ -23,7 +23,8 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.minio.MinioClient;
 import org.apache.iceberg.FileFormat;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 import java.util.Map;
@@ -40,7 +41,9 @@ import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
+@Execution(SAME_THREAD)
 public abstract class BaseIcebergMinioConnectorSmokeTest
         extends BaseIcebergConnectorSmokeTest
 {
@@ -69,7 +72,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
                                 .put("iceberg.file-format", format.name())
                                 .put("iceberg.catalog.type", "HIVE_METASTORE")
                                 .put("hive.metastore.uri", "thrift://" + hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
-                                .put("hive.metastore-timeout", "1m") // read timed out sometimes happens with the default timeout
+                                .put("hive.metastore.thrift.client.read-timeout", "1m") // read timed out sometimes happens with the default timeout
                                 .put("fs.hadoop.enabled", "false")
                                 .put("fs.native-s3.enabled", "true")
                                 .put("s3.aws-access-key", MINIO_ACCESS_KEY)

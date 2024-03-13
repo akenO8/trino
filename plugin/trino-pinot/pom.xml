@@ -4,7 +4,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>425-SNAPSHOT</version>
+        <version>435</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -23,6 +23,16 @@
            -->
         <air.test.parallel>instances</air.test.parallel>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.calcite</groupId>
+                <artifactId>calcite-core</artifactId>
+                <version>1.32.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -358,6 +368,10 @@
                     <artifactId>lucene-core</artifactId>
                 </exclusion>
                 <exclusion>
+                    <groupId>org.apache.lucene</groupId>
+                    <artifactId>lucene-sandbox</artifactId>
+                </exclusion>
+                <exclusion>
                     <groupId>org.codehaus.jackson</groupId>
                     <artifactId>jackson-mapper-asl</artifactId>
                 </exclusion>
@@ -500,14 +514,13 @@
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>3.11</version>
             <scope>runtime</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.httpcomponents</groupId>
             <artifactId>httpcore</artifactId>
-            <version>4.4.13</version>
+            <version>4.4.16</version>
             <scope>runtime</scope>
         </dependency>
 
@@ -522,6 +535,12 @@
             <groupId>org.jetbrains</groupId>
             <artifactId>annotations</artifactId>
             <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>junit-extensions</artifactId>
+            <scope>test</scope>
         </dependency>
 
         <dependency>
@@ -613,6 +632,18 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
 

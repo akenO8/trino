@@ -14,15 +14,15 @@
 package io.trino.testing;
 
 import io.trino.Session;
-import io.trino.execution.warnings.WarningCollector;
 import io.trino.sql.planner.Plan;
 import io.trino.sql.planner.planprinter.PlanPrinter;
 
 import java.util.function.Function;
 
 import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
+import static io.trino.execution.warnings.WarningCollector.NOOP;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class PlanDeterminismChecker
 {
@@ -52,14 +52,14 @@ public class PlanDeterminismChecker
         String previous = planEquivalenceFunction.apply(getPlanText(session, sql));
         for (int attempt = 1; attempt < MINIMUM_SUBSEQUENT_SAME_PLANS; attempt++) {
             String current = planEquivalenceFunction.apply(getPlanText(session, sql));
-            assertEquals(previous, current);
+            assertThat(previous).isEqualTo(current);
         }
     }
 
     private String getPlanText(Session session, String sql)
     {
         return localQueryRunner.inTransaction(session, transactionSession -> {
-            Plan plan = localQueryRunner.createPlan(transactionSession, sql, OPTIMIZED_AND_VALIDATED, WarningCollector.NOOP, createPlanOptimizersStatsCollector());
+            Plan plan = localQueryRunner.createPlan(transactionSession, sql, localQueryRunner.getPlanOptimizers(true), OPTIMIZED_AND_VALIDATED, NOOP, createPlanOptimizersStatsCollector());
             return PlanPrinter.textLogicalPlan(
                     plan.getRoot(),
                     plan.getTypes(),

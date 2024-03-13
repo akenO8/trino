@@ -30,6 +30,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.HashMap;
 import java.util.List;
@@ -68,8 +69,10 @@ import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestMapOperators
 {
     private QueryAssertions assertions;
@@ -689,12 +692,12 @@ public class TestMapOperators
 
         assertTrinoExceptionThrownBy(() -> assertions.expression("cast(a as MAP(BIGINT, BIGINT))")
                 .binding("a", "JSON '{\"1\":1, \"01\": 2}'").evaluate())
-                .hasMessage("Cannot cast to map(bigint, bigint). Duplicate keys are not allowed\n{\"01\":2,\"1\":1}")
+                .hasMessage("Cannot cast to map(bigint, bigint). Duplicate map keys are not allowed\n{\"01\":2,\"1\":1}")
                 .hasErrorCode(INVALID_CAST_ARGUMENT);
 
         assertTrinoExceptionThrownBy(() -> assertions.expression("cast(a as ARRAY(MAP(BIGINT, BIGINT)))")
                 .binding("a", "JSON '[{\"1\":1, \"01\": 2}]'").evaluate())
-                .hasMessage("Cannot cast to array(map(bigint, bigint)). Duplicate keys are not allowed\n[{\"01\":2,\"1\":1}]")
+                .hasMessage("Cannot cast to array(map(bigint, bigint)). Duplicate map keys are not allowed\n[{\"01\":2,\"1\":1}]")
                 .hasErrorCode(INVALID_CAST_ARGUMENT);
 
         // some other key/value type combinations
@@ -1324,6 +1327,9 @@ public class TestMapOperators
     @Test
     public void testDistinctFrom()
     {
+        assertThat(assertions.operator(IS_DISTINCT_FROM, "MAP(ARRAY[1], ARRAY[0])", "MAP(ARRAY[1], ARRAY[NULL])"))
+                .isEqualTo(true);
+
         assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(NULL AS MAP(INTEGER, VARCHAR))", "CAST(NULL AS MAP(INTEGER, VARCHAR))"))
                 .isEqualTo(false);
 

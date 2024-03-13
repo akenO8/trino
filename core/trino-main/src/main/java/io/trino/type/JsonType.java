@@ -17,6 +17,7 @@ import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.VariableWidthBlock;
 import io.trino.spi.block.VariableWidthBlockBuilder;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.AbstractVariableWidthType;
@@ -31,6 +32,11 @@ import io.trino.spi.type.TypeSignature;
 public class JsonType
         extends AbstractVariableWidthType
 {
+    private static final TypeOperatorDeclaration TYPE_OPERATOR_DECLARATION = TypeOperatorDeclaration.builder(Slice.class)
+            .addOperators(DEFAULT_READ_OPERATORS)
+            .addOperators(DEFAULT_COMPARABLE_OPERATORS)
+            .build();
+
     public static final JsonType JSON = new JsonType();
 
     private JsonType()
@@ -47,7 +53,7 @@ public class JsonType
     @Override
     public TypeOperatorDeclaration getTypeOperatorDeclaration(TypeOperators typeOperators)
     {
-        return DEFAULT_COMPARABLE_OPERATORS;
+        return TYPE_OPERATOR_DECLARATION;
     }
 
     @Override
@@ -57,24 +63,15 @@ public class JsonType
             return null;
         }
 
-        return block.getSlice(position, 0, block.getSliceLength(position)).toStringUtf8();
-    }
-
-    @Override
-    public void appendTo(Block block, int position, BlockBuilder blockBuilder)
-    {
-        if (block.isNull(position)) {
-            blockBuilder.appendNull();
-        }
-        else {
-            ((VariableWidthBlockBuilder) blockBuilder).buildEntry(valueBuilder -> block.writeSliceTo(position, 0, block.getSliceLength(position), valueBuilder));
-        }
+        return getSlice(block, position).toStringUtf8();
     }
 
     @Override
     public Slice getSlice(Block block, int position)
     {
-        return block.getSlice(position, 0, block.getSliceLength(position));
+        VariableWidthBlock valueBlock = (VariableWidthBlock) block.getUnderlyingValueBlock();
+        int valuePosition = block.getUnderlyingValuePosition(position);
+        return valueBlock.getSlice(valuePosition);
     }
 
     public void writeString(BlockBuilder blockBuilder, String value)

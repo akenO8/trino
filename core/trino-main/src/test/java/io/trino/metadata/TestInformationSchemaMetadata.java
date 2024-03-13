@@ -39,9 +39,11 @@ import io.trino.sql.planner.OptimizerConfig;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionManager;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Map;
 import java.util.Optional;
@@ -53,9 +55,12 @@ import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.util.Arrays.stream;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestInformationSchemaMetadata
 {
     private static final int MAX_PREFIXES_COUNT = new OptimizerConfig().getMaxPrefetchedInformationSchemaPrefixes();
@@ -63,7 +68,7 @@ public class TestInformationSchemaMetadata
     private TransactionManager transactionManager;
     private Metadata metadata;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         queryRunner = LocalQueryRunner.create(TEST_SESSION);
@@ -79,7 +84,8 @@ public class TestInformationSchemaMetadata
                             ImmutableList.of(new ViewColumn("test", BIGINT.getTypeId(), Optional.of("test column comment"))),
                             Optional.of("comment"),
                             Optional.empty(),
-                            true);
+                            true,
+                            ImmutableList.of());
                     SchemaTableName viewName = new SchemaTableName("test_schema", "test_view");
                     return ImmutableMap.of(viewName, definition);
                 })
@@ -89,7 +95,7 @@ public class TestInformationSchemaMetadata
         metadata = queryRunner.getMetadata();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         try {
@@ -125,7 +131,7 @@ public class TestInformationSchemaMetadata
                 .map(ConstraintApplicationResult::getHandle)
                 .map(InformationSchemaTableHandle.class::cast)
                 .orElseThrow(AssertionError::new);
-        assertEquals(tableHandle.getPrefixes(), ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema", "test_view")));
+        assertThat(tableHandle.getPrefixes()).isEqualTo(ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema", "test_view")));
     }
 
     @Test
@@ -143,7 +149,7 @@ public class TestInformationSchemaMetadata
                 .map(InformationSchemaTableHandle.class::cast)
                 .orElseThrow(AssertionError::new);
 
-        assertEquals(tableHandle.getPrefixes(), ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema", "test_view")));
+        assertThat(tableHandle.getPrefixes()).isEqualTo(ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema", "test_view")));
     }
 
     @Test
@@ -165,7 +171,7 @@ public class TestInformationSchemaMetadata
                 .map(InformationSchemaTableHandle.class::cast)
                 .orElseThrow(AssertionError::new);
         // filter blindly applies filter to all visible schemas, so information_schema must be included
-        assertEquals(tableHandle.getPrefixes(), ImmutableSet.of(
+        assertThat(tableHandle.getPrefixes()).isEqualTo(ImmutableSet.of(
                 new QualifiedTablePrefix("test_catalog", "test_schema", "test_view"),
                 new QualifiedTablePrefix("test_catalog", "information_schema", "test_view")));
     }
@@ -188,7 +194,7 @@ public class TestInformationSchemaMetadata
                 .map(ConstraintApplicationResult::getHandle)
                 .map(InformationSchemaTableHandle.class::cast)
                 .orElseThrow(AssertionError::new);
-        assertEquals(tableHandle.getPrefixes(), ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema")));
+        assertThat(tableHandle.getPrefixes()).isEqualTo(ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema")));
     }
 
     @Test
@@ -207,7 +213,7 @@ public class TestInformationSchemaMetadata
                 .map(InformationSchemaTableHandle.class::cast)
                 .orElseThrow(AssertionError::new);
 
-        assertEquals(tableHandle.getPrefixes(), ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema")));
+        assertThat(tableHandle.getPrefixes()).isEqualTo(ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "test_schema")));
     }
 
     @Test
@@ -223,7 +229,7 @@ public class TestInformationSchemaMetadata
         InformationSchemaTableHandle tableHandle = (InformationSchemaTableHandle)
                 metadata.getTableHandle(session, new SchemaTableName("information_schema", "schemata"));
         Optional<ConstraintApplicationResult<ConnectorTableHandle>> result = metadata.applyFilter(session, tableHandle, constraint);
-        assertFalse(result.isPresent());
+        assertThat(result.isPresent()).isFalse();
     }
 
     @Test
@@ -244,7 +250,7 @@ public class TestInformationSchemaMetadata
                 .orElseThrow(AssertionError::new);
 
         // "" schema name is valid schema name, but is (currently) valid for QualifiedTablePrefix
-        assertEquals(filtered.getPrefixes(), ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "")));
+        assertThat(filtered.getPrefixes()).isEqualTo(ImmutableSet.of(new QualifiedTablePrefix("test_catalog", "")));
 
         // Empty table name
         filtered = metadata.applyFilter(session, tableHandle, new Constraint(TupleDomain.withColumnDomains(
@@ -255,7 +261,7 @@ public class TestInformationSchemaMetadata
 
         // "" table name is valid schema name, but is (currently) valid for QualifiedTablePrefix
         // filter blindly applies filter to all visible schemas, so information_schema must be included
-        assertEquals(filtered.getPrefixes(), ImmutableSet.of(
+        assertThat(filtered.getPrefixes()).isEqualTo(ImmutableSet.of(
                 new QualifiedTablePrefix("test_catalog", "test_schema", ""),
                 new QualifiedTablePrefix("test_catalog", "information_schema", "")));
     }

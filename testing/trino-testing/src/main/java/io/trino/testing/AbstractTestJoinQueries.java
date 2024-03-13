@@ -22,7 +22,8 @@ import io.trino.spi.type.Decimals;
 import io.trino.tests.QueryTemplate;
 import io.trino.tpch.TpchTable;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
 
@@ -41,8 +42,7 @@ import static io.trino.tpch.TpchTable.ORDERS;
 import static io.trino.tpch.TpchTable.PART;
 import static io.trino.tpch.TpchTable.REGION;
 import static java.lang.String.format;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class AbstractTestJoinQueries
         extends AbstractTestQueryFramework
@@ -194,18 +194,18 @@ public abstract class AbstractTestJoinQueries
                 "SELECT count(*) FROM " +
                         "customer c1 JOIN customer c2 ON c1.nationkey=c2.nationkey " +
                         "WHERE c1.custkey - RANDOM(CAST(c1.custkey AS BIGINT)) < c2.custkey").getMaterializedRows());
-        assertEquals(actualRow.getFieldCount(), 1);
+        assertThat(actualRow.getFieldCount()).isEqualTo(1);
         long actualCount = (Long) actualRow.getField(0); // this should be around ~69000
 
         MaterializedRow expectedAtLeastRow = getOnlyElement(computeActual(
                 "SELECT count(*) FROM " +
                         "customer c1 JOIN customer c2 ON c1.nationkey=c2.nationkey " +
                         "WHERE c1.custkey < c2.custkey").getMaterializedRows());
-        assertEquals(expectedAtLeastRow.getFieldCount(), 1);
+        assertThat(expectedAtLeastRow.getFieldCount()).isEqualTo(1);
         long expectedAtLeastCount = (Long) expectedAtLeastRow.getField(0); // this is exactly 45022
 
         // Technically non-deterministic unit test but has hopefully a next to impossible chance of a false positive
-        assertTrue(actualCount > expectedAtLeastCount);
+        assertThat(actualCount > expectedAtLeastCount).isTrue();
     }
 
     @Test
@@ -1219,7 +1219,7 @@ public abstract class AbstractTestJoinQueries
                 .row(2L, 1L) // (total rows, # of non null values)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -2169,10 +2169,10 @@ public abstract class AbstractTestJoinQueries
                 "  WHERE rand() * 1000 > table1.col1b\n" +
                 ")");
         MaterializedRow row = getOnlyElement(materializedResult.getMaterializedRows());
-        assertEquals(row.getFieldCount(), 1);
+        assertThat(row.getFieldCount()).isEqualTo(1);
         long count = (Long) row.getField(0);
         // Technically non-deterministic unit test but has essentially a next to impossible chance of a false positive
-        assertTrue(count > 0 && count < 1000000);
+        assertThat(count > 0 && count < 1000000).isTrue();
     }
 
     @Test
@@ -2190,7 +2190,8 @@ public abstract class AbstractTestJoinQueries
                 "    orderkey % 2 = 0");
     }
 
-    @Test(timeOut = 120_000)
+    @Test
+    @Timeout(120)
     public void testInnerJoinWithEmptyBuildSide()
     {
         // TODO: increase lineitem schema size when build side short-circuit is fixed
@@ -2202,7 +2203,8 @@ public abstract class AbstractTestJoinQueries
                 "SELECT 0 WHERE false");
     }
 
-    @Test(timeOut = 120_000)
+    @Test
+    @Timeout(120)
     public void testRightJoinWithEmptyBuildSide()
     {
         // TODO: increase lineitem schema size when build side short-circuit is fixed
@@ -2232,7 +2234,8 @@ public abstract class AbstractTestJoinQueries
                 "WITH small_part AS (SELECT * FROM part WHERE name = 'a') SELECT lineitem.orderkey FROM lineitem LEFT JOIN small_part ON lineitem.partkey = small_part.partkey");
     }
 
-    @Test(timeOut = 120_000)
+    @Test
+    @Timeout(120)
     public void testInnerJoinWithEmptyProbeSide()
     {
         // TODO: increase lineitem schema size when probe side short-circuit is fixed
@@ -2252,7 +2255,8 @@ public abstract class AbstractTestJoinQueries
                 "WITH small_part AS (SELECT * FROM part WHERE name = 'a') SELECT lineitem.orderkey FROM small_part RIGHT JOIN lineitem ON  small_part.partkey = lineitem.partkey");
     }
 
-    @Test(timeOut = 30_000)
+    @Test
+    @Timeout(30)
     public void testRightJoinWithOuterJoinInLookupSource()
     {
         assertQuery(
@@ -2371,7 +2375,7 @@ public abstract class AbstractTestJoinQueries
                         .setSystemProperty(JOIN_REORDERING_STRATEGY, "NONE")
                         .build(),
                 sql);
-        assertEquals(result.getResult().getMaterializedRows().get(0).getField(0), 0L);
+        assertThat(result.getResult().getMaterializedRows().get(0).getField(0)).isEqualTo(0L);
         QueryStats stats = getDistributedQueryRunner()
                 .getCoordinator()
                 .getQueryManager()
@@ -2383,6 +2387,6 @@ public abstract class AbstractTestJoinQueries
                 .map(OperatorStats::getOutputPositions)
                 .mapToInt(Math::toIntExact)
                 .sum();
-        assertEquals(actualJoinOutputPositions, expectedJoinOutputPositions);
+        assertThat(actualJoinOutputPositions).isEqualTo(expectedJoinOutputPositions);
     }
 }

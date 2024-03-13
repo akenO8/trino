@@ -62,6 +62,8 @@ import io.trino.sql.tree.GroupingOperation;
 import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.InPredicate;
 import io.trino.sql.tree.Join;
+import io.trino.sql.tree.JsonTable;
+import io.trino.sql.tree.JsonTableColumnDefinition;
 import io.trino.sql.tree.LambdaArgumentDeclaration;
 import io.trino.sql.tree.MeasureDefinition;
 import io.trino.sql.tree.Node;
@@ -87,6 +89,7 @@ import io.trino.sql.tree.WindowOperation;
 import io.trino.transaction.TransactionId;
 import jakarta.annotation.Nullable;
 
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -101,6 +104,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
@@ -159,9 +163,10 @@ public class Analysis
     private final Set<NodeRef<FunctionCall>> patternAggregations = new LinkedHashSet<>();
 
     // for JSON features
-    private final Map<NodeRef<Expression>, JsonPathAnalysis> jsonPathAnalyses = new LinkedHashMap<>();
+    private final Map<NodeRef<Node>, JsonPathAnalysis> jsonPathAnalyses = new LinkedHashMap<>();
     private final Map<NodeRef<Expression>, ResolvedFunction> jsonInputFunctions = new LinkedHashMap<>();
-    private final Map<NodeRef<Expression>, ResolvedFunction> jsonOutputFunctions = new LinkedHashMap<>();
+    private final Map<NodeRef<Node>, ResolvedFunction> jsonOutputFunctions = new LinkedHashMap<>();
+    private final Map<NodeRef<JsonTable>, JsonTableAnalysis> jsonTableAnalyses = new LinkedHashMap<>();
 
     private final Map<NodeRef<QuerySpecification>, List<FunctionCall>> aggregates = new LinkedHashMap<>();
     private final Map<NodeRef<OrderBy>, List<Expression>> orderByAggregates = new LinkedHashMap<>();
@@ -202,7 +207,7 @@ public class Analysis
     private final Map<NodeRef<Expression>, Type> sortKeyCoercionsForFrameBoundComparison = new LinkedHashMap<>();
     private final Map<NodeRef<Expression>, ResolvedFunction> frameBoundCalculations = new LinkedHashMap<>();
     private final Map<NodeRef<Relation>, List<Type>> relationCoercions = new LinkedHashMap<>();
-    private final Map<NodeRef<Expression>, RoutineEntry> resolvedFunctions = new LinkedHashMap<>();
+    private final Map<NodeRef<Node>, RoutineEntry> resolvedFunctions = new LinkedHashMap<>();
     private final Map<NodeRef<Identifier>, LambdaArgumentDeclaration> lambdaArgumentReferences = new LinkedHashMap<>();
 
     private final Map<Field, ColumnHandle> columns = new LinkedHashMap<>();
@@ -647,12 +652,19 @@ public class Analysis
                                 columnMaskScopes.isEmpty()));
     }
 
-    public ResolvedFunction getResolvedFunction(Expression node)
+    public Set<ResolvedFunction> getResolvedFunctions()
+    {
+        return resolvedFunctions.values().stream()
+                .map(RoutineEntry::getFunction)
+                .collect(toImmutableSet());
+    }
+
+    public ResolvedFunction getResolvedFunction(Node node)
     {
         return resolvedFunctions.get(NodeRef.of(node)).getFunction();
     }
 
-    public void addResolvedFunction(Expression node, ResolvedFunction function, String authorization)
+    public void addResolvedFunction(Node node, ResolvedFunction function, String authorization)
     {
         resolvedFunctions.put(NodeRef.of(node), new RoutineEntry(function, authorization));
     }
@@ -677,6 +689,11 @@ public class Analysis
     {
         requireNonNull(expression, "expression is null");
         return columnReferences.containsKey(NodeRef.of(expression));
+    }
+
+    public void addType(Expression expression, Type type)
+    {
+        this.types.put(NodeRef.of(expression), type);
     }
 
     public void addTypes(Map<NodeRef<Expression>, Type> types)
@@ -1007,14 +1024,19 @@ public class Analysis
         return patternAggregations.contains(NodeRef.of(function));
     }
 
-    public void setJsonPathAnalyses(Map<NodeRef<Expression>, JsonPathAnalysis> pathAnalyses)
+    public void setJsonPathAnalyses(Map<NodeRef<Node>, JsonPathAnalysis> pathAnalyses)
     {
         jsonPathAnalyses.putAll(pathAnalyses);
     }
 
-    public JsonPathAnalysis getJsonPathAnalysis(Expression expression)
+    public void setJsonPathAnalysis(Node node, JsonPathAnalysis pathAnalysis)
     {
-        return jsonPathAnalyses.get(NodeRef.of(expression));
+        jsonPathAnalyses.put(NodeRef.of(node), pathAnalysis);
+    }
+
+    public JsonPathAnalysis getJsonPathAnalysis(Node node)
+    {
+        return jsonPathAnalyses.get(NodeRef.of(node));
     }
 
     public void setJsonInputFunctions(Map<NodeRef<Expression>, ResolvedFunction> functions)
@@ -1027,14 +1049,24 @@ public class Analysis
         return jsonInputFunctions.get(NodeRef.of(expression));
     }
 
-    public void setJsonOutputFunctions(Map<NodeRef<Expression>, ResolvedFunction> functions)
+    public void setJsonOutputFunctions(Map<NodeRef<Node>, ResolvedFunction> functions)
     {
         jsonOutputFunctions.putAll(functions);
     }
 
-    public ResolvedFunction getJsonOutputFunction(Expression expression)
+    public ResolvedFunction getJsonOutputFunction(Node node)
     {
-        return jsonOutputFunctions.get(NodeRef.of(expression));
+        return jsonOutputFunctions.get(NodeRef.of(node));
+    }
+
+    public void addJsonTableAnalysis(JsonTable jsonTable, JsonTableAnalysis analysis)
+    {
+        jsonTableAnalyses.put(NodeRef.of(jsonTable), analysis);
+    }
+
+    public JsonTableAnalysis getJsonTableAnalysis(JsonTable jsonTable)
+    {
+        return jsonTableAnalyses.get(NodeRef.of(jsonTable));
     }
 
     public Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> getTableColumnReferences()
@@ -1154,7 +1186,7 @@ public class Analysis
     public List<RoutineInfo> getRoutines()
     {
         return resolvedFunctions.values().stream()
-                .map(value -> new RoutineInfo(value.function.getSignature().getName(), value.getAuthorization()))
+                .map(value -> new RoutineInfo(value.function.getSignature().getName().getFunctionName(), value.getAuthorization()))
                 .collect(toImmutableList());
     }
 
@@ -1315,19 +1347,22 @@ public class Analysis
         private final Optional<TableLayout> layout;
         private final boolean createTableAsSelectWithData;
         private final boolean createTableAsSelectNoOp;
+        private final boolean replace;
 
         public Create(
                 Optional<QualifiedObjectName> destination,
                 Optional<ConnectorTableMetadata> metadata,
                 Optional<TableLayout> layout,
                 boolean createTableAsSelectWithData,
-                boolean createTableAsSelectNoOp)
+                boolean createTableAsSelectNoOp,
+                boolean replace)
         {
             this.destination = requireNonNull(destination, "destination is null");
             this.metadata = requireNonNull(metadata, "metadata is null");
             this.layout = requireNonNull(layout, "layout is null");
             this.createTableAsSelectWithData = createTableAsSelectWithData;
             this.createTableAsSelectNoOp = createTableAsSelectNoOp;
+            this.replace = replace;
         }
 
         public Optional<QualifiedObjectName> getDestination()
@@ -1353,6 +1388,11 @@ public class Analysis
         public boolean isCreateTableAsSelectNoOp()
         {
             return createTableAsSelectNoOp;
+        }
+
+        public boolean isReplace()
+        {
+            return replace;
         }
     }
 
@@ -1754,7 +1794,7 @@ public class Analysis
             this.mergeRowType = requireNonNull(mergeRowType, "mergeRowType is null");
             this.insertLayout = requireNonNull(insertLayout, "insertLayout is null");
             this.updateLayout = requireNonNull(updateLayout, "updateLayout is null");
-            this.insertPartitioningArgumentIndexes = (requireNonNull(insertPartitioningArgumentIndexes, "insertPartitioningArgumentIndexes is null"));
+            this.insertPartitioningArgumentIndexes = requireNonNull(insertPartitioningArgumentIndexes, "insertPartitioningArgumentIndexes is null");
             this.targetTableScope = requireNonNull(targetTableScope, "targetTableScope is null");
             this.joinScope = requireNonNull(joinScope, "joinScope is null");
         }
@@ -1841,9 +1881,9 @@ public class Analysis
             return accessControl;
         }
 
-        public SecurityContext getSecurityContext(TransactionId transactionId, QueryId queryId)
+        public SecurityContext getSecurityContext(TransactionId transactionId, QueryId queryId, Instant queryStart)
         {
-            return new SecurityContext(transactionId, identity, queryId);
+            return new SecurityContext(transactionId, identity, queryId, queryStart);
         }
 
         @Override
@@ -2036,6 +2076,15 @@ public class Analysis
             SourceColumn entry = (SourceColumn) obj;
             return Objects.equals(tableName, entry.tableName) &&
                     Objects.equals(columnName, entry.columnName);
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("tableName", tableName)
+                    .add("columnName", columnName)
+                    .toString();
         }
     }
 
@@ -2355,6 +2404,21 @@ public class Analysis
         public ConnectorTransactionHandle getTransactionHandle()
         {
             return transactionHandle;
+        }
+    }
+
+    public record JsonTableAnalysis(
+            CatalogHandle catalogHandle,
+            ConnectorTransactionHandle transactionHandle,
+            RowType parametersType,
+            List<NodeRef<JsonTableColumnDefinition>> orderedOutputColumns)
+    {
+        public JsonTableAnalysis
+        {
+            requireNonNull(catalogHandle, "catalogHandle is null");
+            requireNonNull(transactionHandle, "transactionHandle is null");
+            requireNonNull(parametersType, "parametersType is null");
+            requireNonNull(orderedOutputColumns, "orderedOutputColumns is null");
         }
     }
 }

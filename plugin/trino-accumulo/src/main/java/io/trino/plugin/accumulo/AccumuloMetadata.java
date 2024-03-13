@@ -89,8 +89,11 @@ public class AccumuloMetadata
     }
 
     @Override
-    public void dropSchema(ConnectorSession session, String schemaName)
+    public void dropSchema(ConnectorSession session, String schemaName, boolean cascade)
     {
+        if (cascade) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping schemas with CASCADE option");
+        }
         client.dropSchema(schemaName);
     }
 
@@ -384,7 +387,7 @@ public class AccumuloMetadata
                 handle.getSerializerClassName(),
                 handle.getScanAuthorizations());
 
-        return Optional.of(new ConstraintApplicationResult<>(handle, constraint.getSummary(), false));
+        return Optional.of(new ConstraintApplicationResult<>(handle, constraint.getSummary(), constraint.getExpression(), false));
     }
 
     private void checkNoRollback()

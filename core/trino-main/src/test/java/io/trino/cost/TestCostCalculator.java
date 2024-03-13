@@ -47,12 +47,13 @@ import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.tree.Cast;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.SymbolReference;
 import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -75,12 +76,16 @@ import static io.trino.sql.planner.plan.ExchangeNode.partitionedExchange;
 import static io.trino.sql.planner.plan.ExchangeNode.replicatedExchange;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
-import static io.trino.transaction.TransactionBuilder.transaction;
+import static io.trino.testing.TransactionBuilder.transaction;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.offset;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestCostCalculator
 {
     private static final int NUMBER_OF_NODES = 10;
@@ -93,7 +98,7 @@ public class TestCostCalculator
     private Session session;
     private LocalQueryRunner localQueryRunner;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         TaskCountEstimator taskCountEstimator = new TaskCountEstimator(() -> NUMBER_OF_NODES);
@@ -103,6 +108,7 @@ public class TestCostCalculator
         session = testSessionBuilder().setCatalog(TEST_CATALOG_NAME).build();
 
         localQueryRunner = LocalQueryRunner.create(session);
+        localQueryRunner.getLanguageFunctionManager().registerQuery(session);
         localQueryRunner.createCatalog(TEST_CATALOG_NAME, new TpchConnectorFactory(), ImmutableMap.of());
 
         planFragmenter = new PlanFragmenter(
@@ -110,10 +116,11 @@ public class TestCostCalculator
                 localQueryRunner.getFunctionManager(),
                 localQueryRunner.getTransactionManager(),
                 localQueryRunner.getCatalogManager(),
+                localQueryRunner.getLanguageFunctionManager(),
                 new QueryManagerConfig());
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         costCalculatorUsingExchanges = null;
@@ -675,7 +682,7 @@ public class TestCostCalculator
         StatsCalculator statsCalculator = statsCalculator(stats);
         PlanCostEstimate costWithExchanges = calculateCost(node, costCalculatorUsingExchanges, statsCalculator, types);
         PlanCostEstimate costWithFragments = calculateCostFragmentedPlan(node, statsCalculator, types);
-        assertEquals(costWithExchanges, costWithFragments);
+        assertThat(costWithExchanges).isEqualTo(costWithFragments);
     }
 
     private StatsCalculator statsCalculator(Map<String, PlanNodeStatsEstimate> stats)
@@ -730,31 +737,31 @@ public class TestCostCalculator
 
         CostAssertionBuilder cpu(double value)
         {
-            assertEquals(actual.getCpuCost(), value, 0.000001);
+            assertThat(actual.getCpuCost()).isCloseTo(value, offset(0.000001));
             return this;
         }
 
         CostAssertionBuilder memory(double value)
         {
-            assertEquals(actual.getMaxMemory(), value, 0.000001);
+            assertThat(actual.getMaxMemory()).isCloseTo(value, offset(0.000001));
             return this;
         }
 
         CostAssertionBuilder memoryWhenOutputting(double value)
         {
-            assertEquals(actual.getMaxMemoryWhenOutputting(), value, 0.000001);
+            assertThat(actual.getMaxMemoryWhenOutputting()).isCloseTo(value, offset(0.000001));
             return this;
         }
 
         CostAssertionBuilder network(double value)
         {
-            assertEquals(actual.getNetworkCost(), value, 0.000001);
+            assertThat(actual.getNetworkCost()).isCloseTo(value, offset(0.000001));
             return this;
         }
 
         CostAssertionBuilder hasUnknownComponents()
         {
-            assertTrue(actual.hasUnknownComponents());
+            assertThat(actual.hasUnknownComponents()).isTrue();
             return this;
         }
     }
@@ -815,7 +822,7 @@ public class TestCostCalculator
     private AggregationNode aggregation(String id, PlanNode source)
     {
         AggregationNode.Aggregation aggregation = new AggregationNode.Aggregation(
-                new TestingFunctionResolution(localQueryRunner).resolveFunction(QualifiedName.of("count"), ImmutableList.of()),
+                new TestingFunctionResolution(localQueryRunner).resolveFunction("count", ImmutableList.of()),
                 ImmutableList.of(),
                 false,
                 Optional.empty(),
@@ -867,7 +874,7 @@ public class TestCostCalculator
 
     private <T> T inTransaction(Function<Session, T> transactionSessionConsumer)
     {
-        return transaction(localQueryRunner.getTransactionManager(), new AllowAllAccessControl())
+        return transaction(localQueryRunner.getTransactionManager(), localQueryRunner.getMetadata(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(session, session -> {
                     // metadata.getCatalogHandle() registers the catalog for the transaction

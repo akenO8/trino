@@ -17,9 +17,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.sql.planner.plan.JoinNode;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 
@@ -35,23 +35,18 @@ import static java.util.function.Predicate.not;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestJoin
 {
-    private QueryAssertions assertions;
-
-    @BeforeAll
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
+    private final QueryAssertions assertions = new QueryAssertions();
 
     @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -264,11 +259,10 @@ public class TestJoin
                 anyTree(
                         aggregation(
                                 ImmutableMap.of("COUNT", functionCall("count", ImmutableList.of())),
-                                anyTree(
-                                        join(INNER, builder -> builder
-                                                .left(anyTree(values("y")))
-                                                .right(values()))
-                                                .with(JoinNode.class, not(JoinNode::isMaySkipOutputDuplicates))))));
+                                join(INNER, builder -> builder
+                                        .left(anyTree(values("y")))
+                                        .right(values()))
+                                        .with(JoinNode.class, not(JoinNode::isMaySkipOutputDuplicates)))));
 
         assertions.assertQueryAndPlan(
                 "SELECT t.x FROM (VALUES 1, 2) t(x) JOIN (VALUES 2, 2) u(x) ON t.x = u.x GROUP BY t.x",

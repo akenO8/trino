@@ -37,7 +37,8 @@ import io.trino.tpch.TpchTable;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionManager;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,9 +54,7 @@ import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunnerT
 import static io.trino.spi.connector.Constraint.alwaysTrue;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy.NONE;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestKuduIntegrationDynamicFilter
         extends AbstractTestQueryFramework
@@ -74,7 +73,8 @@ public class TestKuduIntegrationDynamicFilter
                 TpchTable.getTables());
     }
 
-    @Test(timeOut = 30_000)
+    @Test
+    @Timeout(30)
     public void testIncompleteDynamicFilterTimeout()
             throws Exception
     {
@@ -87,7 +87,7 @@ public class TestKuduIntegrationDynamicFilter
                 .beginTransactionId(transactionId, transactionManager, new AllowAllAccessControl());
         QualifiedObjectName tableName = new QualifiedObjectName("kudu", "tpch", "orders");
         Optional<TableHandle> tableHandle = runner.getMetadata().getTableHandle(session, tableName);
-        assertTrue(tableHandle.isPresent());
+        assertThat(tableHandle.isPresent()).isTrue();
         SplitSource splitSource = runner.getSplitManager()
                 .getSplits(session, Span.getInvalid(), tableHandle.get(), new IncompleteDynamicFilter(), alwaysTrue());
         List<Split> splits = new ArrayList<>();
@@ -95,7 +95,7 @@ public class TestKuduIntegrationDynamicFilter
             splits.addAll(splitSource.getNextBatch(1000).get().getSplits());
         }
         splitSource.close();
-        assertFalse(splits.isEmpty());
+        assertThat(splits.isEmpty()).isFalse();
     }
 
     private static class IncompleteDynamicFilter
@@ -147,7 +147,7 @@ public class TestKuduIntegrationDynamicFilter
                 "SELECT * FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND orders.comment = 'nstructions sleep furiously among '",
                 withBroadcastJoin(),
                 6,
-                6, 1);
+                1);
     }
 
     @Test
@@ -161,7 +161,7 @@ public class TestKuduIntegrationDynamicFilter
                         " AND p.partkey = l.partkey AND p.comment = 'onic deposits'",
                 withBroadcastJoinNonReordering(),
                 1,
-                1, 1, 1);
+                1, 1);
     }
 
     private void assertDynamicFiltering(@Language("SQL") String selectQuery, Session session, int expectedRowCount, int... expectedOperatorRowsRead)
@@ -169,8 +169,8 @@ public class TestKuduIntegrationDynamicFilter
         DistributedQueryRunner runner = getDistributedQueryRunner();
         MaterializedResultWithQueryId result = runner.executeWithQueryId(session, selectQuery);
 
-        assertEquals(result.getResult().getRowCount(), expectedRowCount);
-        assertEquals(getOperatorRowsRead(runner, result.getQueryId()), Ints.asList(expectedOperatorRowsRead));
+        assertThat(result.getResult().getRowCount()).isEqualTo(expectedRowCount);
+        assertThat(getOperatorRowsRead(runner, result.getQueryId())).isEqualTo(Ints.asList(expectedOperatorRowsRead));
     }
 
     private Session withBroadcastJoin()

@@ -30,13 +30,15 @@ import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.TestingSessionContext;
+import io.trino.testing.TransactionBuilder;
 import io.trino.tests.tpch.TpchQueryRunnerBuilder;
 import io.trino.tracing.TracingMetadata;
-import io.trino.transaction.TransactionBuilder;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 import java.util.Optional;
@@ -47,7 +49,8 @@ import static io.trino.execution.QueryState.RUNNING;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 /**
  * This is integration / unit test suite.
@@ -55,13 +58,14 @@ import static org.testng.Assert.assertEquals;
  * while registering catalog -> query Id mapping.
  * This mapping has to be manually cleaned when query finishes execution (Metadata#cleanupQuery method).
  */
-@Test(singleThreaded = true)
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestMetadataManager
 {
     private DistributedQueryRunner queryRunner;
     private MetadataManager metadataManager;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
             throws Exception
     {
@@ -92,7 +96,7 @@ public class TestMetadataManager
         metadataManager = (MetadataManager) ((TracingMetadata) queryRunner.getMetadata()).getDelegate();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         queryRunner.close();
@@ -106,7 +110,7 @@ public class TestMetadataManager
         @Language("SQL") String sql = "SELECT * FROM nation";
         queryRunner.execute(sql);
 
-        assertEquals(metadataManager.getActiveQueryIds().size(), 0);
+        assertThat(metadataManager.getActiveQueryIds().size()).isEqualTo(0);
     }
 
     @Test
@@ -117,13 +121,13 @@ public class TestMetadataManager
                 .isInstanceOf(RuntimeException.class)
                 .hasMessage("Division by zero");
 
-        assertEquals(metadataManager.getActiveQueryIds().size(), 0);
+        assertThat(metadataManager.getActiveQueryIds().size()).isEqualTo(0);
     }
 
     @Test
     public void testMetadataListTablesReturnsQualifiedView()
     {
-        TransactionBuilder.transaction(queryRunner.getTransactionManager(), queryRunner.getAccessControl())
+        TransactionBuilder.transaction(queryRunner.getTransactionManager(), metadataManager, queryRunner.getAccessControl())
                 .execute(
                         TEST_SESSION,
                         transactionSession -> {
@@ -150,7 +154,7 @@ public class TestMetadataManager
         while (true) {
             BasicQueryInfo queryInfo = dispatchManager.getQueryInfo(queryId);
             if (queryInfo.getState().isDone()) {
-                assertEquals(queryInfo.getState(), FAILED);
+                assertThat(queryInfo.getState()).isEqualTo(FAILED);
                 throw dispatchManager.getDispatchInfo(queryId).get().getFailureInfo().get().toException();
             }
             if (queryInfo.getState() == RUNNING) {
@@ -161,18 +165,18 @@ public class TestMetadataManager
 
         // cancel query
         dispatchManager.cancelQuery(queryId);
-        assertEquals(metadataManager.getActiveQueryIds().size(), 0);
+        assertThat(metadataManager.getActiveQueryIds().size()).isEqualTo(0);
     }
 
     @Test
     public void testUpperCaseSchemaIsChangedToLowerCase()
     {
-        TransactionBuilder.transaction(queryRunner.getTransactionManager(), queryRunner.getAccessControl())
+        TransactionBuilder.transaction(queryRunner.getTransactionManager(), metadataManager, queryRunner.getAccessControl())
                 .execute(
                         TEST_SESSION,
                         transactionSession -> {
                             List<String> expectedSchemas = ImmutableList.of("information_schema", "upper_case_schema");
-                            assertEquals(queryRunner.getMetadata().listSchemaNames(transactionSession, "upper_case_schema_catalog"), expectedSchemas);
+                            assertThat(queryRunner.getMetadata().listSchemaNames(transactionSession, "upper_case_schema_catalog")).isEqualTo(expectedSchemas);
                             return null;
                         });
     }
@@ -217,6 +221,7 @@ public class TestMetadataManager
                 ImmutableList.of(new ConnectorViewDefinition.ViewColumn("col", BIGINT.getTypeId(), Optional.empty())),
                 Optional.of("comment"),
                 Optional.of("test_owner"),
-                false);
+                false,
+                ImmutableList.of());
     }
 }

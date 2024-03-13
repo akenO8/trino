@@ -19,10 +19,9 @@ import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
-import io.airlift.concurrent.MoreFutures;
 import io.airlift.json.JsonCodec;
+import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
-import io.trino.hdfs.HdfsEnvironment;
 import io.trino.plugin.hive.util.HiveBucketing.BucketingVersion;
 import io.trino.spi.Page;
 import io.trino.spi.PageIndexer;
@@ -48,12 +47,12 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static io.airlift.concurrent.MoreFutures.toCompletableFuture;
 import static io.airlift.slice.Slices.wrappedBuffer;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_TOO_MANY_OPEN_PARTITIONS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
@@ -66,6 +65,7 @@ import static java.util.stream.Collectors.toList;
 public class HivePageSink
         implements ConnectorPageSink, ConnectorMergeSink
 {
+    private static final Logger LOG = Logger.get(HivePageSink.class);
     private static final int MAX_PAGE_POSITIONS = 4096;
 
     private final HiveWriterFactory writerFactory;
@@ -78,7 +78,6 @@ public class HivePageSink
     private final HiveBucketFunction bucketFunction;
 
     private final HiveWriterPagePartitioner pagePartitioner;
-    private final HdfsEnvironment hdfsEnvironment;
 
     private final int maxOpenWriters;
     private final ListeningExecutorService writeVerificationExecutor;
@@ -87,12 +86,12 @@ public class HivePageSink
 
     private final List<HiveWriter> writers = new ArrayList<>();
 
-    private final ConnectorSession session;
-
     private final long targetMaxFileSize;
+    private final long idleWriterMinFileSize;
     private final List<Closeable> closedWriterRollbackActions = new ArrayList<>();
     private final List<Slice> partitionUpdates = new ArrayList<>();
     private final List<Callable<Object>> verificationTasks = new ArrayList<>();
+    private final List<Boolean> activeWriters = new ArrayList<>();
 
     private final boolean isMergeSink;
     private long writtenBytes;
@@ -106,7 +105,6 @@ public class HivePageSink
             boolean isTransactional,
             Optional<HiveBucketProperty> bucketProperty,
             PageIndexerFactory pageIndexerFactory,
-            HdfsEnvironment hdfsEnvironment,
             int maxOpenWriters,
             ListeningExecutorService writeVerificationExecutor,
             JsonCodec<PartitionUpdate> partitionUpdateCodec,
@@ -119,7 +117,6 @@ public class HivePageSink
         requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
 
         this.isTransactional = isTransactional;
-        this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.maxOpenWriters = maxOpenWriters;
         this.writeVerificationExecutor = requireNonNull(writeVerificationExecutor, "writeVerificationExecutor is null");
         this.partitionUpdateCodec = requireNonNull(partitionUpdateCodec, "partitionUpdateCodec is null");
@@ -167,8 +164,8 @@ public class HivePageSink
             bucketFunction = null;
         }
 
-        this.session = requireNonNull(session, "session is null");
         this.targetMaxFileSize = HiveSessionProperties.getTargetMaxFileSize(session).toBytes();
+        this.idleWriterMinFileSize = HiveSessionProperties.getIdleWriterMinFileSize(session).toBytes();
     }
 
     @Override
@@ -192,19 +189,16 @@ public class HivePageSink
     @Override
     public CompletableFuture<Collection<Slice>> finish()
     {
-        // Must be wrapped in doAs entirely
-        // Implicit FileSystem initializations are possible in HiveRecordWriter#commit -> RecordWriter#close
-        ListenableFuture<Collection<Slice>> result = hdfsEnvironment.doAs(
-                session.getIdentity(),
-                isMergeSink ? this::doMergeSinkFinish : this::doInsertSinkFinish);
-
-        return MoreFutures.toCompletableFuture(result);
+        return toCompletableFuture(isMergeSink ? doMergeSinkFinish() : doInsertSinkFinish());
     }
 
     private ListenableFuture<Collection<Slice>> doMergeSinkFinish()
     {
         ImmutableList.Builder<Slice> resultSlices = ImmutableList.builder();
         for (HiveWriter writer : writers) {
+            if (writer == null) {
+                continue;
+            }
             writer.commit();
             MergeFileWriter mergeFileWriter = (MergeFileWriter) writer.getFileWriter();
             PartitionUpdateAndMergeResults results = mergeFileWriter.getPartitionUpdateAndMergeResults(writer.getPartitionUpdate());
@@ -212,6 +206,7 @@ public class HivePageSink
         }
         List<Slice> result = resultSlices.build();
         writtenBytes = writers.stream()
+                .filter(Objects::nonNull)
                 .mapToLong(HiveWriter::getWrittenBytes)
                 .sum();
         return Futures.immediateFuture(result);
@@ -245,13 +240,6 @@ public class HivePageSink
     @Override
     public void abort()
     {
-        // Must be wrapped in doAs entirely
-        // Implicit FileSystem initializations are possible in HiveRecordWriter#rollback -> RecordWriter#close
-        hdfsEnvironment.doAs(session.getIdentity(), this::doAbort);
-    }
-
-    private void doAbort()
-    {
         List<Closeable> rollbackActions = Streams.concat(
                         writers.stream()
                                 // writers can contain nulls if an exception is thrown when doAppend expands the writer list
@@ -279,23 +267,13 @@ public class HivePageSink
     @Override
     public CompletableFuture<?> appendPage(Page page)
     {
-        if (page.getPositionCount() > 0) {
-            // Must be wrapped in doAs entirely
-            // Implicit FileSystem initializations are possible in HiveRecordWriter#addRow or #createWriter
-            hdfsEnvironment.doAs(session.getIdentity(), () -> doAppend(page));
-        }
-
-        return NOT_BLOCKED;
-    }
-
-    private void doAppend(Page page)
-    {
         int writeOffset = 0;
         while (writeOffset < page.getPositionCount()) {
             Page chunk = page.getRegion(writeOffset, min(page.getPositionCount() - writeOffset, MAX_PAGE_POSITIONS));
             writeOffset += chunk.getPositionCount();
             writePage(chunk);
         }
+        return NOT_BLOCKED;
     }
 
     private void writePage(Page page)
@@ -339,6 +317,7 @@ public class HivePageSink
             }
 
             HiveWriter writer = writers.get(index);
+            verify(writer != null, "Expected writer at index %s", index);
 
             long currentWritten = writer.getWrittenBytes();
             long currentMemory = writer.getMemoryUsage();
@@ -347,12 +326,17 @@ public class HivePageSink
 
             writtenBytes += (writer.getWrittenBytes() - currentWritten);
             memoryUsage += (writer.getMemoryUsage() - currentMemory);
+            // Mark this writer as active (i.e. not idle)
+            activeWriters.set(index, true);
         }
     }
 
     private void closeWriter(int writerIndex)
     {
         HiveWriter writer = writers.get(writerIndex);
+        if (writer == null) {
+            return;
+        }
 
         long currentWritten = writer.getWrittenBytes();
         long currentMemory = writer.getMemoryUsage();
@@ -367,9 +351,26 @@ public class HivePageSink
 
         PartitionUpdate partitionUpdate = writer.getPartitionUpdate();
         partitionUpdates.add(wrappedBuffer(partitionUpdateCodec.toJsonBytes(partitionUpdate)));
-        writer.getVerificationTask()
-                .map(Executors::callable)
-                .ifPresent(verificationTasks::add);
+    }
+
+    @Override
+    public void closeIdleWriters()
+    {
+        // For transactional tables we don't want to split output files because there is an explicit or implicit bucketing
+        // and file names have no random component (e.g. bucket_00000)
+        if (bucketFunction != null || isTransactional) {
+            return;
+        }
+
+        for (int writerIndex = 0; writerIndex < writers.size(); writerIndex++) {
+            HiveWriter writer = writers.get(writerIndex);
+            if (activeWriters.get(writerIndex) || writer == null || writer.getWrittenBytes() <= idleWriterMinFileSize) {
+                activeWriters.set(writerIndex, false);
+                continue;
+            }
+            LOG.debug("Closing writer %s with %s bytes written", writerIndex, writer.getWrittenBytes());
+            closeWriter(writerIndex);
+        }
     }
 
     private int[] getWriterIndexes(Page page)
@@ -384,6 +385,7 @@ public class HivePageSink
         // expand writers list to new size
         while (writers.size() <= pagePartitioner.getMaxIndex()) {
             writers.add(null);
+            activeWriters.add(false);
         }
 
         // create missing writers
@@ -412,7 +414,6 @@ public class HivePageSink
             memoryUsage += writer.getMemoryUsage();
         }
         verify(writers.size() == pagePartitioner.getMaxIndex() + 1);
-        verify(!writers.contains(null));
 
         return writerIndexes;
     }

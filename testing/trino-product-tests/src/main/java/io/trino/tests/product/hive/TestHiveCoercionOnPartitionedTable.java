@@ -84,6 +84,14 @@ public class TestHiveCoercionOnPartitionedTable
             .setNoData()
             .build();
 
+    public static final HiveTableDefinition HIVE_COERCION_SEQUENCE = tableDefinitionBuilder("SEQUENCEFILE", Optional.empty(), Optional.empty())
+            .setNoData()
+            .build();
+
+    public static final HiveTableDefinition HIVE_TIMESTAMP_COERCION_SEQUENCE = tableDefinitionForTimestampCoercionBuilder("SEQUENCEFILE", Optional.empty(), Optional.empty())
+            .setNoData()
+            .build();
+
     private static HiveTableDefinition.HiveTableDefinitionBuilder tableDefinitionBuilder(String fileFormat, Optional<String> recommendTableName, Optional<String> rowFormat)
     {
         String tableName = format("%s_hive_coercion", recommendTableName.orElse(fileFormat).toLowerCase(ENGLISH));
@@ -95,19 +103,45 @@ public class TestHiveCoercionOnPartitionedTable
                         "    row_to_row                 STRUCT<keep: STRING, ti2si: TINYINT, si2int: SMALLINT, int2bi: INT, bi2vc: BIGINT, lower2uppercase: BIGINT>, " +
                         "    list_to_list               ARRAY<STRUCT<ti2int: TINYINT, si2bi: SMALLINT, bi2vc: BIGINT, remove: STRING>>, " +
                         "    map_to_map                 MAP<TINYINT, STRUCT<ti2bi: TINYINT, int2bi: INT, float2double: " + floatType + ">>, " +
+                        "    boolean_to_varchar         BOOLEAN," +
                         "    tinyint_to_smallint        TINYINT," +
                         "    tinyint_to_int             TINYINT," +
                         "    tinyint_to_bigint          TINYINT," +
+                        "    tinyint_to_double          TINYINT," +
+                        "    tinyint_to_shortdecimal    TINYINT," +
+                        "    tinyint_to_longdecimal     TINYINT," +
                         "    smallint_to_int            SMALLINT," +
                         "    smallint_to_bigint         SMALLINT," +
+                        "    smallint_to_double         SMALLINT," +
+                        "    smallint_to_shortdecimal   SMALLINT," +
+                        "    smallint_to_longdecimal    SMALLINT," +
                         "    int_to_bigint              INT," +
+                        "    int_to_double              INT," +
+                        "    int_to_shortdecimal        INT," +
+                        "    int_to_longdecimal         INT," +
+                        "    bigint_to_double           BIGINT," +
                         "    bigint_to_varchar          BIGINT," +
+                        "    bigint_to_shortdecimal     BIGINT," +
+                        "    bigint_to_longdecimal      BIGINT," +
                         "    float_to_double            " + floatType + "," +
                         "    double_to_float            DOUBLE," +
+                        "    double_to_string           DOUBLE," +
+                        "    double_to_bounded_varchar  DOUBLE," +
+                        "    double_infinity_to_string  DOUBLE," +
                         "    shortdecimal_to_shortdecimal          DECIMAL(10,2)," +
                         "    shortdecimal_to_longdecimal           DECIMAL(10,2)," +
                         "    longdecimal_to_shortdecimal           DECIMAL(20,12)," +
                         "    longdecimal_to_longdecimal            DECIMAL(20,12)," +
+                        "    longdecimal_to_tinyint                DECIMAL(20,12)," +
+                        "    shortdecimal_to_tinyint               DECIMAL(10,2)," +
+                        "    longdecimal_to_smallint               DECIMAL(20,12)," +
+                        "    shortdecimal_to_smallint              DECIMAL(10,2)," +
+                        "    too_big_shortdecimal_to_smallint      DECIMAL(10,2)," +
+                        "    longdecimal_to_int                    DECIMAL(20,12)," +
+                        "    shortdecimal_to_int                   DECIMAL(10,2)," +
+                        "    shortdecimal_with_0_scale_to_int      DECIMAL(10,0)," +
+                        "    longdecimal_to_bigint                 DECIMAL(20,4)," +
+                        "    shortdecimal_to_bigint                DECIMAL(10,2)," +
                         "    float_to_decimal           " + floatType + "," +
                         "    double_to_decimal          DOUBLE," +
                         "    decimal_to_float                   DECIMAL(10,5)," +
@@ -118,8 +152,19 @@ public class TestHiveCoercionOnPartitionedTable
                         "    long_decimal_to_bounded_varchar    DECIMAL(20,12)," +
                         "    varchar_to_bigger_varchar          VARCHAR(3)," +
                         "    varchar_to_smaller_varchar         VARCHAR(3)," +
+                        "    varchar_to_date                    VARCHAR(10)," +
+                        "    varchar_to_distant_date            VARCHAR(12)," +
+                        "    varchar_to_double                  VARCHAR(40)," +
+                        "    string_to_double                   STRING," +
+                        "    varchar_to_double_infinity         VARCHAR(40)," +
+                        "    varchar_to_special_double          VARCHAR(40)," +
+                        "    date_to_string                     DATE," +
+                        "    date_to_bounded_varchar            DATE," +
                         "    char_to_bigger_char                CHAR(3)," +
                         "    char_to_smaller_char               CHAR(3)," +
+                        "    timestamp_millis_to_date           TIMESTAMP," +
+                        "    timestamp_micros_to_date           TIMESTAMP," +
+                        "    timestamp_nanos_to_date            TIMESTAMP," +
                         "    timestamp_to_string                TIMESTAMP," +
                         "    timestamp_to_bounded_varchar       TIMESTAMP," +
                         "    timestamp_to_smaller_varchar       TIMESTAMP," +
@@ -137,11 +182,12 @@ public class TestHiveCoercionOnPartitionedTable
         return HiveTableDefinition.builder(tableName)
                 .setCreateTableDDLTemplate("" +
                         "CREATE TABLE %NAME%(" +
-                        "    timestamp_row_to_row                 STRUCT<keep: TIMESTAMP, si2i: SMALLINT, timestamp2string: TIMESTAMP, string2timestamp: STRING>, " +
-                        "    timestamp_list_to_list               ARRAY<STRUCT<keep: TIMESTAMP, si2i: SMALLINT, timestamp2string: TIMESTAMP, string2timestamp: STRING>>, " +
-                        "    timestamp_map_to_map                 MAP<SMALLINT, STRUCT<keep: TIMESTAMP, si2i: SMALLINT, timestamp2string: TIMESTAMP, string2timestamp: STRING>>," +
+                        "    timestamp_row_to_row                 STRUCT<keep: TIMESTAMP, si2i: SMALLINT, timestamp2string: TIMESTAMP, string2timestamp: STRING, timestamp2date: TIMESTAMP>, " +
+                        "    timestamp_list_to_list               ARRAY<STRUCT<keep: TIMESTAMP, si2i: SMALLINT, timestamp2string: TIMESTAMP, string2timestamp: STRING, timestamp2date: TIMESTAMP>>, " +
+                        "    timestamp_map_to_map                 MAP<SMALLINT, STRUCT<keep: TIMESTAMP, si2i: SMALLINT, timestamp2string: TIMESTAMP, string2timestamp: STRING, timestamp2date: TIMESTAMP>>," +
                         "    timestamp_to_string                  TIMESTAMP," +
-                        "    string_to_timestamp                  STRING" +
+                        "    string_to_timestamp                  STRING," +
+                        "    timestamp_to_date                    TIMESTAMP" +
                         ") " +
                         "PARTITIONED BY (id BIGINT) " +
                         rowFormat.map(s -> format("ROW FORMAT %s ", s)).orElse("") +
@@ -230,6 +276,18 @@ public class TestHiveCoercionOnPartitionedTable
         }
     }
 
+    public static final class SequenceRequirements
+            implements RequirementsProvider
+    {
+        @Override
+        public Requirement getRequirements(Configuration configuration)
+        {
+            return compose(
+                    MutableTableRequirement.builder(HIVE_COERCION_SEQUENCE).withState(CREATED).build(),
+                    MutableTableRequirement.builder(HIVE_TIMESTAMP_COERCION_SEQUENCE).withState(CREATED).build());
+        }
+    }
+
     @Requires(TextRequirements.class)
     @Test(groups = {HIVE_COERCION, JDBC})
     public void testHiveCoercionTextFile()
@@ -298,6 +356,20 @@ public class TestHiveCoercionOnPartitionedTable
     public void testHiveCoercionWithDifferentTimestampPrecisionParquet()
     {
         doTestHiveCoercionWithDifferentTimestampPrecision(HIVE_TIMESTAMP_COERCION_PARQUET);
+    }
+
+    @Requires(SequenceRequirements.class)
+    @Test(groups = {HIVE_COERCION, JDBC})
+    public void testHiveCoercionSequence()
+    {
+        doTestHiveCoercion(HIVE_COERCION_SEQUENCE);
+    }
+
+    @Requires(SequenceRequirements.class)
+    @Test(groups = {HIVE_COERCION, JDBC})
+    public void testHiveCoercionWithDifferentTimestampPrecisionSequence()
+    {
+        doTestHiveCoercionWithDifferentTimestampPrecision(HIVE_TIMESTAMP_COERCION_SEQUENCE);
     }
 
     @Requires(AvroRequirements.class)

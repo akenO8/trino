@@ -34,10 +34,13 @@ import io.airlift.http.server.testing.TestingHttpServerModule;
 import io.airlift.jaxrs.JaxrsModule;
 import io.airlift.jmx.testing.TestingJmxModule;
 import io.airlift.json.JsonModule;
+import io.airlift.log.Level;
+import io.airlift.log.Logging;
 import io.airlift.node.testing.TestingNodeModule;
 import io.airlift.openmetrics.JmxOpenMetricsModule;
 import io.airlift.tracetoken.TraceTokenModule;
 import io.airlift.tracing.TracingModule;
+import io.opentelemetry.sdk.trace.SpanProcessor;
 import io.trino.connector.CatalogManagerModule;
 import io.trino.connector.ConnectorName;
 import io.trino.connector.ConnectorServicesProvider;
@@ -62,6 +65,7 @@ import io.trino.metadata.FunctionBundle;
 import io.trino.metadata.FunctionManager;
 import io.trino.metadata.GlobalFunctionCatalog;
 import io.trino.metadata.InternalNodeManager;
+import io.trino.metadata.LanguageFunctionManager;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ProcedureRegistry;
 import io.trino.metadata.SessionPropertyManager;
@@ -72,6 +76,7 @@ import io.trino.security.AccessControlManager;
 import io.trino.security.GroupProviderManager;
 import io.trino.server.GracefulShutdownHandler;
 import io.trino.server.PluginInstaller;
+import io.trino.server.PrefixObjectNameGeneratorModule;
 import io.trino.server.Server;
 import io.trino.server.ServerMainModule;
 import io.trino.server.SessionPropertyDefaults;
@@ -114,19 +119,19 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.nio.file.Path;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeoutException;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static com.google.inject.util.Modules.EMPTY_MODULE;
+import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static java.lang.Integer.parseInt;
 import static java.nio.file.Files.createTempDirectory;
 import static java.nio.file.Files.isDirectory;
@@ -136,6 +141,11 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class TestingTrinoServer
         implements Closeable
 {
+    static {
+        Logging logging = Logging.initialize();
+        logging.setLevel("io.trino.event.QueryMonitor", Level.ERROR);
+    }
+
     private static final String VERSION = "testversion";
 
     public static TestingTrinoServer create()
@@ -162,6 +172,7 @@ public class TestingTrinoServer
     private final QueryExplainer queryExplainer;
     private final SessionPropertyManager sessionPropertyManager;
     private final FunctionManager functionManager;
+    private final LanguageFunctionManager languageFunctionManager;
     private final GlobalFunctionCatalog globalFunctionCatalog;
     private final StatsCalculator statsCalculator;
     private final ProcedureRegistry procedureRegistry;
@@ -221,7 +232,9 @@ public class TestingTrinoServer
             Optional<URI> discoveryUri,
             Module additionalModule,
             Optional<Path> baseDataDir,
-            List<SystemAccessControl> systemAccessControls,
+            Optional<SpanProcessor> spanProcessor,
+            Optional<FactoryConfiguration> systemAccessControlConfiguration,
+            Optional<List<SystemAccessControl>> systemAccessControls,
             List<EventListener> eventListeners)
     {
         this.coordinator = coordinator;
@@ -241,17 +254,16 @@ public class TestingTrinoServer
                 .put("catalog.management", "dynamic")
                 .put("task.concurrency", "4")
                 .put("task.max-worker-threads", "4")
-                // Use task.writer-count > 1, as this allows to expose writer-concurrency related bugs.
-                .put("task.writer-count", "2")
+                // Use task.min-writer-count > 1, as this allows to expose writer-concurrency related bugs.
+                .put("task.min-writer-count", "2")
                 .put("exchange.client-threads", "4")
                 // Reduce memory footprint in tests
                 .put("exchange.max-buffer-size", "4MB")
                 .put("internal-communication.shared-secret", "internal-shared-secret");
 
         if (coordinator) {
-            // TODO: enable failure detector
-            serverProperties.put("failure-detector.enabled", "false");
             serverProperties.put("catalog.store", "memory");
+            serverProperties.put("failure-detector.enabled", "false");
 
             // Reduce memory footprint in tests
             serverProperties.put("query.min-expire-age", "5s");
@@ -265,6 +277,7 @@ public class TestingTrinoServer
                 .add(new JsonModule())
                 .add(new JaxrsModule())
                 .add(new MBeanModule())
+                .add(new PrefixObjectNameGeneratorModule("io.trino"))
                 .add(new TestingJmxModule())
                 .add(new JmxOpenMetricsModule())
                 .add(new EventModule())
@@ -292,6 +305,7 @@ public class TestingTrinoServer
                     binder.bind(GracefulShutdownHandler.class).in(Scopes.SINGLETON);
                     binder.bind(ProcedureTester.class).in(Scopes.SINGLETON);
                     binder.bind(ExchangeManagerRegistry.class).in(Scopes.SINGLETON);
+                    spanProcessor.ifPresent(processor -> newSetBinder(binder, SpanProcessor.class).addBinding().toInstance(processor));
                 });
 
         if (coordinator) {
@@ -355,6 +369,7 @@ public class TestingTrinoServer
             sessionPropertyDefaults = injector.getInstance(SessionPropertyDefaults.class);
             nodePartitioningManager = injector.getInstance(NodePartitioningManager.class);
             clusterMemoryManager = injector.getInstance(ClusterMemoryManager.class);
+            languageFunctionManager = injector.getInstance(LanguageFunctionManager.class);
             statsCalculator = injector.getInstance(StatsCalculator.class);
             procedureRegistry = injector.getInstance(ProcedureRegistry.class);
             injector.getInstance(CertificateAuthenticatorManager.class).useDefaultAuthenticator();
@@ -367,6 +382,7 @@ public class TestingTrinoServer
             sessionPropertyDefaults = null;
             nodePartitioningManager = null;
             clusterMemoryManager = null;
+            languageFunctionManager = null;
             statsCalculator = null;
             procedureRegistry = null;
         }
@@ -380,12 +396,17 @@ public class TestingTrinoServer
         failureInjector = injector.getInstance(FailureInjector.class);
         exchangeManagerRegistry = injector.getInstance(ExchangeManagerRegistry.class);
 
-        accessControl.setSystemAccessControls(systemAccessControls);
+        systemAccessControlConfiguration.ifPresentOrElse(
+                configuration -> {
+                    checkArgument(systemAccessControls.isEmpty(), "systemAccessControlConfiguration and systemAccessControls cannot be both present");
+                    accessControl.loadSystemAccessControl(configuration.factoryName(), configuration.configuration());
+                },
+                () -> accessControl.setSystemAccessControls(systemAccessControls.orElseThrow()));
 
         EventListenerManager eventListenerManager = injector.getInstance(EventListenerManager.class);
         eventListeners.forEach(eventListenerManager::addEventListener);
 
-        injector.getInstance(Announcer.class).forceAnnounce();
+        getFutureValue(injector.getInstance(Announcer.class).forceAnnounce());
 
         refreshNodes();
     }
@@ -411,7 +432,7 @@ public class TestingTrinoServer
 
     public void installPlugin(Plugin plugin)
     {
-        pluginInstaller.installPlugin(plugin, ignored -> plugin.getClass().getClassLoader());
+        pluginInstaller.installPlugin(plugin);
     }
 
     public DispatchManager getDispatchManager()
@@ -538,6 +559,12 @@ public class TestingTrinoServer
         return functionManager;
     }
 
+    public LanguageFunctionManager getLanguageFunctionManager()
+    {
+        checkState(coordinator, "not a coordinator");
+        return languageFunctionManager;
+    }
+
     public void addFunctions(FunctionBundle functionBundle)
     {
         globalFunctionCatalog.addFunctions(functionBundle);
@@ -653,18 +680,6 @@ public class TestingTrinoServer
         return nodeManager.getAllNodes();
     }
 
-    public void waitForNodeRefresh(Duration timeout)
-            throws InterruptedException, TimeoutException
-    {
-        Instant start = Instant.now();
-        while (refreshNodes().getActiveNodes().size() < 1) {
-            if (Duration.between(start, Instant.now()).compareTo(timeout) > 0) {
-                throw new TimeoutException("Timed out while waiting for the node to refresh");
-            }
-            MILLISECONDS.sleep(10);
-        }
-    }
-
     public <T> T getInstance(Key<T> key)
     {
         return injector.getInstance(key);
@@ -705,7 +720,9 @@ public class TestingTrinoServer
         private Optional<URI> discoveryUri = Optional.empty();
         private Module additionalModule = EMPTY_MODULE;
         private Optional<Path> baseDataDir = Optional.empty();
-        private List<SystemAccessControl> systemAccessControls = ImmutableList.of();
+        private Optional<SpanProcessor> spanProcessor = Optional.empty();
+        private Optional<FactoryConfiguration> systemAccessControlConfiguration = Optional.empty();
+        private Optional<List<SystemAccessControl>> systemAccessControls = Optional.of(ImmutableList.of());
         private List<EventListener> eventListeners = ImmutableList.of();
 
         public Builder setCoordinator(boolean coordinator)
@@ -744,9 +761,26 @@ public class TestingTrinoServer
             return this;
         }
 
-        public Builder setSystemAccessControls(List<SystemAccessControl> systemAccessControls)
+        public Builder setSpanProcessor(Optional<SpanProcessor> spanProcessor)
         {
-            this.systemAccessControls = ImmutableList.copyOf(requireNonNull(systemAccessControls, "systemAccessControls is null"));
+            this.spanProcessor = requireNonNull(spanProcessor, "spanProcessor is null");
+            return this;
+        }
+
+        public Builder setSystemAccessControlConfiguration(Optional<FactoryConfiguration> systemAccessControlConfiguration)
+        {
+            this.systemAccessControlConfiguration = requireNonNull(systemAccessControlConfiguration, "systemAccessControlConfiguration is null");
+            return this;
+        }
+
+        public Builder setSystemAccessControl(SystemAccessControl systemAccessControl)
+        {
+            return setSystemAccessControls(Optional.of(ImmutableList.of(requireNonNull(systemAccessControl, "systemAccessControl is null"))));
+        }
+
+        public Builder setSystemAccessControls(Optional<List<SystemAccessControl>> systemAccessControls)
+        {
+            this.systemAccessControls = systemAccessControls.map(ImmutableList::copyOf);
             return this;
         }
 
@@ -765,6 +799,8 @@ public class TestingTrinoServer
                     discoveryUri,
                     additionalModule,
                     baseDataDir,
+                    spanProcessor,
+                    systemAccessControlConfiguration,
                     systemAccessControls,
                     eventListeners);
         }

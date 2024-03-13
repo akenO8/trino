@@ -13,10 +13,8 @@
  */
 package io.trino.plugin.deltalake.metastore.glue;
 
-import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.services.glue.AWSGlueAsync;
 import com.amazonaws.services.glue.model.ConcurrentModificationException;
-import com.google.common.collect.ImmutableSet;
 import io.trino.Session;
 import io.trino.plugin.deltalake.TestingDeltaLakePlugin;
 import io.trino.plugin.deltalake.metastore.TestingDeltaLakeMetastoreModule;
@@ -28,8 +26,9 @@ import io.trino.spi.TrinoException;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
@@ -44,12 +43,13 @@ import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.inject.util.Modules.EMPTY_MODULE;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
-import static io.trino.plugin.hive.metastore.glue.GlueClientUtil.createAsyncGlueClient;
+import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingAsyncGlueClient;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
-import static org.testng.Assert.assertFalse;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
-@Test(singleThreaded = true)
+@TestInstance(PER_CLASS)
 public class TestDeltaLakeConcurrentModificationGlueMetastore
         extends AbstractTestQueryFramework
 {
@@ -75,7 +75,7 @@ public class TestDeltaLakeConcurrentModificationGlueMetastore
         GlueHiveMetastoreConfig glueConfig = new GlueHiveMetastoreConfig()
                 .setDefaultWarehouseDir(dataDirectory.toUri().toString());
 
-        AWSGlueAsync glueClient = createAsyncGlueClient(glueConfig, DefaultAWSCredentialsProviderChain.getInstance(), ImmutableSet.of(), stats.newRequestMetricsCollector());
+        AWSGlueAsync glueClient = createTestingAsyncGlueClient(glueConfig, stats);
         AWSGlueAsync proxiedGlueClient = newProxy(AWSGlueAsync.class, (proxy, method, args) -> {
             Object result;
             try {
@@ -101,7 +101,7 @@ public class TestDeltaLakeConcurrentModificationGlueMetastore
                 stats,
                 table -> true);
 
-        queryRunner.installPlugin(new TestingDeltaLakePlugin(Optional.of(new TestingDeltaLakeMetastoreModule(metastore)), Optional.empty(), EMPTY_MODULE));
+        queryRunner.installPlugin(new TestingDeltaLakePlugin(dataDirectory, Optional.of(new TestingDeltaLakeMetastoreModule(metastore)), Optional.empty(), EMPTY_MODULE));
         queryRunner.createCatalog(CATALOG_NAME, "delta_lake");
         queryRunner.execute("CREATE SCHEMA " + SCHEMA);
         return queryRunner;
@@ -115,10 +115,10 @@ public class TestDeltaLakeConcurrentModificationGlueMetastore
 
         failNextGlueDeleteTableCall.set(true);
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
             throws IOException
     {

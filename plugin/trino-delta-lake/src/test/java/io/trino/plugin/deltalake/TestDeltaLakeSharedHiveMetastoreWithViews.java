@@ -19,8 +19,9 @@ import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.Map;
 
@@ -30,7 +31,9 @@ import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestDeltaLakeSharedHiveMetastoreWithViews
         extends AbstractTestQueryFramework
 {
@@ -53,7 +56,7 @@ public class TestDeltaLakeSharedHiveMetastoreWithViews
                 hiveMinioDataLake.getHiveHadoop());
         queryRunner.execute("CREATE SCHEMA " + schema + " WITH (location = 's3://" + bucketName + "/" + schema + "')");
 
-        queryRunner.installPlugin(new TestingHivePlugin());
+        queryRunner.installPlugin(new TestingHivePlugin(queryRunner.getCoordinator().getBaseDataDir().resolve("hive_data")));
         Map<String, String> s3Properties = ImmutableMap.<String, String>builder()
                 .put("hive.s3.aws-access-key", MINIO_ACCESS_KEY)
                 .put("hive.s3.aws-secret-key", MINIO_SECRET_KEY)
@@ -64,6 +67,7 @@ public class TestDeltaLakeSharedHiveMetastoreWithViews
                 "hive",
                 "hive",
                 ImmutableMap.<String, String>builder()
+                        .put("hive.metastore", "thrift")
                         .put("hive.metastore.uri", "thrift://" + hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
                         .put("hive.allow-drop-table", "true")
                         .putAll(s3Properties)
@@ -76,7 +80,7 @@ public class TestDeltaLakeSharedHiveMetastoreWithViews
         return queryRunner;
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
     {
         assertQuerySucceeds("DROP TABLE IF EXISTS hive." + schema + ".hive_table");

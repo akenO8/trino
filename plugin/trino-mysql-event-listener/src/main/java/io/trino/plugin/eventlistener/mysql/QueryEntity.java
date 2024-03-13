@@ -13,12 +13,17 @@
  */
 package io.trino.plugin.eventlistener.mysql;
 
+import java.sql.Timestamp;
 import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
 public class QueryEntity
 {
+    private final Timestamp createTime;
+    private final Timestamp executionStartTime;
+    private final Timestamp endTime;
+
     private final String queryId;
     private final Optional<String> transactionId;
 
@@ -26,8 +31,8 @@ public class QueryEntity
     private final Optional<String> updateType;
     private final Optional<String> preparedQuery;
     private final String queryState;
-    private final Optional<String> plan;
-    private final Optional<String> stageInfoJson;
+//    private final Optional<String> plan;
+//    private final Optional<String> stageInfoJson;
 
     private final String user;
     private final Optional<String> principal;
@@ -52,7 +57,7 @@ public class QueryEntity
     private final Optional<String> queryType;
 
     private final String inputsJson;
-    private final Optional<String> outputJson;
+//    private final Optional<String> outputJson;
 
     private final Optional<String> errorCode;
     private final Optional<String> errorType;
@@ -100,17 +105,20 @@ public class QueryEntity
     private final int completedSplits;
 
     private final String retryPolicy;
-    private final Optional<String> operatorSummariesJson;
+//    private final Optional<String> operatorSummariesJson;
 
     public QueryEntity(
+            Timestamp createTime,
+            Timestamp executionStartTime,
+            Timestamp endTime,
             String queryId,
             Optional<String> transactionId,
             String query,
             Optional<String> updateType,
             Optional<String> preparedQuery,
             String queryState,
-            Optional<String> plan,
-            Optional<String> stageInfoJson,
+//            Optional<String> plan,
+//            Optional<String> stageInfoJson,
             String user,
             Optional<String> principal,
             Optional<String> traceToken,
@@ -128,7 +136,7 @@ public class QueryEntity
             String environment,
             Optional<String> queryType,
             String inputsJson,
-            Optional<String> outputJson,
+//            Optional<String> outputJson,
             Optional<String> errorCode,
             Optional<String> errorType,
             Optional<String> failureType,
@@ -168,17 +176,20 @@ public class QueryEntity
             double cumulativeMemory,
             double failedCumulativeMemory,
             int completedSplits,
-            String retryPolicy,
-            Optional<String> operatorSummariesJson)
+            String retryPolicy)
+//            Optional<String> operatorSummariesJson)
     {
+        this.createTime = requireNonNull(createTime, "createTime is null");
+        this.executionStartTime = requireNonNull(executionStartTime, "executionStartTime is null");
+        this.endTime = requireNonNull(endTime, "endTime is null");
         this.queryId = requireNonNull(queryId, "queryId is null");
         this.transactionId = requireNonNull(transactionId, "transactionId is null");
         this.query = requireNonNull(query, "query is null");
         this.updateType = requireNonNull(updateType, "updateType is null");
         this.preparedQuery = requireNonNull(preparedQuery, "preparedQuery is null");
         this.queryState = requireNonNull(queryState, "queryState is null");
-        this.plan = requireNonNull(plan, "plan is null");
-        this.stageInfoJson = requireNonNull(stageInfoJson, "stageInfoJson is null");
+//        this.plan = requireNonNull(plan, "plan is null");
+//        this.stageInfoJson = requireNonNull(stageInfoJson, "stageInfoJson is null");
         this.user = requireNonNull(user, "user is null");
         this.principal = requireNonNull(principal, "principal is null");
         this.traceToken = requireNonNull(traceToken, "traceToken is null");
@@ -196,7 +207,7 @@ public class QueryEntity
         this.environment = requireNonNull(environment, "environment is null");
         this.queryType = requireNonNull(queryType, "queryType is null");
         this.inputsJson = requireNonNull(inputsJson, "inputsJson is null");
-        this.outputJson = requireNonNull(outputJson, "outputJson is null");
+//        this.outputJson = requireNonNull(outputJson, "outputJson is null");
         this.errorCode = requireNonNull(errorCode, "errorCode is null");
         this.errorType = requireNonNull(errorType, "errorType is null");
         this.failureType = requireNonNull(failureType, "failureType is null");
@@ -237,7 +248,22 @@ public class QueryEntity
         this.failedCumulativeMemory = failedCumulativeMemory;
         this.completedSplits = completedSplits;
         this.retryPolicy = requireNonNull(retryPolicy, "retryPolicy is null");
-        this.operatorSummariesJson = requireNonNull(operatorSummariesJson, "operatorSummariesJson is null");
+//        this.operatorSummariesJson = requireNonNull(operatorSummariesJson, "operatorSummariesJson is null");
+    }
+
+    public Timestamp getCreateTime()
+    {
+        return createTime;
+    }
+
+    public Timestamp getExecutionStartTime()
+    {
+        return executionStartTime;
+    }
+
+    public Timestamp getEndTime()
+    {
+        return endTime;
     }
 
     public String getQueryId()
@@ -270,15 +296,15 @@ public class QueryEntity
         return queryState;
     }
 
-    public Optional<String> getPlan()
-    {
-        return plan;
-    }
+//    public Optional<String> getPlan()
+//    {
+//        return plan;
+//    }
 
-    public Optional<String> getStageInfoJson()
-    {
-        return stageInfoJson;
-    }
+//    public Optional<String> getStageInfoJson()
+//    {
+//        return stageInfoJson;
+//    }
 
     public String getUser()
     {
@@ -365,10 +391,10 @@ public class QueryEntity
         return inputsJson;
     }
 
-    public Optional<String> getOutputJson()
-    {
-        return outputJson;
-    }
+//    public Optional<String> getOutputJson()
+//    {
+//        return outputJson;
+//    }
 
     public Optional<String> getErrorCode()
     {
@@ -570,8 +596,8 @@ public class QueryEntity
         return retryPolicy;
     }
 
-    public Optional<String> getOperatorSummariesJson()
-    {
-        return operatorSummariesJson;
-    }
+//    public Optional<String> getOperatorSummariesJson()
+//    {
+//        return operatorSummariesJson;
+//    }
 }

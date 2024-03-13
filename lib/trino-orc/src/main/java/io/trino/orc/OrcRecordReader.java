@@ -19,8 +19,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.io.Closer;
+import com.google.errorprone.annotations.FormatMethod;
 import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
 import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.memory.context.LocalMemoryContext;
@@ -237,7 +237,7 @@ public class OrcRecordReader
                 .mapToLong(StripeInformation::getNumberOfRows)
                 .sum();
 
-        this.userMetadata = ImmutableMap.copyOf(Maps.transformValues(userMetadata, Slices::copyOf));
+        this.userMetadata = ImmutableMap.copyOf(Maps.transformValues(userMetadata, Slice::copy));
 
         this.currentStripeMemoryContext = this.memoryUsage.newAggregatedMemoryContext();
         // The streamReadersMemoryContext covers the StreamReader local buffer sizes, plus leaf node StreamReaders'
@@ -479,7 +479,7 @@ public class OrcRecordReader
 
     public Map<String, Slice> getUserMetadata()
     {
-        return ImmutableMap.copyOf(Maps.transformValues(userMetadata, Slices::copyOf));
+        return ImmutableMap.copyOf(Maps.transformValues(userMetadata, Slice::copy));
     }
 
     private boolean advanceToNextRowGroup()
@@ -571,6 +571,8 @@ public class OrcRecordReader
         orcDataSourceMemoryUsage.setBytes(orcDataSource.getRetainedSize());
     }
 
+    @SuppressWarnings("FormatStringAnnotation")
+    @FormatMethod
     private void validateWrite(Predicate<OrcWriteValidation> test, String messageFormat, Object... args)
             throws OrcCorruptionException
     {

@@ -89,6 +89,7 @@ import java.time.temporal.ChronoField;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.BiFunction;
 
@@ -346,6 +347,12 @@ public class OracleClient
     public void renameSchema(ConnectorSession session, String schemaName, String newSchemaName)
     {
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming schemas");
+    }
+
+    @Override
+    public OptionalInt getMaxColumnNameLength(ConnectorSession session)
+    {
+        return getMaxColumnNameLengthFromDatabaseMetaData(session);
     }
 
     @Override
@@ -757,18 +764,18 @@ public class OracleClient
     public static LongWriteFunction oracleRealWriteFunction()
     {
         return LongWriteFunction.of(Types.REAL, (statement, index, value) ->
-                ((OraclePreparedStatement) statement).setBinaryFloat(index, intBitsToFloat(toIntExact(value))));
+                statement.unwrap(OraclePreparedStatement.class).setBinaryFloat(index, intBitsToFloat(toIntExact(value))));
     }
 
     public static DoubleWriteFunction oracleDoubleWriteFunction()
     {
         return DoubleWriteFunction.of(Types.DOUBLE, (statement, index, value) ->
-                ((OraclePreparedStatement) statement).setBinaryDouble(index, value));
+                statement.unwrap(OraclePreparedStatement.class).setBinaryDouble(index, value));
     }
 
     private SliceWriteFunction oracleCharWriteFunction()
     {
-        return SliceWriteFunction.of(Types.NCHAR, (statement, index, value) -> ((OraclePreparedStatement) statement).setFixedCHAR(index, value.toStringUtf8()));
+        return SliceWriteFunction.of(Types.NCHAR, (statement, index, value) -> statement.unwrap(OraclePreparedStatement.class).setFixedCHAR(index, value.toStringUtf8()));
     }
 
     @Override

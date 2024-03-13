@@ -26,6 +26,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -48,8 +49,10 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
 @TestInstance(PER_CLASS)
+@Execution(SAME_THREAD)
 public class TestBlackHoleSmoke
 {
     private QueryRunner queryRunner;
@@ -218,59 +221,6 @@ public class TestBlackHoleSmoke
         return (String) queryRunner.execute("SELECT comment FROM system.metadata.table_comments " +
                 "WHERE catalog_name = CURRENT_CATALOG AND schema_name = CURRENT_SCHEMA AND table_name = '" + tableName + "'")
                 .getOnlyValue();
-    }
-
-    @Test
-    public void testMaterializedView()
-    {
-        String viewName = "test_materialized_view_" + randomNameSuffix();
-        queryRunner.execute("CREATE MATERIALIZED VIEW " + viewName + " AS SELECT * FROM tpch.tiny.nation");
-
-        try {
-            // reading
-            MaterializedResult rows = queryRunner.execute("SELECT * FROM " + viewName);
-            assertThat(rows.getRowCount()).isEqualTo(25);
-
-            // listing
-            assertThat(queryRunner.execute("SHOW TABLES").getOnlyColumnAsSet())
-                    .contains(viewName);
-        }
-        finally {
-            assertThatQueryDoesNotReturnValues("DROP MATERIALIZED VIEW " + viewName);
-        }
-    }
-
-    @Test
-    public void testCommentMaterializedViewColumn()
-    {
-        String viewName = "test_materialized_view_" + randomNameSuffix();
-        try {
-            queryRunner.execute("CREATE MATERIALIZED VIEW " + viewName + " AS SELECT * FROM tpch.tiny.nation");
-
-            // comment set
-            queryRunner.execute("COMMENT ON COLUMN " + viewName + ".regionkey IS 'new region key comment'");
-            assertThat(getColumnComment(viewName, "regionkey")).isEqualTo("new region key comment");
-
-            // comment updated
-            queryRunner.execute("COMMENT ON COLUMN " + viewName + ".regionkey IS 'updated region key comment'");
-            assertThat(getColumnComment(viewName, "regionkey")).isEqualTo("updated region key comment");
-
-            // comment set to empty
-            queryRunner.execute("COMMENT ON COLUMN " + viewName + ".regionkey IS ''");
-            assertThat(getColumnComment(viewName, "regionkey")).isEqualTo("");
-
-            // comment deleted
-            queryRunner.execute("COMMENT ON COLUMN " + viewName + ".regionkey IS NULL");
-            assertThat(getColumnComment(viewName, "regionkey")).isEqualTo(null);
-        }
-        finally {
-            assertThatQueryDoesNotReturnValues("DROP MATERIALIZED VIEW " + viewName);
-        }
-    }
-
-    private String getColumnComment(String tableName, String columnName)
-    {
-        return (String) queryRunner.execute(format("SELECT comment FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", "default", tableName, columnName)).getOnlyValue();
     }
 
     @Test

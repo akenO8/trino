@@ -15,15 +15,15 @@ package io.trino.block;
 
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.ByteArrayBlock;
 import io.trino.spi.block.ByteArrayBlockBuilder;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestByteArrayBlock
         extends AbstractTestBlock
@@ -51,16 +51,16 @@ public class TestByteArrayBlock
         BlockBuilder emptyBlockBuilder = new ByteArrayBlockBuilder(null, 0);
 
         ByteArrayBlockBuilder blockBuilder = new ByteArrayBlockBuilder(null, expectedValues.length);
-        assertEquals(blockBuilder.getSizeInBytes(), emptyBlockBuilder.getSizeInBytes());
-        assertEquals(blockBuilder.getRetainedSizeInBytes(), emptyBlockBuilder.getRetainedSizeInBytes());
+        assertThat(blockBuilder.getSizeInBytes()).isEqualTo(emptyBlockBuilder.getSizeInBytes());
+        assertThat(blockBuilder.getRetainedSizeInBytes()).isEqualTo(emptyBlockBuilder.getRetainedSizeInBytes());
 
         writeValues(expectedValues, blockBuilder);
-        assertTrue(blockBuilder.getSizeInBytes() > emptyBlockBuilder.getSizeInBytes());
-        assertTrue(blockBuilder.getRetainedSizeInBytes() > emptyBlockBuilder.getRetainedSizeInBytes());
+        assertThat(blockBuilder.getSizeInBytes() > emptyBlockBuilder.getSizeInBytes()).isTrue();
+        assertThat(blockBuilder.getRetainedSizeInBytes() > emptyBlockBuilder.getRetainedSizeInBytes()).isTrue();
 
         blockBuilder = (ByteArrayBlockBuilder) blockBuilder.newBlockBuilderLike(null);
-        assertEquals(blockBuilder.getSizeInBytes(), emptyBlockBuilder.getSizeInBytes());
-        assertEquals(blockBuilder.getRetainedSizeInBytes(), emptyBlockBuilder.getRetainedSizeInBytes());
+        assertThat(blockBuilder.getSizeInBytes()).isEqualTo(emptyBlockBuilder.getSizeInBytes());
+        assertThat(blockBuilder.getRetainedSizeInBytes()).isEqualTo(emptyBlockBuilder.getRetainedSizeInBytes());
     }
 
     @Test
@@ -83,9 +83,8 @@ public class TestByteArrayBlock
 
     private void assertFixedWithValues(Slice[] expectedValues)
     {
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
-        assertBlock(blockBuilder, expectedValues);
-        assertBlock(blockBuilder.build(), expectedValues);
+        Block block = createBlockBuilderWithValues(expectedValues).build();
+        assertBlock(block, expectedValues);
     }
 
     private static BlockBuilder createBlockBuilderWithValues(Slice[] expectedValues)

@@ -16,6 +16,7 @@ package io.trino.execution;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Inject;
 import io.trino.Session;
+import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.MaterializedViewDefinition;
 import io.trino.metadata.MaterializedViewPropertyManager;
@@ -155,8 +156,11 @@ public class CreateMaterializedViewTask
                 gracePeriod,
                 statement.getComment(),
                 session.getIdentity(),
-                Optional.empty(),
-                properties);
+                session.getPath().getPath().stream()
+                        // system path elements are not stored
+                        .filter(element -> !element.getCatalogName().equals(GlobalSystemConnector.NAME))
+                        .collect(toImmutableList()),
+                Optional.empty());
 
         Set<String> specifiedPropertyKeys = statement.getProperties().stream()
                 // property names are case-insensitive and normalized to lower case
@@ -167,7 +171,7 @@ public class CreateMaterializedViewTask
                 .filter(specifiedPropertyKeys::contains)
                 .collect(toImmutableMap(Function.identity(), properties::get));
         accessControl.checkCanCreateMaterializedView(session.toSecurityContext(), name, explicitlySetProperties);
-        plannerContext.getMetadata().createMaterializedView(session, name, definition, statement.isReplace(), statement.isNotExists());
+        plannerContext.getMetadata().createMaterializedView(session, name, definition, properties, statement.isReplace(), statement.isNotExists());
 
         stateMachine.setOutput(analysis.getTarget());
         stateMachine.setReferencedTables(analysis.getReferencedTables());

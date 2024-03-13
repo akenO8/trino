@@ -27,13 +27,13 @@ import io.trino.spi.eventlistener.QueryCreatedEvent;
 import io.trino.spi.eventlistener.QueryFailureInfo;
 import io.trino.spi.eventlistener.QueryInputMetadata;
 import io.trino.spi.eventlistener.QueryMetadata;
-import io.trino.spi.eventlistener.QueryOutputMetadata;
 import io.trino.spi.eventlistener.QueryStatistics;
 import io.trino.spi.eventlistener.SplitCompletedEvent;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import jakarta.annotation.PostConstruct;
 
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -56,7 +56,7 @@ public class MysqlEventListener
     private final JsonCodec<Set<String>> clientTagsJsonCodec;
     private final JsonCodec<Map<String, String>> sessionPropertiesJsonCodec;
     private final JsonCodec<List<QueryInputMetadata>> inputsJsonCodec;
-    private final JsonCodec<QueryOutputMetadata> outputJsonCodec;
+//    private final JsonCodec<QueryOutputMetadata> outputJsonCodec;
     private final JsonCodec<List<TrinoWarning>> warningsJsonCodec;
 
     @Inject
@@ -65,14 +65,14 @@ public class MysqlEventListener
             JsonCodec<Set<String>> clientTagsJsonCodec,
             JsonCodec<Map<String, String>> sessionPropertiesJsonCodec,
             JsonCodec<List<QueryInputMetadata>> inputsJsonCodec,
-            JsonCodec<QueryOutputMetadata> outputJsonCodec,
+//            JsonCodec<QueryOutputMetadata> outputJsonCodec,
             JsonCodec<List<TrinoWarning>> warningsJsonCodec)
     {
         this.dao = requireNonNull(dao, "dao is null");
         this.clientTagsJsonCodec = requireNonNull(clientTagsJsonCodec, "clientTagsJsonCodec is null");
         this.sessionPropertiesJsonCodec = requireNonNull(sessionPropertiesJsonCodec, "sessionPropertiesJsonCodec is null");
         this.inputsJsonCodec = requireNonNull(inputsJsonCodec, "inputsJsonCodec is null");
-        this.outputJsonCodec = requireNonNull(outputJsonCodec, "outputJsonCodec is null");
+//        this.outputJsonCodec = requireNonNull(outputJsonCodec, "outputJsonCodec is null");
         this.warningsJsonCodec = requireNonNull(warningsJsonCodec, "warningsJsonCodec is null");
     }
 
@@ -90,17 +90,24 @@ public class MysqlEventListener
     {
         QueryMetadata metadata = event.getMetadata();
         QueryContext context = event.getContext();
+        Timestamp createTime = Timestamp.from(event.getCreateTime());
+        Timestamp executionStartTime = Timestamp.from(event.getExecutionStartTime());
+        Timestamp endTime = Timestamp.from(event.getEndTime());
         Optional<QueryFailureInfo> failureInfo = event.getFailureInfo();
         QueryStatistics stats = event.getStatistics();
+
         QueryEntity entity = new QueryEntity(
+                createTime,
+                executionStartTime,
+                endTime,
                 metadata.getQueryId(),
                 metadata.getTransactionId(),
                 metadata.getQuery(),
                 metadata.getUpdateType(),
                 metadata.getPreparedQuery(),
                 metadata.getQueryState(),
-                metadata.getPlan(),
-                metadata.getPayload(),
+//                metadata.getPlan(),
+//                metadata.getPayload(),
                 context.getUser(),
                 context.getPrincipal(),
                 context.getTraceToken(),
@@ -118,7 +125,7 @@ public class MysqlEventListener
                 context.getEnvironment(),
                 context.getQueryType().map(QueryType::name),
                 inputsJsonCodec.toJson(event.getIoMetadata().getInputs()),
-                event.getIoMetadata().getOutput().map(outputJsonCodec::toJson),
+//                event.getIoMetadata().getOutput().map(outputJsonCodec::toJson),
                 failureInfo.map(QueryFailureInfo::getErrorCode).map(ErrorCode::getName),
                 failureInfo.map(QueryFailureInfo::getErrorCode).map(ErrorCode::getType).map(ErrorType::name),
                 failureInfo.flatMap(QueryFailureInfo::getFailureType),
@@ -158,8 +165,8 @@ public class MysqlEventListener
                 stats.getCumulativeMemory(),
                 stats.getFailedCumulativeMemory(),
                 stats.getCompletedSplits(),
-                context.getRetryPolicy(),
-                createOperatorSummariesJson(metadata.getQueryId(), stats.getOperatorSummaries()));
+                context.getRetryPolicy());
+//                createOperatorSummariesJson(metadata.getQueryId(), stats.getOperatorSummaries()));
         dao.store(entity);
     }
 

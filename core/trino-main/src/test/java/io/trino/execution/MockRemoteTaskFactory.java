@@ -121,6 +121,7 @@ public class MockRemoteTaskFactory
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(symbol)),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
+                ImmutableList.of(),
                 Optional.empty());
 
         ImmutableMultimap.Builder<PlanNodeId, Split> initialSplits = ImmutableMultimap.builder();
@@ -210,6 +211,7 @@ public class MockRemoteTaskFactory
                     memoryPool,
                     new TestingGcMonitor(),
                     executor,
+                    scheduledExecutor,
                     scheduledExecutor,
                     DataSize.of(1, MEGABYTE),
                     spillSpaceTracker);

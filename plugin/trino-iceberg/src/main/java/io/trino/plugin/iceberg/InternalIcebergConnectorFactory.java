@@ -25,10 +25,6 @@ import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.manager.FileSystemModule;
-import io.trino.hdfs.HdfsModule;
-import io.trino.hdfs.authentication.HdfsAuthenticationModule;
-import io.trino.hdfs.azure.HiveAzureModule;
-import io.trino.hdfs.gcs.HiveGcsModule;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSinkProvider;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSourceProvider;
@@ -37,6 +33,7 @@ import io.trino.plugin.base.classloader.ClassLoaderSafeNodePartitioningProvider;
 import io.trino.plugin.base.jmx.ConnectorObjectNameGeneratorModule;
 import io.trino.plugin.base.jmx.MBeanServerModule;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
+import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.iceberg.catalog.IcebergCatalogModule;
 import io.trino.spi.NodeManager;
@@ -52,6 +49,8 @@ import io.trino.spi.connector.ConnectorPageSinkProvider;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.TableProcedureMetadata;
+import io.trino.spi.function.FunctionProvider;
+import io.trino.spi.function.table.ConnectorTableFunction;
 import io.trino.spi.procedure.Procedure;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.type.TypeManager;
@@ -64,6 +63,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 public final class InternalIcebergConnectorFactory
@@ -88,14 +88,10 @@ public final class InternalIcebergConnectorFactory
                     new IcebergModule(),
                     new IcebergSecurityModule(),
                     icebergCatalogModule.orElse(new IcebergCatalogModule()),
-                    new HdfsModule(),
-                    new HiveGcsModule(),
-                    new HiveAzureModule(),
-                    new HdfsAuthenticationModule(),
                     new MBeanServerModule(),
                     fileSystemFactory
                             .map(factory -> (Module) binder -> binder.bind(TrinoFileSystemFactory.class).toInstance(factory))
-                            .orElseGet(FileSystemModule::new),
+                            .orElseGet(() -> new FileSystemModule(catalogName, context.getNodeManager(), context.getOpenTelemetry())),
                     binder -> {
                         binder.bind(OpenTelemetry.class).toInstance(context.getOpenTelemetry());
                         binder.bind(Tracer.class).toInstance(context.getTracer());
@@ -126,11 +122,15 @@ public final class InternalIcebergConnectorFactory
             IcebergAnalyzeProperties icebergAnalyzeProperties = injector.getInstance(IcebergAnalyzeProperties.class);
             Set<Procedure> procedures = injector.getInstance(Key.get(new TypeLiteral<Set<Procedure>>() {}));
             Set<TableProcedureMetadata> tableProcedures = injector.getInstance(Key.get(new TypeLiteral<Set<TableProcedureMetadata>>() {}));
+            Set<ConnectorTableFunction> tableFunctions = injector.getInstance(Key.get(new TypeLiteral<Set<ConnectorTableFunction>>() {}));
+            FunctionProvider functionProvider = injector.getInstance(FunctionProvider.class);
             Optional<ConnectorAccessControl> accessControl = injector.getInstance(Key.get(new TypeLiteral<Optional<ConnectorAccessControl>>() {}));
             // Materialized view should allow configuring all the supported iceberg table properties for the storage table
             List<PropertyMetadata<?>> materializedViewProperties = Stream.of(icebergTableProperties.getTableProperties(), materializedViewAdditionalProperties.getMaterializedViewProperties())
                     .flatMap(Collection::stream)
                     .collect(toImmutableList());
+
+            checkState(!injector.getBindings().containsKey(Key.get(HiveConfig.class)), "HiveConfig should not be bound");
 
             return new IcebergConnector(
                     injector,
@@ -147,7 +147,9 @@ public final class InternalIcebergConnectorFactory
                     icebergAnalyzeProperties.getAnalyzeProperties(),
                     accessControl,
                     procedures,
-                    tableProcedures);
+                    tableProcedures,
+                    tableFunctions,
+                    functionProvider);
         }
     }
 }

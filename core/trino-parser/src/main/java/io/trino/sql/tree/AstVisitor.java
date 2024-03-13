@@ -187,6 +187,16 @@ public abstract class AstVisitor<R, C>
         return visitStatement(node, context);
     }
 
+    protected R visitSetSessionAuthorization(SetSessionAuthorization node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
+    protected R visitResetSessionAuthorization(ResetSessionAuthorization node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
     protected R visitGenericLiteral(GenericLiteral node, C context)
     {
         return visitLiteral(node, context);
@@ -1213,6 +1223,126 @@ public abstract class AstVisitor<R, C>
     }
 
     protected R visitJsonTableDefaultPlan(JsonTableDefaultPlan node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitCreateFunction(CreateFunction node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
+    protected R visitDropFunction(DropFunction node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
+    protected R visitFunctionSpecification(FunctionSpecification node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitParameterDeclaration(ParameterDeclaration node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitReturnClause(ReturnsClause node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitLanguageCharacteristic(LanguageCharacteristic node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitDeterministicCharacteristic(DeterministicCharacteristic node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitNullInputCharacteristic(NullInputCharacteristic node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitSecurityCharacteristic(SecurityCharacteristic node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitCommentCharacteristic(CommentCharacteristic node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitReturnStatement(ReturnStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitCompoundStatement(CompoundStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitVariableDeclaration(VariableDeclaration node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitAssignmentStatement(AssignmentStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitCaseStatement(CaseStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitCaseStatementWhenClause(CaseStatementWhenClause node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitIfStatement(IfStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitElseClause(ElseClause node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitElseIfClause(ElseIfClause node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitIterateStatement(IterateStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitLeaveStatement(LeaveStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitWhileStatement(WhileStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitLoopStatement(LoopStatement node, C context)
+    {
+        return visitNode(node, context);
+    }
+
+    protected R visitRepeatStatement(RepeatStatement node, C context)
     {
         return visitNode(node, context);
     }

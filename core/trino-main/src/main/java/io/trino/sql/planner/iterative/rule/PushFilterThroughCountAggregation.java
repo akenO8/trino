@@ -21,11 +21,13 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
@@ -37,21 +39,21 @@ import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.sql.tree.Expression;
 
 import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.matching.Capture.newCapture;
-import static io.trino.sql.ExpressionUtils.combineConjuncts;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.planner.DomainTranslator.getExtractionResult;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
 import static io.trino.sql.planner.plan.Patterns.aggregation;
 import static io.trino.sql.planner.plan.Patterns.filter;
 import static io.trino.sql.planner.plan.Patterns.project;
 import static io.trino.sql.planner.plan.Patterns.source;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -95,6 +97,8 @@ import static java.util.Objects.requireNonNull;
  */
 public class PushFilterThroughCountAggregation
 {
+    private static final CatalogSchemaFunctionName COUNT_NAME = builtinFunctionName("count");
+
     private final PlannerContext plannerContext;
 
     public PushFilterThroughCountAggregation(PlannerContext plannerContext)
@@ -226,7 +230,7 @@ public class PushFilterThroughCountAggregation
             TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(countSymbol));
             Expression newPredicate = combineConjuncts(
                     plannerContext.getMetadata(),
-                    new DomainTranslator(plannerContext).toPredicate(context.getSession(), newTupleDomain),
+                    new DomainTranslator(plannerContext).toPredicate(newTupleDomain),
                     extractionResult.getRemainingExpression());
             if (newPredicate.equals(TRUE_LITERAL)) {
                 return Result.ofPlanNode(filterSource);
@@ -253,7 +257,7 @@ public class PushFilterThroughCountAggregation
         }
 
         BoundSignature signature = aggregation.getResolvedFunction().getSignature();
-        return signature.getArgumentTypes().isEmpty() && signature.getName().equals("count");
+        return signature.getArgumentTypes().isEmpty() && signature.getName().equals(COUNT_NAME);
     }
 
     private static boolean isGroupedAggregation(AggregationNode aggregationNode)

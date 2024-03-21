@@ -21,7 +21,7 @@ import com.google.common.collect.Sets;
 import io.trino.Session;
 import io.trino.metadata.Metadata;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.SingleRowBlock;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
@@ -29,6 +29,11 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.Row;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AssignUniqueId;
 import io.trino.sql.planner.plan.DistinctLimitNode;
@@ -49,11 +54,6 @@ import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.planner.plan.UnnestNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.Row;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -71,12 +71,12 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.spi.type.TypeUtils.isFloatingPointNaN;
 import static io.trino.spi.type.TypeUtils.readNativeValue;
-import static io.trino.sql.ExpressionUtils.combineConjuncts;
-import static io.trino.sql.ExpressionUtils.expressionOrNullSymbols;
-import static io.trino.sql.ExpressionUtils.extractConjuncts;
-import static io.trino.sql.ExpressionUtils.filterDeterministicConjuncts;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
+import static io.trino.sql.ir.IrUtils.expressionOrNullSymbols;
+import static io.trino.sql.ir.IrUtils.extractConjuncts;
+import static io.trino.sql.ir.IrUtils.filterDeterministicConjuncts;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -109,7 +109,7 @@ public class EffectivePredicateExtractor
         this.useTableProperties = useTableProperties;
     }
 
-    public Expression extract(Session session, PlanNode node, TypeProvider types, TypeAnalyzer typeAnalyzer)
+    public Expression extract(Session session, PlanNode node, TypeProvider types, IrTypeAnalyzer typeAnalyzer)
     {
         return node.accept(new Visitor(domainTranslator, plannerContext, session, types, typeAnalyzer, useTableProperties), null);
     }
@@ -122,10 +122,10 @@ public class EffectivePredicateExtractor
         private final Metadata metadata;
         private final Session session;
         private final TypeProvider types;
-        private final TypeAnalyzer typeAnalyzer;
+        private final IrTypeAnalyzer typeAnalyzer;
         private final boolean useTableProperties;
 
-        public Visitor(DomainTranslator domainTranslator, PlannerContext plannerContext, Session session, TypeProvider types, TypeAnalyzer typeAnalyzer, boolean useTableProperties)
+        public Visitor(DomainTranslator domainTranslator, PlannerContext plannerContext, Session session, TypeProvider types, IrTypeAnalyzer typeAnalyzer, boolean useTableProperties)
         {
             this.domainTranslator = requireNonNull(domainTranslator, "domainTranslator is null");
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
@@ -259,7 +259,7 @@ public class EffectivePredicateExtractor
             }
 
             // TODO: replace with metadata.getTableProperties() when table layouts are fully removed
-            return domainTranslator.toPredicate(session, predicate.simplify()
+            return domainTranslator.toPredicate(predicate.simplify()
                     .filter((columnHandle, domain) -> assignments.containsKey(columnHandle))
                     .transformKeys(assignments::get));
         }
@@ -292,14 +292,7 @@ public class EffectivePredicateExtractor
         @Override
         public Expression visitUnnest(UnnestNode node, Void context)
         {
-            Expression sourcePredicate = node.getSource().accept(this, context);
-
-            return switch (node.getJoinType()) {
-                case INNER, LEFT -> pullExpressionThroughSymbols(
-                        combineConjuncts(metadata, node.getFilter().orElse(TRUE_LITERAL), sourcePredicate),
-                        node.getOutputSymbols());
-                case RIGHT, FULL -> TRUE_LITERAL;
-            };
+            return TRUE_LITERAL;
         }
 
         @Override
@@ -376,7 +369,7 @@ public class EffectivePredicateExtractor
                             nonDeterministic[i] = true;
                         }
                         else {
-                            ExpressionInterpreter interpreter = new ExpressionInterpreter(value, plannerContext, session, expressionTypes);
+                            IrExpressionInterpreter interpreter = new IrExpressionInterpreter(value, plannerContext, session, expressionTypes);
                             Object item = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
                             if (item instanceof Expression) {
                                 return TRUE_LITERAL;
@@ -406,14 +399,17 @@ public class EffectivePredicateExtractor
                     if (!DeterminismEvaluator.isDeterministic(row, metadata)) {
                         return TRUE_LITERAL;
                     }
-                    ExpressionInterpreter interpreter = new ExpressionInterpreter(row, plannerContext, session, expressionTypes);
+                    IrExpressionInterpreter interpreter = new IrExpressionInterpreter(row, plannerContext, session, expressionTypes);
                     Object evaluated = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
                     if (evaluated instanceof Expression) {
                         return TRUE_LITERAL;
                     }
+                    SqlRow sqlRow = (SqlRow) evaluated;
+                    int rawIndex = sqlRow.getRawIndex();
                     for (int i = 0; i < node.getOutputSymbols().size(); i++) {
                         Type type = types.get(node.getOutputSymbols().get(i));
-                        Object item = readNativeValue(type, (SingleRowBlock) evaluated, i);
+                        Block fieldBlock = sqlRow.getRawFieldBlock(i);
+                        Object item = readNativeValue(type, fieldBlock, rawIndex);
                         if (item == null) {
                             hasNull[i] = true;
                         }
@@ -467,17 +463,18 @@ public class EffectivePredicateExtractor
             }
 
             // simplify to avoid a large expression if there are many rows in ValuesNode
-            return domainTranslator.toPredicate(session, TupleDomain.withColumnDomains(domains.buildOrThrow()).simplify());
+            return domainTranslator.toPredicate(TupleDomain.withColumnDomains(domains.buildOrThrow()).simplify());
         }
 
         private boolean hasNestedNulls(Type type, Object value)
         {
             if (type instanceof RowType rowType) {
-                Block container = (Block) value;
+                SqlRow sqlRow = (SqlRow) value;
+                int rawIndex = sqlRow.getRawIndex();
                 for (int i = 0; i < rowType.getFields().size(); i++) {
                     Type elementType = rowType.getFields().get(i).getType();
-
-                    if (container.isNull(i) || elementHasNulls(elementType, container, i)) {
+                    Block fieldBlock = sqlRow.getRawFieldBlock(i);
+                    if (fieldBlock.isNull(rawIndex) || elementHasNulls(elementType, fieldBlock, rawIndex)) {
                         return true;
                     }
                 }
@@ -498,7 +495,11 @@ public class EffectivePredicateExtractor
 
         private boolean elementHasNulls(Type elementType, Block container, int position)
         {
-            if (elementType instanceof RowType || elementType instanceof ArrayType) {
+            if (elementType instanceof RowType rowType) {
+                SqlRow element = rowType.getObject(container, position);
+                return hasNestedNulls(elementType, element);
+            }
+            if (elementType instanceof ArrayType) {
                 Block element = (Block) elementType.getObject(container, position);
                 return hasNestedNulls(elementType, element);
             }

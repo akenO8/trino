@@ -15,10 +15,20 @@ package io.trino.sql.planner.optimizations;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.SystemSessionProperties;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import org.junit.jupiter.api.Test;
 
+import static io.trino.spi.type.VarcharType.createVarcharType;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.NOT_EQUAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
@@ -26,7 +36,7 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictTableScan;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
+import static io.trino.sql.planner.plan.JoinType.INNER;
 
 public class TestEliminateCrossJoins
         extends BasePlanTest
@@ -68,11 +78,10 @@ public class TestEliminateCrossJoins
                         join(INNER, builder -> builder
                                 .equiCriteria("L_ORDERKEY", "O_ORDERKEY")
                                 .left(
-                                        anyTree(
-                                                join(INNER, leftJoinBuilder -> leftJoinBuilder
-                                                        .equiCriteria("P_PARTKEY", "L_PARTKEY")
-                                                        .left(anyTree(PART_TABLESCAN))
-                                                        .right(anyTree(LINEITEM_TABLESCAN)))))
+                                        join(INNER, leftJoinBuilder -> leftJoinBuilder
+                                                .equiCriteria("P_PARTKEY", "L_PARTKEY")
+                                                .left(anyTree(PART_TABLESCAN))
+                                                .right(anyTree(LINEITEM_TABLESCAN))))
                                 .right(anyTree(ORDERS_TABLESCAN)))));
     }
 
@@ -106,10 +115,9 @@ public class TestEliminateCrossJoins
                         join(INNER, builder -> builder
                                 .equiCriteria("O_ORDERKEY", "L_ORDERKEY")
                                 .left(
-                                        anyTree(
-                                                join(INNER, leftJoinBuilder -> leftJoinBuilder
-                                                        .left(tableScan("part"))
-                                                        .right(anyTree(tableScan("orders", ImmutableMap.of("O_ORDERKEY", "orderkey")))))))
+                                        join(INNER, leftJoinBuilder -> leftJoinBuilder
+                                                .left(tableScan("part"))
+                                                .right(anyTree(tableScan("orders", ImmutableMap.of("O_ORDERKEY", "orderkey"))))))
                                 .right(
                                         anyTree(tableScan("lineitem", ImmutableMap.of("L_ORDERKEY", "orderkey")))))));
     }
@@ -125,17 +133,17 @@ public class TestEliminateCrossJoins
                         join(INNER, builder -> builder
                                 .equiCriteria("L_ORDERKEY", "O_ORDERKEY")
                                 .left(
-                                        anyTree(
-                                                join(INNER, leftJoinBuilder -> leftJoinBuilder
-                                                        .equiCriteria("P_PARTKEY", "L_PARTKEY")
-                                                        .filter("P_NAME < expr")
-                                                        .left(anyTree(PART_WITH_NAME_TABLESCAN))
-                                                        .right(
-                                                                anyTree(
-                                                                        project(
-                                                                                ImmutableMap.of("expr", expression("cast(L_COMMENT AS varchar(55))")),
-                                                                                filter("L_PARTKEY <> L_ORDERKEY",
-                                                                                        LINEITEM_WITH_COMMENT_TABLESCAN)))))))
+                                        join(INNER, leftJoinBuilder -> leftJoinBuilder
+                                                .equiCriteria("P_PARTKEY", "L_PARTKEY")
+                                                .filter(new ComparisonExpression(LESS_THAN, new SymbolReference("P_NAME"), new SymbolReference("expr")))
+                                                .left(anyTree(PART_WITH_NAME_TABLESCAN))
+                                                .right(
+                                                        anyTree(
+                                                                project(
+                                                                        ImmutableMap.of("expr", expression(new Cast(new SymbolReference("L_COMMENT"), createVarcharType(55)))),
+                                                                        filter(
+                                                                                new ComparisonExpression(NOT_EQUAL, new SymbolReference("L_PARTKEY"), new SymbolReference("L_ORDERKEY")),
+                                                                                LINEITEM_WITH_COMMENT_TABLESCAN))))))
                                 .right(anyTree(ORDERS_TABLESCAN)))));
     }
 
@@ -148,12 +156,15 @@ public class TestEliminateCrossJoins
                         join(INNER, builder -> builder
                                 .equiCriteria("L_ORDERKEY", "O_ORDERKEY")
                                 .left(
-                                        anyTree(
-                                                join(INNER, leftJoinBuilder -> leftJoinBuilder
-                                                        .equiCriteria("P_PARTKEY", "L_PARTKEY")
-                                                        .left(anyTree(PART_TABLESCAN))
-                                                        .right(anyTree(filter("L_RETURNFLAG = 'R'", LINEITEM_WITH_RETURNFLAG_TABLESCAN))))))
+                                        join(INNER, leftJoinBuilder -> leftJoinBuilder
+                                                .equiCriteria("P_PARTKEY", "L_PARTKEY")
+                                                .left(anyTree(PART_TABLESCAN))
+                                                .right(anyTree(filter(
+                                                        new ComparisonExpression(EQUAL, new SymbolReference("L_RETURNFLAG"), new StringLiteral("R")),
+                                                        LINEITEM_WITH_RETURNFLAG_TABLESCAN)))))
                                 .right(
-                                        anyTree(filter("O_SHIPPRIORITY >= 10", ORDERS_WITH_SHIPPRIORITY_TABLESCAN))))));
+                                        anyTree(filter(
+                                                new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("O_SHIPPRIORITY"), new LongLiteral(10)),
+                                                ORDERS_WITH_SHIPPRIORITY_TABLESCAN))))));
     }
 }

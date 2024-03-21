@@ -13,25 +13,38 @@
  */
 package io.trino.sql.planner.assertions;
 
-import io.trino.sql.parser.ParsingOptions;
-import io.trino.sql.parser.SqlParser;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.SymbolReference;
-import org.testng.annotations.Test;
+import com.google.common.collect.ImmutableList;
+import io.trino.sql.ir.BetweenPredicate;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
+import org.junit.jupiter.api.Test;
 
-import static io.trino.sql.ExpressionUtils.rewriteIdentifiersToSymbolReferences;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.IS_DISTINCT_FROM;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.NOT_EQUAL;
+import static io.trino.sql.ir.LogicalExpression.Operator.AND;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
 
 public class TestExpressionVerifier
 {
-    private final SqlParser parser = new SqlParser();
-
     @Test
     public void test()
     {
-        Expression actual = expression("NOT(orderkey = 3 AND custkey = 3 AND orderkey < 10)");
+        Expression actual = new NotExpression(new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(EQUAL, new SymbolReference("orderkey"), new LongLiteral(3)), new ComparisonExpression(EQUAL, new SymbolReference("custkey"), new LongLiteral(3)), new ComparisonExpression(LESS_THAN, new SymbolReference("orderkey"), new LongLiteral(10)))));
 
         SymbolAliases symbolAliases = SymbolAliases.builder()
                 .put("X", new SymbolReference("orderkey"))
@@ -40,11 +53,11 @@ public class TestExpressionVerifier
 
         ExpressionVerifier verifier = new ExpressionVerifier(symbolAliases);
 
-        assertTrue(verifier.process(actual, expression("NOT(X = 3 AND Y = 3 AND X < 10)")));
-        assertThatThrownBy(() -> verifier.process(actual, expression("NOT(X = 3 AND Y = 3 AND Z < 10)")))
+        assertThat(verifier.process(actual, new NotExpression(new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(EQUAL, new SymbolReference("X"), new LongLiteral(3)), new ComparisonExpression(EQUAL, new SymbolReference("Y"), new LongLiteral(3)), new ComparisonExpression(LESS_THAN, new SymbolReference("X"), new LongLiteral(10))))))).isTrue();
+        assertThatThrownBy(() -> verifier.process(actual, new NotExpression(new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(EQUAL, new SymbolReference("X"), new LongLiteral(3)), new ComparisonExpression(EQUAL, new SymbolReference("Y"), new LongLiteral(3)), new ComparisonExpression(LESS_THAN, new SymbolReference("Z"), new LongLiteral(10)))))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("missing expression for alias Z");
-        assertFalse(verifier.process(actual, expression("NOT(X = 3 AND X = 3 AND X < 10)")));
+        assertThat(verifier.process(actual, new NotExpression(new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(EQUAL, new SymbolReference("X"), new LongLiteral(3)), new ComparisonExpression(EQUAL, new SymbolReference("X"), new LongLiteral(3)), new ComparisonExpression(LESS_THAN, new SymbolReference("X"), new LongLiteral(10))))))).isFalse();
     }
 
     @Test
@@ -55,9 +68,9 @@ public class TestExpressionVerifier
                 .build();
 
         ExpressionVerifier verifier = new ExpressionVerifier(aliases);
-        assertTrue(verifier.process(expression("VARCHAR '2'"), expression("VARCHAR '2'")));
-        assertFalse(verifier.process(expression("VARCHAR '2'"), expression("CAST('2' AS bigint)")));
-        assertTrue(verifier.process(expression("CAST(orderkey AS varchar)"), expression("CAST(X AS varchar)")));
+        assertThat(verifier.process(new GenericLiteral(VARCHAR, "2"), new GenericLiteral(VARCHAR, "2"))).isTrue();
+        assertThat(verifier.process(new GenericLiteral(VARCHAR, "2"), new Cast(new StringLiteral("2"), BIGINT))).isFalse();
+        assertThat(verifier.process(new Cast(new SymbolReference("orderkey"), VARCHAR), new Cast(new SymbolReference("X"), VARCHAR))).isTrue();
     }
 
     @Test
@@ -70,14 +83,14 @@ public class TestExpressionVerifier
 
         ExpressionVerifier verifier = new ExpressionVerifier(symbolAliases);
         // Complete match
-        assertTrue(verifier.process(expression("orderkey BETWEEN 1 AND 2"), expression("X BETWEEN 1 AND 2")));
+        assertThat(verifier.process(new BetweenPredicate(new SymbolReference("orderkey"), new LongLiteral(1), new LongLiteral(2)), new BetweenPredicate(new SymbolReference("X"), new LongLiteral(1), new LongLiteral(2)))).isTrue();
         // Different value
-        assertFalse(verifier.process(expression("orderkey BETWEEN 1 AND 2"), expression("Y BETWEEN 1 AND 2")));
-        assertFalse(verifier.process(expression("custkey BETWEEN 1 AND 2"), expression("X BETWEEN 1 AND 2")));
+        assertThat(verifier.process(new BetweenPredicate(new SymbolReference("orderkey"), new LongLiteral(1), new LongLiteral(2)), new BetweenPredicate(new SymbolReference("Y"), new LongLiteral(1), new LongLiteral(2)))).isFalse();
+        assertThat(verifier.process(new BetweenPredicate(new SymbolReference("custkey"), new LongLiteral(1), new LongLiteral(2)), new BetweenPredicate(new SymbolReference("X"), new LongLiteral(1), new LongLiteral(2)))).isFalse();
         // Different min or max
-        assertFalse(verifier.process(expression("orderkey BETWEEN 2 AND 4"), expression("X BETWEEN 1 AND 2")));
-        assertFalse(verifier.process(expression("orderkey BETWEEN 1 AND 2"), expression("X BETWEEN '1' AND '2'")));
-        assertFalse(verifier.process(expression("orderkey BETWEEN 1 AND 2"), expression("X BETWEEN 4 AND 7")));
+        assertThat(verifier.process(new BetweenPredicate(new SymbolReference("orderkey"), new LongLiteral(2), new LongLiteral(4)), new BetweenPredicate(new SymbolReference("X"), new LongLiteral(1), new LongLiteral(2)))).isFalse();
+        assertThat(verifier.process(new BetweenPredicate(new SymbolReference("orderkey"), new LongLiteral(1), new LongLiteral(2)), new BetweenPredicate(new SymbolReference("X"), new StringLiteral("1"), new StringLiteral("2")))).isFalse();
+        assertThat(verifier.process(new BetweenPredicate(new SymbolReference("orderkey"), new LongLiteral(1), new LongLiteral(2)), new BetweenPredicate(new SymbolReference("X"), new LongLiteral(4), new LongLiteral(7)))).isFalse();
     }
 
     @Test
@@ -90,43 +103,38 @@ public class TestExpressionVerifier
 
         ExpressionVerifier verifier = new ExpressionVerifier(symbolAliases);
 
-        assertTrue(verifier.process(expression("x > y"), expression("a > b")));
-        assertTrue(verifier.process(expression("x > y"), expression("b < a")));
-        assertTrue(verifier.process(expression("y < x"), expression("a > b")));
-        assertTrue(verifier.process(expression("y < x"), expression("b < a")));
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(GREATER_THAN, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(LESS_THAN, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(GREATER_THAN, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(LESS_THAN, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
 
-        assertFalse(verifier.process(expression("x < y"), expression("a > b")));
-        assertFalse(verifier.process(expression("x < y"), expression("b < a")));
-        assertFalse(verifier.process(expression("y > x"), expression("a > b")));
-        assertFalse(verifier.process(expression("y > x"), expression("b < a")));
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(GREATER_THAN, new SymbolReference("a"), new SymbolReference("b")))).isFalse();
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(LESS_THAN, new SymbolReference("b"), new SymbolReference("a")))).isFalse();
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(GREATER_THAN, new SymbolReference("a"), new SymbolReference("b")))).isFalse();
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(LESS_THAN, new SymbolReference("b"), new SymbolReference("a")))).isFalse();
 
-        assertTrue(verifier.process(expression("x >= y"), expression("a >= b")));
-        assertTrue(verifier.process(expression("x >= y"), expression("b <= a")));
-        assertTrue(verifier.process(expression("y <= x"), expression("a >= b")));
-        assertTrue(verifier.process(expression("y <= x"), expression("b <= a")));
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
 
-        assertFalse(verifier.process(expression("x <= y"), expression("a >= b")));
-        assertFalse(verifier.process(expression("x <= y"), expression("b <= a")));
-        assertFalse(verifier.process(expression("y >= x"), expression("a >= b")));
-        assertFalse(verifier.process(expression("y >= x"), expression("b <= a")));
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isFalse();
+        assertThat(verifier.process(new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isFalse();
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isFalse();
+        assertThat(verifier.process(new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isFalse();
 
-        assertTrue(verifier.process(expression("x = y"), expression("a = b")));
-        assertTrue(verifier.process(expression("x = y"), expression("b = a")));
-        assertTrue(verifier.process(expression("y = x"), expression("a = b")));
-        assertTrue(verifier.process(expression("y = x"), expression("b = a")));
-        assertTrue(verifier.process(expression("x <> y"), expression("a <> b")));
-        assertTrue(verifier.process(expression("x <> y"), expression("b <> a")));
-        assertTrue(verifier.process(expression("y <> x"), expression("a <> b")));
-        assertTrue(verifier.process(expression("y <> x"), expression("b <> a")));
+        assertThat(verifier.process(new ComparisonExpression(EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(NOT_EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(NOT_EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(NOT_EQUAL, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(NOT_EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(NOT_EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(NOT_EQUAL, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(NOT_EQUAL, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(NOT_EQUAL, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
 
-        assertTrue(verifier.process(expression("x IS DISTINCT FROM y"), expression("a IS DISTINCT FROM b")));
-        assertTrue(verifier.process(expression("x IS DISTINCT FROM y"), expression("b IS DISTINCT FROM a")));
-        assertTrue(verifier.process(expression("y IS DISTINCT FROM x"), expression("a IS DISTINCT FROM b")));
-        assertTrue(verifier.process(expression("y IS DISTINCT FROM x"), expression("b IS DISTINCT FROM a")));
-    }
-
-    private Expression expression(String sql)
-    {
-        return rewriteIdentifiersToSymbolReferences(parser.createExpression(sql, new ParsingOptions()));
+        assertThat(verifier.process(new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("x"), new SymbolReference("y")), new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("a"), new SymbolReference("b")))).isTrue();
+        assertThat(verifier.process(new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("y"), new SymbolReference("x")), new ComparisonExpression(IS_DISTINCT_FROM, new SymbolReference("b"), new SymbolReference("a")))).isTrue();
     }
 }

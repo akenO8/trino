@@ -18,6 +18,8 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.SequencePageBuilder;
 import io.trino.Session;
 import io.trino.metadata.FunctionManager;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.operator.DriverYieldSignal;
 import io.trino.operator.index.PageRecordSet;
 import io.trino.operator.project.CursorProcessor;
@@ -26,14 +28,23 @@ import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.connector.RecordSet;
 import io.trino.spi.type.Type;
+import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeAnalyzer;
 import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.relational.RowExpression;
 import io.trino.sql.relational.SqlToRowExpressionTranslator;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.NodeRef;
 import io.trino.testing.TestingSession;
+import io.trino.transaction.TestingTransactionManager;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -58,9 +69,11 @@ import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregate
 import static io.trino.metadata.FunctionManager.createTestingFunctionManager;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.ExpressionTestUtils.createExpression;
-import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
-import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
+import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.MODULUS;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
 import static java.util.Locale.ENGLISH;
 import static java.util.stream.Collectors.toList;
 
@@ -73,8 +86,16 @@ import static java.util.stream.Collectors.toList;
 @BenchmarkMode(Mode.AverageTime)
 public class BenchmarkPageProcessor2
 {
+    private static final TestingTransactionManager TRANSACTION_MANAGER = new TestingTransactionManager();
+    private static final PlannerContext PLANNER_CONTEXT = plannerContextBuilder()
+            .withTransactionManager(TRANSACTION_MANAGER)
+            .build();
+
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction CONCAT = FUNCTIONS.resolveFunction("concat", fromTypes(VARCHAR, VARCHAR));
+
     private static final Map<String, Type> TYPE_MAP = ImmutableMap.of("bigint", BIGINT, "varchar", VARCHAR);
-    private static final TypeAnalyzer TYPE_ANALYZER = createTestingTypeAnalyzer(PLANNER_CONTEXT);
+    private static final IrTypeAnalyzer TYPE_ANALYZER = new IrTypeAnalyzer(PLANNER_CONTEXT);
     private static final Session TEST_SESSION = TestingSession.testSessionBuilder().build();
     private static final int POSITIONS = 1024;
 
@@ -143,10 +164,10 @@ public class BenchmarkPageProcessor2
     private RowExpression getFilter(Type type)
     {
         if (type == VARCHAR) {
-            return rowExpression("cast(varchar0 as bigint) % 2 = 0");
+            return rowExpression(new ComparisonExpression(EQUAL, new ArithmeticBinaryExpression(MODULUS, new Cast(new SymbolReference("varchar0"), BIGINT), new LongLiteral(2)), new LongLiteral(0)));
         }
         if (type == BIGINT) {
-            return rowExpression("bigint0 % 2 = 0");
+            return rowExpression(new ComparisonExpression(EQUAL, new ArithmeticBinaryExpression(MODULUS, new SymbolReference("bigint0"), new LongLiteral(2)), new LongLiteral(0)));
         }
         throw new IllegalArgumentException("filter not supported for type : " + type);
     }
@@ -156,23 +177,21 @@ public class BenchmarkPageProcessor2
         ImmutableList.Builder<RowExpression> builder = ImmutableList.builder();
         if (type == BIGINT) {
             for (int i = 0; i < columnCount; i++) {
-                builder.add(rowExpression("bigint" + i + " + 5"));
+                builder.add(rowExpression(new ArithmeticBinaryExpression(ADD, new SymbolReference("bigint" + i), new LongLiteral(5))));
             }
         }
         else if (type == VARCHAR) {
             for (int i = 0; i < columnCount; i++) {
                 // alternatively use identity expression rowExpression("varchar" + i, type) or
                 // rowExpression("substr(varchar" + i + ", 1, 1)", type)
-                builder.add(rowExpression("concat(varchar" + i + ", 'foo')"));
+                builder.add(rowExpression(new FunctionCall(CONCAT.toQualifiedName(), ImmutableList.of(new SymbolReference("varchar" + i), new StringLiteral("foo")))));
             }
         }
         return builder.build();
     }
 
-    private RowExpression rowExpression(String value)
+    private RowExpression rowExpression(Expression expression)
     {
-        Expression expression = createExpression(value, PLANNER_CONTEXT, TypeProvider.copyOf(symbolTypes));
-
         Map<NodeRef<Expression>, Type> expressionTypes = TYPE_ANALYZER.getTypes(TEST_SESSION, TypeProvider.copyOf(symbolTypes), expression);
         return SqlToRowExpressionTranslator.translate(
                 expression,
@@ -180,6 +199,7 @@ public class BenchmarkPageProcessor2
                 sourceLayout,
                 PLANNER_CONTEXT.getMetadata(),
                 PLANNER_CONTEXT.getFunctionManager(),
+                PLANNER_CONTEXT.getTypeManager(),
                 TEST_SESSION,
                 true);
     }

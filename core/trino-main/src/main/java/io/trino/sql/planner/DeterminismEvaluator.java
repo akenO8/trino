@@ -15,10 +15,9 @@ package io.trino.sql.planner;
 
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
-import io.trino.sql.tree.CurrentTime;
-import io.trino.sql.tree.DefaultExpressionTraversalVisitor;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
+import io.trino.sql.ir.DefaultTraversalVisitor;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
@@ -48,7 +47,7 @@ public final class DeterminismEvaluator
     }
 
     private static class Visitor
-            extends DefaultExpressionTraversalVisitor<AtomicBoolean>
+            extends DefaultTraversalVisitor<AtomicBoolean>
     {
         private final Function<FunctionCall, ResolvedFunction> resolvedFunctionSupplier;
 
@@ -65,26 +64,6 @@ public final class DeterminismEvaluator
                 return null;
             }
             return super.visitFunctionCall(node, deterministic);
-        }
-    }
-
-    public static boolean containsCurrentTimeFunctions(Expression expression)
-    {
-        requireNonNull(expression, "expression is null");
-
-        AtomicBoolean currentTime = new AtomicBoolean(false);
-        new CurrentTimeVisitor().process(expression, currentTime);
-        return currentTime.get();
-    }
-
-    private static class CurrentTimeVisitor
-            extends DefaultExpressionTraversalVisitor<AtomicBoolean>
-    {
-        @Override
-        protected Void visitCurrentTime(CurrentTime node, AtomicBoolean currentTime)
-        {
-            currentTime.set(true);
-            return null;
         }
     }
 }

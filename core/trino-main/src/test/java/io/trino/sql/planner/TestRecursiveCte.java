@@ -16,35 +16,52 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.IfExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.sql.tree.QualifiedName;
+import io.trino.testing.PlanTester;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
 
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
 import static io.trino.sql.planner.LogicalPlanner.Stage.CREATED;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.union;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.window;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFunction;
+import static io.trino.sql.planner.plan.WindowNode.Frame.DEFAULT_FRAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
-import static java.lang.String.format;
 
 public class TestRecursiveCte
         extends BasePlanTest
 {
     @Override
-    protected LocalQueryRunner createLocalQueryRunner()
+    protected PlanTester createPlanTester()
     {
         Session.SessionBuilder sessionBuilder = testSessionBuilder()
                 .setSystemProperty("max_recursion_depth", "1");
 
-        return LocalQueryRunner.create(sessionBuilder.build());
+        return PlanTester.create(sessionBuilder.build());
     }
 
     @Test
@@ -62,38 +79,38 @@ public class TestRecursiveCte
                         union(
                                 // base term
                                 project(project(project(
-                                        ImmutableMap.of("expr", expression("1")),
+                                        ImmutableMap.of("expr", expression(new LongLiteral(1))),
                                         values()))),
                                 // first recursion step
                                 project(project(project(
-                                        ImmutableMap.of("expr_0", expression("expr + 2")),
+                                        ImmutableMap.of("expr_0", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("expr"), new LongLiteral(2)))),
                                         filter(
-                                                "expr < 6",
+                                                new ComparisonExpression(LESS_THAN, new SymbolReference("expr"), new LongLiteral(6)),
                                                 project(project(project(
-                                                        ImmutableMap.of("expr", expression("1")),
+                                                        ImmutableMap.of("expr", expression(new LongLiteral(1))),
                                                         values()))))))),
                                 // "post-recursion" step with convergence assertion
                                 filter(
-                                        "IF((count >= BIGINT '0'), " +
-                                                format("CAST(fail(INTEGER '%d', VARCHAR 'Recursion depth limit exceeded (1). Use ''max_recursion_depth'' session property to modify the limit.') AS boolean), ",
-                                                        NOT_SUPPORTED.toErrorCode().getCode()) +
-                                                "true)",
+                                        new IfExpression(
+                                                new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("count"), new GenericLiteral(BIGINT, "0")),
+                                                new Cast(new FunctionCall(QualifiedName.of("fail"), ImmutableList.of(new GenericLiteral(INTEGER, Integer.toString(NOT_SUPPORTED.toErrorCode().getCode())), new GenericLiteral(VARCHAR, "Recursion depth limit exceeded (1). Use 'max_recursion_depth' session property to modify the limit."))), BOOLEAN),
+                                                TRUE_LITERAL),
                                         window(windowBuilder -> windowBuilder
                                                         .addFunction(
                                                                 "count",
-                                                                functionCall("count", ImmutableList.of())),
+                                                                windowFunction("count", ImmutableList.of(), DEFAULT_FRAME)),
                                                 project(project(project(
-                                                        ImmutableMap.of("expr_1", expression("expr + 2")),
+                                                        ImmutableMap.of("expr_1", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("expr"), new LongLiteral(2)))),
                                                         filter(
-                                                                "expr < 6",
+                                                                new ComparisonExpression(LESS_THAN, new SymbolReference("expr"), new LongLiteral(6)),
                                                                 project(
-                                                                        ImmutableMap.of("expr", expression("expr_0")),
+                                                                        ImmutableMap.of("expr", expression(new SymbolReference("expr_0"))),
                                                                         project(project(project(
-                                                                                ImmutableMap.of("expr_0", expression("expr + 2")),
+                                                                                ImmutableMap.of("expr_0", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("expr"), new LongLiteral(2)))),
                                                                                 filter(
-                                                                                        "expr < 6",
+                                                                                        new ComparisonExpression(LESS_THAN, new SymbolReference("expr"), new LongLiteral(6)),
                                                                                         project(project(project(
-                                                                                                ImmutableMap.of("expr", expression("1")),
+                                                                                                ImmutableMap.of("expr", expression(new LongLiteral(1))),
                                                                                                 values()))))))))))))))));
 
         assertPlan(sql, CREATED, pattern);

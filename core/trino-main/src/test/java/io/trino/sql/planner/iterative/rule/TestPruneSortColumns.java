@@ -15,6 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -56,11 +57,11 @@ public class TestPruneSortColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression("a")),
+                                ImmutableMap.of("a", expression(new SymbolReference("a"))),
                                 sort(
                                         ImmutableList.of(sort("a", ASCENDING, FIRST)),
                                         strictProject(
-                                                ImmutableMap.of("a", expression("a")),
+                                                ImmutableMap.of("a", expression(new SymbolReference("a"))),
                                                 values("a", "b")))));
     }
 

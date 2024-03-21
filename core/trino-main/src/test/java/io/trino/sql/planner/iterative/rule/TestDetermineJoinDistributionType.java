@@ -21,16 +21,20 @@ import io.trino.cost.PlanNodeStatsEstimate;
 import io.trino.cost.SymbolStatsEstimate;
 import io.trino.cost.TaskCountEstimator;
 import io.trino.spi.type.VarcharType;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
-import io.trino.sql.planner.iterative.rule.test.RuleAssert;
+import io.trino.sql.planner.iterative.rule.test.RuleBuilder;
 import io.trino.sql.planner.iterative.rule.test.RuleTester;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.JoinNode.DistributionType;
-import io.trino.sql.planner.plan.JoinNode.Type;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.LimitNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.TableScanNode;
@@ -41,6 +45,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Optional;
 
@@ -48,6 +53,9 @@ import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.JOIN_MAX_BROADCAST_TABLE_SIZE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.MULTIPLY;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.enforceSingleRow;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
@@ -55,20 +63,18 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 import static io.trino.sql.planner.iterative.Lookup.noLookup;
 import static io.trino.sql.planner.iterative.rule.DetermineJoinDistributionType.getFirstKnownOutputSizeInBytes;
 import static io.trino.sql.planner.iterative.rule.DetermineJoinDistributionType.getSourceTablesSizeInBytes;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expressions;
 import static io.trino.sql.planner.plan.JoinNode.DistributionType.PARTITIONED;
 import static io.trino.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
-import static io.trino.sql.planner.plan.JoinNode.Type.FULL;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
-import static io.trino.sql.planner.plan.JoinNode.Type.RIGHT;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static java.lang.Double.NaN;
+import static io.trino.sql.planner.plan.JoinType.FULL;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
+import static io.trino.sql.planner.plan.JoinType.RIGHT;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestDetermineJoinDistributionType
 {
     private static final CostComparator COST_COMPARATOR = new CostComparator(1, 1, 1);
@@ -107,19 +113,19 @@ public class TestDetermineJoinDistributionType
         testDetermineDistributionType(JoinDistributionType.AUTOMATIC, LEFT, DistributionType.PARTITIONED);
     }
 
-    private void testDetermineDistributionType(JoinDistributionType sessionDistributedJoin, Type joinType, DistributionType expectedDistribution)
+    private void testDetermineDistributionType(JoinDistributionType sessionDistributedJoin, JoinType joinType, DistributionType expectedDistribution)
     {
         assertDetermineJoinDistributionType()
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
                 .on(p ->
                         p.join(
                                 joinType,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
                                 Optional.empty()))
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
                 .matches(
                         join(joinType, builder -> builder
                                 .equiCriteria("B1", "A1")
@@ -139,19 +145,19 @@ public class TestDetermineJoinDistributionType
         testRepartitionRightOuter(JoinDistributionType.AUTOMATIC, RIGHT);
     }
 
-    private void testRepartitionRightOuter(JoinDistributionType sessionDistributedJoin, Type joinType)
+    private void testRepartitionRightOuter(JoinDistributionType sessionDistributedJoin, JoinType joinType)
     {
         assertDetermineJoinDistributionType()
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
                 .on(p ->
                         p.join(
                                 joinType,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
                                 Optional.empty()))
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
                 .matches(
                         join(joinType, builder -> builder
                                 .equiCriteria("A1", "B1")
@@ -164,17 +170,17 @@ public class TestDetermineJoinDistributionType
     public void testReplicateScalar()
     {
         assertDetermineJoinDistributionType()
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
                 .on(p ->
                         p.join(
                                 INNER,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
                                 p.enforceSingleRow(
-                                        p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11")))),
+                                        p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11))))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
                                 Optional.empty()))
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
                 .matches(
                         join(INNER, builder -> builder
                                 .equiCriteria("A1", "B1")
@@ -190,22 +196,22 @@ public class TestDetermineJoinDistributionType
         testReplicateNoEquiCriteria(LEFT);
     }
 
-    private void testReplicateNoEquiCriteria(Type joinType)
+    private void testReplicateNoEquiCriteria(JoinType joinType)
     {
         assertDetermineJoinDistributionType()
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
                 .on(p ->
                         p.join(
                                 joinType,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
-                                Optional.of(expression("A1 * B1 > 100"))))
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
+                                Optional.of(new ComparisonExpression(GREATER_THAN, new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("A1"), new SymbolReference("B1")), new LongLiteral(100)))))
                 .matches(
                         join(joinType, builder -> builder
-                                .filter("A1 * B1 > 100")
+                                .filter(new ComparisonExpression(GREATER_THAN, new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("A1"), new SymbolReference("B1")), new LongLiteral(100)))
                                 .distributionType(REPLICATED)
                                 .left(values(ImmutableMap.of("A1", 0)))
                                 .right(values(ImmutableMap.of("B1", 0)))));
@@ -218,8 +224,8 @@ public class TestDetermineJoinDistributionType
                 .on(p ->
                         p.join(
                                 INNER,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
@@ -308,7 +314,7 @@ public class TestDetermineJoinDistributionType
         int aRows = 100;
         int bRows = 10_000;
         assertDetermineJoinDistributionType()
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.AUTOMATIC.name())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
                 .overrideStats("valuesA", PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(aRows)
                         .addSymbolStatistics(ImmutableMap.of(new Symbol("A1"), new SymbolStatsEstimate(0, 100, 0, 6400, 100)))
@@ -329,7 +335,6 @@ public class TestDetermineJoinDistributionType
                             ImmutableList.of(b1),
                             Optional.empty());
                 })
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
                 .matches(
                         join(INNER, builder -> builder
                                 .equiCriteria("B1", "A1")
@@ -377,7 +382,7 @@ public class TestDetermineJoinDistributionType
         int aRows = 10_000;
         int bRows = 10_000;
         assertDetermineJoinDistributionType()
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.AUTOMATIC.name())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.BROADCAST.name())
                 .overrideStats("valuesA", PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(aRows)
                         .addSymbolStatistics(ImmutableMap.of(new Symbol("A1"), new SymbolStatsEstimate(0, 100, 0, 640000, 100)))
@@ -398,7 +403,6 @@ public class TestDetermineJoinDistributionType
                             ImmutableList.of(b1),
                             Optional.empty());
                 })
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.BROADCAST.name())
                 .matches(
                         join(INNER, builder -> builder
                                 .equiCriteria("A1", "B1")
@@ -696,7 +700,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(REPLICATED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // same but with join sides reversed
         assertDetermineJoinDistributionType()
@@ -725,7 +729,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(REPLICATED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // only probe side (with small tables) source stats are available, join sides should be flipped
         assertDetermineJoinDistributionType()
@@ -754,7 +758,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(PARTITIONED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
     }
 
     @Test
@@ -803,7 +807,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(PARTITIONED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // same but with join sides reversed
         assertDetermineJoinDistributionType()
@@ -832,7 +836,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(PARTITIONED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // Use REPLICATED join type for cross join
         assertDetermineJoinDistributionType()
@@ -859,7 +863,7 @@ public class TestDetermineJoinDistributionType
                 .matches(
                         join(INNER, builder -> builder
                                 .distributionType(REPLICATED)
-                                .left(filter("true", values(ImmutableMap.of("B1", 0))))
+                                .left(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))
                                 .right(values(ImmutableMap.of("A1", 0)))));
 
         // Don't flip sides when both are similar in size
@@ -892,26 +896,24 @@ public class TestDetermineJoinDistributionType
                         join(INNER, builder -> builder
                                 .equiCriteria("B1", "A1")
                                 .distributionType(PARTITIONED)
-                                .left(filter("true", values(ImmutableMap.of("B1", 0))))
+                                .left(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))
                                 .right(values(ImmutableMap.of("A1", 0)))));
     }
 
     @Test
     public void testGetSourceTablesSizeInBytes()
     {
-        PlanBuilder planBuilder = new PlanBuilder(new PlanNodeIdAllocator(), tester.getMetadata(), tester.getSession());
+        PlanBuilder planBuilder = new PlanBuilder(new PlanNodeIdAllocator(), tester.getPlannerContext(), tester.getSession());
         Symbol symbol = planBuilder.symbol("col");
         Symbol sourceSymbol1 = planBuilder.symbol("source1");
         Symbol sourceSymbol2 = planBuilder.symbol("soruce2");
 
         // missing source stats
-        assertEquals(
-                getSourceTablesSizeInBytes(
-                        planBuilder.values(symbol),
-                        noLookup(),
-                        node -> PlanNodeStatsEstimate.unknown(),
-                        planBuilder.getTypes()),
-                NaN);
+        assertThat(getSourceTablesSizeInBytes(
+                planBuilder.values(symbol),
+                noLookup(),
+                node -> PlanNodeStatsEstimate.unknown(),
+                planBuilder.getTypes())).isNaN();
 
         // two source plan nodes
         PlanNodeStatsEstimate sourceStatsEstimate1 = PlanNodeStatsEstimate.builder()
@@ -920,74 +922,66 @@ public class TestDetermineJoinDistributionType
         PlanNodeStatsEstimate sourceStatsEstimate2 = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(20)
                 .build();
-        assertEquals(
-                getSourceTablesSizeInBytes(
-                        planBuilder.union(
-                                ImmutableListMultimap.<Symbol, Symbol>builder()
-                                        .put(symbol, sourceSymbol1)
-                                        .put(symbol, sourceSymbol2)
-                                        .build(),
-                                ImmutableList.of(
-                                        planBuilder.tableScan(
-                                                ImmutableList.of(sourceSymbol1),
-                                                ImmutableMap.of(sourceSymbol1, new TestingColumnHandle("col"))),
-                                        planBuilder.values(new PlanNodeId("valuesNode"), sourceSymbol2))),
-                        noLookup(),
-                        node -> {
-                            if (node instanceof TableScanNode) {
-                                return sourceStatsEstimate1;
-                            }
+        assertThat(getSourceTablesSizeInBytes(
+                planBuilder.union(
+                        ImmutableListMultimap.<Symbol, Symbol>builder()
+                                .put(symbol, sourceSymbol1)
+                                .put(symbol, sourceSymbol2)
+                                .build(),
+                        ImmutableList.of(
+                                planBuilder.tableScan(
+                                        ImmutableList.of(sourceSymbol1),
+                                        ImmutableMap.of(sourceSymbol1, new TestingColumnHandle("col"))),
+                                planBuilder.values(new PlanNodeId("valuesNode"), sourceSymbol2))),
+                noLookup(),
+                node -> {
+                    if (node instanceof TableScanNode) {
+                        return sourceStatsEstimate1;
+                    }
 
-                            if (node instanceof ValuesNode) {
-                                return sourceStatsEstimate2;
-                            }
+                    if (node instanceof ValuesNode) {
+                        return sourceStatsEstimate2;
+                    }
 
-                            return PlanNodeStatsEstimate.unknown();
-                        },
-                        planBuilder.getTypes()),
-                270.0);
+                    return PlanNodeStatsEstimate.unknown();
+                },
+                planBuilder.getTypes())).isEqualTo(270.0);
 
         // join node
-        assertEquals(
-                getSourceTablesSizeInBytes(
-                        planBuilder.join(
-                                INNER,
-                                planBuilder.values(sourceSymbol1),
-                                planBuilder.values(sourceSymbol2)),
-                        noLookup(),
-                        node -> sourceStatsEstimate1,
-                        planBuilder.getTypes()),
-                NaN);
+        assertThat(getSourceTablesSizeInBytes(
+                planBuilder.join(
+                        INNER,
+                        planBuilder.values(sourceSymbol1),
+                        planBuilder.values(sourceSymbol2)),
+                noLookup(),
+                node -> sourceStatsEstimate1,
+                planBuilder.getTypes())).isNaN();
 
         // unnest node
-        assertEquals(
-                getSourceTablesSizeInBytes(
-                        planBuilder.unnest(
-                                ImmutableList.of(),
-                                ImmutableList.of(new UnnestNode.Mapping(sourceSymbol1, ImmutableList.of(sourceSymbol1))),
-                                planBuilder.values(sourceSymbol1)),
-                        noLookup(),
-                        node -> sourceStatsEstimate1,
-                        planBuilder.getTypes()),
-                NaN);
+        assertThat(getSourceTablesSizeInBytes(
+                planBuilder.unnest(
+                        ImmutableList.of(),
+                        ImmutableList.of(new UnnestNode.Mapping(sourceSymbol1, ImmutableList.of(sourceSymbol1))),
+                        planBuilder.values(sourceSymbol1)),
+                noLookup(),
+                node -> sourceStatsEstimate1,
+                planBuilder.getTypes())).isNaN();
     }
 
     @Test
     public void testGetApproximateSourceSizeInBytes()
     {
-        PlanBuilder planBuilder = new PlanBuilder(new PlanNodeIdAllocator(), tester.getMetadata(), tester.getSession());
+        PlanBuilder planBuilder = new PlanBuilder(new PlanNodeIdAllocator(), tester.getPlannerContext(), tester.getSession());
         Symbol symbol = planBuilder.symbol("col");
         Symbol sourceSymbol1 = planBuilder.symbol("source1");
         Symbol sourceSymbol2 = planBuilder.symbol("source2");
 
         // missing source stats
-        assertEquals(
-                getFirstKnownOutputSizeInBytes(
-                        planBuilder.values(symbol),
-                        noLookup(),
-                        node -> PlanNodeStatsEstimate.unknown(),
-                        planBuilder.getTypes()),
-                NaN);
+        assertThat(getFirstKnownOutputSizeInBytes(
+                planBuilder.values(symbol),
+                noLookup(),
+                node -> PlanNodeStatsEstimate.unknown(),
+                planBuilder.getTypes())).isNaN();
 
         // two source plan nodes
         PlanNodeStatsEstimate sourceStatsEstimate1 = PlanNodeStatsEstimate.builder()
@@ -1006,135 +1000,125 @@ public class TestDetermineJoinDistributionType
         double unionInputRowCount = filterStatsEstimate.getOutputRowCount() + limitStatsEstimate.getOutputRowCount();
         double sourceSizeInBytes = sourceRowCount + sourceRowCount * BIGINT.getFixedSize();
         // un-estimated union with non-expanding source
-        assertEquals(
-                getFirstKnownOutputSizeInBytes(
-                        planBuilder.union(
-                                ImmutableListMultimap.<Symbol, Symbol>builder()
-                                        .put(symbol, sourceSymbol1)
-                                        .put(symbol, sourceSymbol2)
-                                        .build(),
-                                ImmutableList.of(
-                                        planBuilder.filter(
-                                                TRUE_LITERAL,
-                                                planBuilder.tableScan(
-                                                        ImmutableList.of(sourceSymbol1),
-                                                        ImmutableMap.of(sourceSymbol1, new TestingColumnHandle("col")))),
-                                        planBuilder.limit(20, planBuilder.values(sourceSymbol2)))),
-                        noLookup(),
-                        node -> {
-                            if (node instanceof TableScanNode) {
-                                return sourceStatsEstimate1;
-                            }
-                            if (node instanceof FilterNode) {
-                                return filterStatsEstimate;
-                            }
-                            if (node instanceof ValuesNode) {
-                                return sourceStatsEstimate2;
-                            }
-                            if (node instanceof LimitNode) {
-                                return limitStatsEstimate;
-                            }
+        assertThat(getFirstKnownOutputSizeInBytes(
+                planBuilder.union(
+                        ImmutableListMultimap.<Symbol, Symbol>builder()
+                                .put(symbol, sourceSymbol1)
+                                .put(symbol, sourceSymbol2)
+                                .build(),
+                        ImmutableList.of(
+                                planBuilder.filter(
+                                        TRUE_LITERAL,
+                                        planBuilder.tableScan(
+                                                ImmutableList.of(sourceSymbol1),
+                                                ImmutableMap.of(sourceSymbol1, new TestingColumnHandle("col")))),
+                                planBuilder.limit(20, planBuilder.values(sourceSymbol2)))),
+                noLookup(),
+                node -> {
+                    if (node instanceof TableScanNode) {
+                        return sourceStatsEstimate1;
+                    }
+                    if (node instanceof FilterNode) {
+                        return filterStatsEstimate;
+                    }
+                    if (node instanceof ValuesNode) {
+                        return sourceStatsEstimate2;
+                    }
+                    if (node instanceof LimitNode) {
+                        return limitStatsEstimate;
+                    }
 
-                            return PlanNodeStatsEstimate.unknown();
-                        },
-                        planBuilder.getTypes()),
-                (unionInputRowCount / sourceRowCount) * sourceSizeInBytes);
+                    return PlanNodeStatsEstimate.unknown();
+                },
+                planBuilder.getTypes())).isEqualTo((unionInputRowCount / sourceRowCount) * sourceSizeInBytes);
 
         // join node with known estimate
-        assertEquals(
-                getFirstKnownOutputSizeInBytes(
-                        planBuilder.join(
-                                INNER,
-                                planBuilder.values(sourceSymbol1),
-                                planBuilder.values(sourceSymbol2)),
-                        noLookup(),
-                        node -> sourceStatsEstimate1,
-                        planBuilder.getTypes()),
-                sourceStatsEstimate1.getOutputRowCount() * 2 * (BIGINT.getFixedSize() + 1));
+        assertThat(getFirstKnownOutputSizeInBytes(
+                planBuilder.join(
+                        INNER,
+                        planBuilder.values(sourceSymbol1),
+                        planBuilder.values(sourceSymbol2)),
+                noLookup(),
+                node -> sourceStatsEstimate1,
+                planBuilder.getTypes())).isEqualTo(sourceStatsEstimate1.getOutputRowCount() * 2 * (BIGINT.getFixedSize() + 1));
 
         // un-estimated join with non-expanding source
-        assertEquals(
-                getFirstKnownOutputSizeInBytes(
-                        planBuilder.join(
-                                INNER,
-                                planBuilder.tableScan(
-                                        ImmutableList.of(sourceSymbol1),
-                                        ImmutableMap.of(sourceSymbol1, new TestingColumnHandle("col"))),
-                                planBuilder.values(sourceSymbol2)),
-                        noLookup(),
-                        node -> {
-                            if (node instanceof TableScanNode) {
-                                return sourceStatsEstimate1;
-                            }
-                            if (node instanceof ValuesNode) {
-                                return sourceStatsEstimate2;
-                            }
+        assertThat(getFirstKnownOutputSizeInBytes(
+                planBuilder.join(
+                        INNER,
+                        planBuilder.tableScan(
+                                ImmutableList.of(sourceSymbol1),
+                                ImmutableMap.of(sourceSymbol1, new TestingColumnHandle("col"))),
+                        planBuilder.values(sourceSymbol2)),
+                noLookup(),
+                node -> {
+                    if (node instanceof TableScanNode) {
+                        return sourceStatsEstimate1;
+                    }
+                    if (node instanceof ValuesNode) {
+                        return sourceStatsEstimate2;
+                    }
 
-                            return PlanNodeStatsEstimate.unknown();
-                        },
-                        planBuilder.getTypes()),
-                NaN);
+                    return PlanNodeStatsEstimate.unknown();
+                },
+                planBuilder.getTypes())).isNaN();
 
         // un-estimated union with estimated expanding source
-        assertEquals(
-                getFirstKnownOutputSizeInBytes(
-                        planBuilder.union(
-                                ImmutableListMultimap.<Symbol, Symbol>builder()
-                                        .put(symbol, sourceSymbol1)
-                                        .put(symbol, sourceSymbol2)
-                                        .build(),
-                                ImmutableList.of(
-                                        planBuilder.unnest(
-                                                ImmutableList.of(),
-                                                ImmutableList.of(new UnnestNode.Mapping(sourceSymbol1, ImmutableList.of(sourceSymbol1))),
-                                                planBuilder.values(sourceSymbol1)),
-                                        planBuilder.values(sourceSymbol2))),
-                        noLookup(),
-                        node -> {
-                            if (node instanceof UnnestNode) {
-                                return sourceStatsEstimate1;
-                            }
-                            if (node instanceof ValuesNode) {
-                                return sourceStatsEstimate2;
-                            }
+        assertThat(getFirstKnownOutputSizeInBytes(
+                planBuilder.union(
+                        ImmutableListMultimap.<Symbol, Symbol>builder()
+                                .put(symbol, sourceSymbol1)
+                                .put(symbol, sourceSymbol2)
+                                .build(),
+                        ImmutableList.of(
+                                planBuilder.unnest(
+                                        ImmutableList.of(),
+                                        ImmutableList.of(new UnnestNode.Mapping(sourceSymbol1, ImmutableList.of(sourceSymbol1))),
+                                        planBuilder.values(sourceSymbol1)),
+                                planBuilder.values(sourceSymbol2))),
+                noLookup(),
+                node -> {
+                    if (node instanceof UnnestNode) {
+                        return sourceStatsEstimate1;
+                    }
+                    if (node instanceof ValuesNode) {
+                        return sourceStatsEstimate2;
+                    }
 
-                            return PlanNodeStatsEstimate.unknown();
-                        },
-                        planBuilder.getTypes()),
-                sourceSizeInBytes);
+                    return PlanNodeStatsEstimate.unknown();
+                },
+                planBuilder.getTypes())).isEqualTo(sourceSizeInBytes);
 
         // un-estimated union with un-estimated expanding source
-        assertEquals(
-                getFirstKnownOutputSizeInBytes(
-                        planBuilder.union(
-                                ImmutableListMultimap.<Symbol, Symbol>builder()
-                                        .put(symbol, sourceSymbol1)
-                                        .put(symbol, sourceSymbol2)
-                                        .build(),
-                                ImmutableList.of(
-                                        planBuilder.unnest(
-                                                ImmutableList.of(),
-                                                ImmutableList.of(new UnnestNode.Mapping(sourceSymbol1, ImmutableList.of(sourceSymbol1))),
-                                                planBuilder.values(sourceSymbol1)),
-                                        planBuilder.values(sourceSymbol2))),
-                        noLookup(),
-                        node -> {
-                            if (node instanceof ValuesNode) {
-                                return sourceStatsEstimate2;
-                            }
+        assertThat(getFirstKnownOutputSizeInBytes(
+                planBuilder.union(
+                        ImmutableListMultimap.<Symbol, Symbol>builder()
+                                .put(symbol, sourceSymbol1)
+                                .put(symbol, sourceSymbol2)
+                                .build(),
+                        ImmutableList.of(
+                                planBuilder.unnest(
+                                        ImmutableList.of(),
+                                        ImmutableList.of(new UnnestNode.Mapping(sourceSymbol1, ImmutableList.of(sourceSymbol1))),
+                                        planBuilder.values(sourceSymbol1)),
+                                planBuilder.values(sourceSymbol2))),
+                noLookup(),
+                node -> {
+                    if (node instanceof ValuesNode) {
+                        return sourceStatsEstimate2;
+                    }
 
-                            return PlanNodeStatsEstimate.unknown();
-                        },
-                        planBuilder.getTypes()),
-                NaN);
+                    return PlanNodeStatsEstimate.unknown();
+                },
+                planBuilder.getTypes())).isNaN();
     }
 
-    private RuleAssert assertDetermineJoinDistributionType()
+    private RuleBuilder assertDetermineJoinDistributionType()
     {
         return assertDetermineJoinDistributionType(COST_COMPARATOR);
     }
 
-    private RuleAssert assertDetermineJoinDistributionType(CostComparator costComparator)
+    private RuleBuilder assertDetermineJoinDistributionType(CostComparator costComparator)
     {
         return tester.assertThat(new DetermineJoinDistributionType(costComparator, new TaskCountEstimator(() -> NODES_COUNT)));
     }

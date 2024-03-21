@@ -24,6 +24,9 @@ import java.util.List;
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_104;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_113;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_122;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_OSS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_ISSUE;
@@ -39,7 +42,7 @@ import static org.testng.Assert.assertNotEquals;
 public class TestDeltaLakeSelectCompatibility
         extends BaseTestDeltaLakeS3Storage
 {
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testPartitionedSelectSpecialCharacters()
     {
@@ -58,13 +61,15 @@ public class TestDeltaLakeSelectCompatibility
                     "(2, 'spark+plus'), " +
                     "(3, 'spark space')," +
                     "(4, 'spark:colon')," +
-                    "(5, 'spark%percent')");
+                    "(5, 'spark%percent')," +
+                    "(6, 'spark/forwardslash')");
             onTrino().executeQuery("INSERT INTO delta.default." + tableName + " VALUES " +
                     "(10, 'trino=equal'), " +
                     "(20, 'trino+plus'), " +
                     "(30, 'trino space')," +
                     "(40, 'trino:colon')," +
-                    "(50, 'trino%percent')");
+                    "(50, 'trino%percent')," +
+                    "(60, 'trino/forwardslash')");
 
             List<Row> expectedRows = ImmutableList.of(
                     row(1, "spark=equal"),
@@ -72,11 +77,13 @@ public class TestDeltaLakeSelectCompatibility
                     row(3, "spark space"),
                     row(4, "spark:colon"),
                     row(5, "spark%percent"),
+                    row(6, "spark/forwardslash"),
                     row(10, "trino=equal"),
                     row(20, "trino+plus"),
                     row(30, "trino space"),
                     row(40, "trino:colon"),
-                    row(50, "trino%percent"));
+                    row(50, "trino%percent"),
+                    row(60, "trino/forwardslash"));
 
             assertThat(onDelta().executeQuery("SELECT * FROM default." + tableName))
                     .containsOnly(expectedRows);

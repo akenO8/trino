@@ -68,6 +68,7 @@ import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
+import org.elasticsearch.client.ResponseException;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -79,6 +80,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verifyNotNull;
@@ -86,6 +88,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterators.singletonIterator;
 import static io.airlift.slice.SliceUtf8.getCodePointAt;
+import static io.airlift.slice.SliceUtf8.lengthOfCodePoint;
 import static io.trino.plugin.elasticsearch.ElasticsearchTableHandle.Type.QUERY;
 import static io.trino.plugin.elasticsearch.ElasticsearchTableHandle.Type.SCAN;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
@@ -443,8 +446,19 @@ public class ElasticsearchMetadata
         }
 
         return listTables(session, prefix.getSchema()).stream()
-                .map(name -> getTableMetadata(name.getSchemaName(), name.getTableName()))
-                .map(tableMetadata -> TableColumnsMetadata.forTable(tableMetadata.getTable(), tableMetadata.getColumns()))
+                .flatMap(name -> {
+                    try {
+                        ConnectorTableMetadata tableMetadata = getTableMetadata(name.getSchemaName(), name.getTableName());
+                        return Stream.of(TableColumnsMetadata.forTable(tableMetadata.getTable(), tableMetadata.getColumns()));
+                    }
+                    catch (TrinoException e) {
+                        // this may happen when table is being deleted concurrently
+                        if (e.getCause() instanceof ResponseException cause && cause.getResponse().getStatusLine().getStatusCode() == 404) {
+                            return Stream.empty();
+                        }
+                        throw e;
+                    }
+                })
                 .iterator();
     }
 
@@ -528,7 +542,7 @@ public class ElasticsearchMetadata
                     Object pattern = ((Constant) arguments.get(1)).getValue();
                     Optional<Slice> escape = Optional.empty();
                     if (arguments.size() == 3) {
-                        escape = Optional.of((Slice) (((Constant) arguments.get(2)).getValue()));
+                        escape = Optional.of((Slice) ((Constant) arguments.get(2)).getValue());
                     }
 
                     if (!newRegexes.containsKey(columnName) && pattern instanceof Slice) {
@@ -536,7 +550,7 @@ public class ElasticsearchMetadata
                         if (metadata.getSchema()
                                     .getFields().stream()
                                     .anyMatch(field -> columnName.equals(field.getName()) && field.getType() instanceof PrimitiveType && "keyword".equals(((PrimitiveType) field.getType()).getName()))) {
-                            newRegexes.put(columnName, likeToRegexp(((Slice) pattern), escape));
+                            newRegexes.put(columnName, likeToRegexp((Slice) pattern, escape));
                             continue;
                         }
                     }
@@ -592,7 +606,7 @@ public class ElasticsearchMetadata
         int position = 0;
         while (position < pattern.length()) {
             int currentChar = getCodePointAt(pattern, position);
-            position += 1;
+            position += lengthOfCodePoint(currentChar);
             checkEscape(!escaped || currentChar == '%' || currentChar == '_' || currentChar == escapeChar.get());
             if (!escaped && escapeChar.isPresent() && currentChar == escapeChar.get()) {
                 escaped = true;

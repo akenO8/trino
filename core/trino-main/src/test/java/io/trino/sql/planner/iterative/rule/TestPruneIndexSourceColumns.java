@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.tpch.TpchColumnHandle;
 import io.trino.spi.connector.ColumnHandle;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -46,7 +47,7 @@ public class TestPruneIndexSourceColumns
                 .on(p -> buildProjectedIndexSource(p, symbol -> symbol.getName().equals("orderkey")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("x", expression("orderkey")),
+                                ImmutableMap.of("x", expression(new SymbolReference("orderkey"))),
                                 constrainedIndexSource(
                                         "orders",
                                         ImmutableMap.of("orderkey", "orderkey"))));

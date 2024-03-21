@@ -35,10 +35,10 @@ import io.trino.orc.metadata.statistics.IntegerStatistics;
 import io.trino.orc.metadata.statistics.StringStatistics;
 import io.trino.orc.metadata.statistics.StripeStatistics;
 import io.trino.orc.metadata.statistics.TimestampStatistics;
-import io.trino.orc.proto.OrcProto;
-import io.trino.orc.proto.OrcProto.RowIndexEntry;
-import io.trino.orc.protobuf.ByteString;
-import io.trino.orc.protobuf.CodedInputStream;
+import org.apache.orc.OrcProto;
+import org.apache.orc.OrcProto.RowIndexEntry;
+import org.apache.orc.protobuf.ByteString;
+import org.apache.orc.protobuf.CodedInputStream;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -430,7 +430,7 @@ public class OrcMetadataReader
             return value;
         }
         // Append 0xFF so that it is larger than value
-        Slice newValue = Slices.copyOf(value, 0, index + 1);
+        Slice newValue = value.copy(0, index + 1);
         newValue.setByte(index, 0xFF);
         return newValue;
     }
@@ -450,7 +450,7 @@ public class OrcMetadataReader
         if (index == value.length()) {
             return value;
         }
-        return Slices.copyOf(value, 0, index);
+        return value.copy(0, index);
     }
 
     @VisibleForTesting
@@ -668,6 +668,7 @@ public class OrcMetadataReader
                 return ZLIB;
             case SNAPPY:
                 return SNAPPY;
+            case BROTLI:
             case LZO:
                 // TODO unsupported
                 break;

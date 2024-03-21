@@ -18,17 +18,17 @@ import io.trino.Session;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.DoubleLiteral;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.TypeProvider;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.DoubleLiteral;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.StringLiteral;
-import io.trino.sql.tree.SymbolReference;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -39,15 +39,13 @@ import java.util.function.Consumer;
 import static io.trino.cost.ComparisonStatsCalculator.OVERLAPPING_RANGE_INEQUALITY_FILTER_COEFFICIENT;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.NOT_EQUAL;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
-import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.NOT_EQUAL;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.Double.NEGATIVE_INFINITY;
 import static java.lang.Double.NaN;
@@ -59,134 +57,113 @@ import static java.util.stream.Collectors.joining;
 
 public class TestComparisonStatsCalculator
 {
-    private FilterStatsCalculator filterStatsCalculator;
-    private Session session;
-    private PlanNodeStatsEstimate standardInputStatistics;
-    private TypeProvider types;
-    private SymbolStatsEstimate uStats;
-    private SymbolStatsEstimate wStats;
-    private SymbolStatsEstimate xStats;
-    private SymbolStatsEstimate yStats;
-    private SymbolStatsEstimate zStats;
-    private SymbolStatsEstimate leftOpenStats;
-    private SymbolStatsEstimate rightOpenStats;
-    private SymbolStatsEstimate unknownRangeStats;
-    private SymbolStatsEstimate emptyRangeStats;
-    private SymbolStatsEstimate unknownNdvRangeStats;
-    private SymbolStatsEstimate varcharStats;
+    private final FilterStatsCalculator filterStatsCalculator = new FilterStatsCalculator(PLANNER_CONTEXT, new ScalarStatsCalculator(PLANNER_CONTEXT, new IrTypeAnalyzer(PLANNER_CONTEXT)), new StatsNormalizer(), new IrTypeAnalyzer(PLANNER_CONTEXT));
+    private final Session session = testSessionBuilder().build();
+    private final TypeProvider types = TypeProvider.copyOf(ImmutableMap.<Symbol, Type>builder()
+            .put(new Symbol("u"), DoubleType.DOUBLE)
+            .put(new Symbol("w"), DoubleType.DOUBLE)
+            .put(new Symbol("x"), DoubleType.DOUBLE)
+            .put(new Symbol("y"), DoubleType.DOUBLE)
+            .put(new Symbol("z"), DoubleType.DOUBLE)
+            .put(new Symbol("leftOpen"), DoubleType.DOUBLE)
+            .put(new Symbol("rightOpen"), DoubleType.DOUBLE)
+            .put(new Symbol("unknownRange"), DoubleType.DOUBLE)
+            .put(new Symbol("emptyRange"), DoubleType.DOUBLE)
+            .put(new Symbol("unknownNdvRange"), DoubleType.DOUBLE)
+            .put(new Symbol("varchar"), VarcharType.createVarcharType(10))
+            .buildOrThrow());
+    private final SymbolStatsEstimate uStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(8.0)
+            .setDistinctValuesCount(300)
+            .setLowValue(0)
+            .setHighValue(20)
+            .setNullsFraction(0.1)
+            .build();
+    private final SymbolStatsEstimate wStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(8.0)
+            .setDistinctValuesCount(30)
+            .setLowValue(0)
+            .setHighValue(20)
+            .setNullsFraction(0.1)
+            .build();
+    private final SymbolStatsEstimate xStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(40.0)
+            .setLowValue(-10.0)
+            .setHighValue(10.0)
+            .setNullsFraction(0.25)
+            .build();
+    private final SymbolStatsEstimate yStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(20.0)
+            .setLowValue(0.0)
+            .setHighValue(5.0)
+            .setNullsFraction(0.5)
+            .build();
+    private final SymbolStatsEstimate zStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(5.0)
+            .setLowValue(-100.0)
+            .setHighValue(100.0)
+            .setNullsFraction(0.1)
+            .build();
+    private final SymbolStatsEstimate leftOpenStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(50.0)
+            .setLowValue(NEGATIVE_INFINITY)
+            .setHighValue(15.0)
+            .setNullsFraction(0.1)
+            .build();
+    private final SymbolStatsEstimate rightOpenStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(50.0)
+            .setLowValue(-15.0)
+            .setHighValue(POSITIVE_INFINITY)
+            .setNullsFraction(0.1)
+            .build();
+    private final SymbolStatsEstimate unknownRangeStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(50.0)
+            .setLowValue(NEGATIVE_INFINITY)
+            .setHighValue(POSITIVE_INFINITY)
+            .setNullsFraction(0.1)
+            .build();
+    private final SymbolStatsEstimate emptyRangeStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(0.0)
+            .setDistinctValuesCount(0.0)
+            .setLowValue(NaN)
+            .setHighValue(NaN)
+            .setNullsFraction(1.0)
+            .build();
+    private final SymbolStatsEstimate unknownNdvRangeStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(NaN)
+            .setLowValue(0)
+            .setHighValue(10)
+            .setNullsFraction(0.1)
+            .build();
+    private final SymbolStatsEstimate varcharStats = SymbolStatsEstimate.builder()
+            .setAverageRowSize(4.0)
+            .setDistinctValuesCount(50.0)
+            .setLowValue(NEGATIVE_INFINITY)
+            .setHighValue(POSITIVE_INFINITY)
+            .setNullsFraction(0.1)
+            .build();
 
-    @BeforeClass
-    public void setUp()
-    {
-        session = testSessionBuilder().build();
-        filterStatsCalculator = new FilterStatsCalculator(PLANNER_CONTEXT, new ScalarStatsCalculator(PLANNER_CONTEXT, createTestingTypeAnalyzer(PLANNER_CONTEXT)), new StatsNormalizer());
-
-        uStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(8.0)
-                .setDistinctValuesCount(300)
-                .setLowValue(0)
-                .setHighValue(20)
-                .setNullsFraction(0.1)
-                .build();
-        wStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(8.0)
-                .setDistinctValuesCount(30)
-                .setLowValue(0)
-                .setHighValue(20)
-                .setNullsFraction(0.1)
-                .build();
-        xStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(40.0)
-                .setLowValue(-10.0)
-                .setHighValue(10.0)
-                .setNullsFraction(0.25)
-                .build();
-        yStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(20.0)
-                .setLowValue(0.0)
-                .setHighValue(5.0)
-                .setNullsFraction(0.5)
-                .build();
-        zStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(5.0)
-                .setLowValue(-100.0)
-                .setHighValue(100.0)
-                .setNullsFraction(0.1)
-                .build();
-        leftOpenStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(50.0)
-                .setLowValue(NEGATIVE_INFINITY)
-                .setHighValue(15.0)
-                .setNullsFraction(0.1)
-                .build();
-        rightOpenStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(50.0)
-                .setLowValue(-15.0)
-                .setHighValue(POSITIVE_INFINITY)
-                .setNullsFraction(0.1)
-                .build();
-        unknownRangeStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(50.0)
-                .setLowValue(NEGATIVE_INFINITY)
-                .setHighValue(POSITIVE_INFINITY)
-                .setNullsFraction(0.1)
-                .build();
-        emptyRangeStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(0.0)
-                .setDistinctValuesCount(0.0)
-                .setLowValue(NaN)
-                .setHighValue(NaN)
-                .setNullsFraction(1.0)
-                .build();
-        unknownNdvRangeStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(NaN)
-                .setLowValue(0)
-                .setHighValue(10)
-                .setNullsFraction(0.1)
-                .build();
-        varcharStats = SymbolStatsEstimate.builder()
-                .setAverageRowSize(4.0)
-                .setDistinctValuesCount(50.0)
-                .setLowValue(NEGATIVE_INFINITY)
-                .setHighValue(POSITIVE_INFINITY)
-                .setNullsFraction(0.1)
-                .build();
-        standardInputStatistics = PlanNodeStatsEstimate.builder()
-                .addSymbolStatistics(new Symbol("u"), uStats)
-                .addSymbolStatistics(new Symbol("w"), wStats)
-                .addSymbolStatistics(new Symbol("x"), xStats)
-                .addSymbolStatistics(new Symbol("y"), yStats)
-                .addSymbolStatistics(new Symbol("z"), zStats)
-                .addSymbolStatistics(new Symbol("leftOpen"), leftOpenStats)
-                .addSymbolStatistics(new Symbol("rightOpen"), rightOpenStats)
-                .addSymbolStatistics(new Symbol("unknownRange"), unknownRangeStats)
-                .addSymbolStatistics(new Symbol("emptyRange"), emptyRangeStats)
-                .addSymbolStatistics(new Symbol("unknownNdvRange"), unknownNdvRangeStats)
-                .addSymbolStatistics(new Symbol("varchar"), varcharStats)
-                .setOutputRowCount(1000.0)
-                .build();
-
-        types = TypeProvider.copyOf(ImmutableMap.<Symbol, Type>builder()
-                .put(new Symbol("u"), DoubleType.DOUBLE)
-                .put(new Symbol("w"), DoubleType.DOUBLE)
-                .put(new Symbol("x"), DoubleType.DOUBLE)
-                .put(new Symbol("y"), DoubleType.DOUBLE)
-                .put(new Symbol("z"), DoubleType.DOUBLE)
-                .put(new Symbol("leftOpen"), DoubleType.DOUBLE)
-                .put(new Symbol("rightOpen"), DoubleType.DOUBLE)
-                .put(new Symbol("unknownRange"), DoubleType.DOUBLE)
-                .put(new Symbol("emptyRange"), DoubleType.DOUBLE)
-                .put(new Symbol("unknownNdvRange"), DoubleType.DOUBLE)
-                .put(new Symbol("varchar"), VarcharType.createVarcharType(10))
-                .buildOrThrow());
-    }
+    private final PlanNodeStatsEstimate standardInputStatistics = PlanNodeStatsEstimate.builder()
+            .addSymbolStatistics(new Symbol("u"), uStats)
+            .addSymbolStatistics(new Symbol("w"), wStats)
+            .addSymbolStatistics(new Symbol("x"), xStats)
+            .addSymbolStatistics(new Symbol("y"), yStats)
+            .addSymbolStatistics(new Symbol("z"), zStats)
+            .addSymbolStatistics(new Symbol("leftOpen"), leftOpenStats)
+            .addSymbolStatistics(new Symbol("rightOpen"), rightOpenStats)
+            .addSymbolStatistics(new Symbol("unknownRange"), unknownRangeStats)
+            .addSymbolStatistics(new Symbol("emptyRange"), emptyRangeStats)
+            .addSymbolStatistics(new Symbol("unknownNdvRange"), unknownNdvRangeStats)
+            .addSymbolStatistics(new Symbol("varchar"), varcharStats)
+            .setOutputRowCount(1000.0)
+            .build();
 
     private Consumer<SymbolStatsAssertion> equalTo(SymbolStatsEstimate estimate)
     {
@@ -245,7 +222,7 @@ public class TestComparisonStatsCalculator
     public void symbolToLiteralEqualStats()
     {
         // Simple case
-        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("y"), new DoubleLiteral("2.5")))
+        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("y"), new DoubleLiteral(2.5)))
                 .outputRowsCount(25.0) // all rows minus nulls divided by distinct values count
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -256,7 +233,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal on the edge of symbol range
-        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("x"), new DoubleLiteral("10.0")))
+        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("x"), new DoubleLiteral(10.0)))
                 .outputRowsCount(18.75) // all rows minus nulls divided by distinct values count
                 .symbolStats("x", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -267,7 +244,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal out of symbol range
-        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("y"), new DoubleLiteral("10.0")))
+        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("y"), new DoubleLiteral(10.0)))
                 .outputRowsCount(0.0) // all rows minus nulls divided by distinct values count
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(0.0)
@@ -277,7 +254,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in left open range
-        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("leftOpen"), new DoubleLiteral("2.5")))
+        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("leftOpen"), new DoubleLiteral(2.5)))
                 .outputRowsCount(18.0) // all rows minus nulls divided by distinct values count
                 .symbolStats("leftOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -288,7 +265,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in right open range
-        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("rightOpen"), new DoubleLiteral("-2.5")))
+        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("rightOpen"), new DoubleLiteral(-2.5)))
                 .outputRowsCount(18.0) // all rows minus nulls divided by distinct values count
                 .symbolStats("rightOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -299,7 +276,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in unknown range
-        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("unknownRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("unknownRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(18.0) // all rows minus nulls divided by distinct values count
                 .symbolStats("unknownRange", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -310,7 +287,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in empty range
-        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("emptyRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(EQUAL, new SymbolReference("emptyRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(0.0)
                 .symbolStats("emptyRange", equalTo(emptyRangeStats));
 
@@ -330,7 +307,7 @@ public class TestComparisonStatsCalculator
     public void symbolToLiteralNotEqualStats()
     {
         // Simple case
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("y"), new DoubleLiteral("2.5")))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("y"), new DoubleLiteral(2.5)))
                 .outputRowsCount(475.0) // all rows minus nulls multiplied by ((distinct values - 1) / distinct values)
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -341,7 +318,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal on the edge of symbol range
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("x"), new DoubleLiteral("10.0")))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("x"), new DoubleLiteral(10.0)))
                 .outputRowsCount(731.25) // all rows minus nulls multiplied by ((distinct values - 1) / distinct values)
                 .symbolStats("x", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -352,7 +329,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal out of symbol range
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("y"), new DoubleLiteral("10.0")))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("y"), new DoubleLiteral(10.0)))
                 .outputRowsCount(500.0) // all rows minus nulls
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -363,7 +340,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in left open range
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("leftOpen"), new DoubleLiteral("2.5")))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("leftOpen"), new DoubleLiteral(2.5)))
                 .outputRowsCount(882.0) // all rows minus nulls multiplied by ((distinct values - 1) / distinct values)
                 .symbolStats("leftOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -374,7 +351,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in right open range
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("rightOpen"), new DoubleLiteral("-2.5")))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("rightOpen"), new DoubleLiteral(-2.5)))
                 .outputRowsCount(882.0) // all rows minus nulls divided by distinct values count
                 .symbolStats("rightOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -385,7 +362,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in unknown range
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("unknownRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("unknownRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(882.0) // all rows minus nulls divided by distinct values count
                 .symbolStats("unknownRange", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -396,7 +373,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in empty range
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("emptyRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("emptyRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(0.0)
                 .symbolStats("emptyRange", equalTo(emptyRangeStats));
 
@@ -416,7 +393,7 @@ public class TestComparisonStatsCalculator
     public void symbolToLiteralLessThanStats()
     {
         // Simple case
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("y"), new DoubleLiteral("2.5")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("y"), new DoubleLiteral(2.5)))
                 .outputRowsCount(250.0) // all rows minus nulls times range coverage (50%)
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -427,7 +404,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal on the edge of symbol range (whole range included)
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("x"), new DoubleLiteral("10.0")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("x"), new DoubleLiteral(10.0)))
                 .outputRowsCount(750.0) // all rows minus nulls times range coverage (100%)
                 .symbolStats("x", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -438,7 +415,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal on the edge of symbol range (whole range excluded)
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("x"), new DoubleLiteral("-10.0")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("x"), new DoubleLiteral(-10.0)))
                 .outputRowsCount(18.75) // all rows minus nulls divided by NDV (one value from edge is included as approximation)
                 .symbolStats("x", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -449,7 +426,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal range out of symbol range
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("y"), new DoubleLiteral("-10.0")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("y"), new DoubleLiteral(-10.0)))
                 .outputRowsCount(0.0) // all rows minus nulls times range coverage (0%)
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(0.0)
@@ -459,7 +436,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in left open range
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("leftOpen"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("leftOpen"), new DoubleLiteral(0.0)))
                 .outputRowsCount(450.0) // all rows minus nulls times range coverage (50% - heuristic)
                 .symbolStats("leftOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -470,7 +447,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in right open range
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("rightOpen"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("rightOpen"), new DoubleLiteral(0.0)))
                 .outputRowsCount(225.0) // all rows minus nulls times range coverage (25% - heuristic)
                 .symbolStats("rightOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -481,7 +458,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in unknown range
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("unknownRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("unknownRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(450.0) // all rows minus nulls times range coverage (50% - heuristic)
                 .symbolStats("unknownRange", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -492,7 +469,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in empty range
-        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("emptyRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(LESS_THAN, new SymbolReference("emptyRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(0.0)
                 .symbolStats("emptyRange", equalTo(emptyRangeStats));
     }
@@ -501,7 +478,7 @@ public class TestComparisonStatsCalculator
     public void symbolToLiteralGreaterThanStats()
     {
         // Simple case
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("y"), new DoubleLiteral("2.5")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("y"), new DoubleLiteral(2.5)))
                 .outputRowsCount(250.0) // all rows minus nulls times range coverage (50%)
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -512,7 +489,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal on the edge of symbol range (whole range included)
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("x"), new DoubleLiteral("-10.0")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("x"), new DoubleLiteral(-10.0)))
                 .outputRowsCount(750.0) // all rows minus nulls times range coverage (100%)
                 .symbolStats("x", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -523,7 +500,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal on the edge of symbol range (whole range excluded)
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("x"), new DoubleLiteral("10.0")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("x"), new DoubleLiteral(10.0)))
                 .outputRowsCount(18.75) // all rows minus nulls divided by NDV (one value from edge is included as approximation)
                 .symbolStats("x", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -534,7 +511,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal range out of symbol range
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("y"), new DoubleLiteral("10.0")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("y"), new DoubleLiteral(10.0)))
                 .outputRowsCount(0.0) // all rows minus nulls times range coverage (0%)
                 .symbolStats("y", symbolAssert -> {
                     symbolAssert.averageRowSize(0.0)
@@ -544,7 +521,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in left open range
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("leftOpen"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("leftOpen"), new DoubleLiteral(0.0)))
                 .outputRowsCount(225.0) // all rows minus nulls times range coverage (25% - heuristic)
                 .symbolStats("leftOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -555,7 +532,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in right open range
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("rightOpen"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("rightOpen"), new DoubleLiteral(0.0)))
                 .outputRowsCount(450.0) // all rows minus nulls times range coverage (50% - heuristic)
                 .symbolStats("rightOpen", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -566,7 +543,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in unknown range
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("unknownRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("unknownRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(450.0) // all rows minus nulls times range coverage (50% - heuristic)
                 .symbolStats("unknownRange", symbolAssert -> {
                     symbolAssert.averageRowSize(4.0)
@@ -577,7 +554,7 @@ public class TestComparisonStatsCalculator
                 });
 
         // Literal in empty range
-        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("emptyRange"), new DoubleLiteral("0.0")))
+        assertCalculate(new ComparisonExpression(GREATER_THAN, new SymbolReference("emptyRange"), new DoubleLiteral(0.0)))
                 .outputRowsCount(0.0)
                 .symbolStats("emptyRange", equalTo(emptyRangeStats));
     }
@@ -695,14 +672,14 @@ public class TestComparisonStatsCalculator
     public void symbolToCastExpressionNotEqual()
     {
         double rowCount = 807.3;
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("u"), new Cast(new SymbolReference("w"), toSqlType(BIGINT))))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("u"), new Cast(new SymbolReference("w"), BIGINT)))
                 .outputRowsCount(rowCount)
                 .symbolStats("u", equalTo(capNDV(zeroNullsFraction(uStats), rowCount)))
                 .symbolStats("w", equalTo(capNDV(wStats, rowCount)))
                 .symbolStats("z", equalTo(capNDV(zStats, rowCount)));
 
         rowCount = 897.0;
-        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("u"), new Cast(new LongLiteral("10"), toSqlType(DOUBLE))))
+        assertCalculate(new ComparisonExpression(NOT_EQUAL, new SymbolReference("u"), new Cast(new LongLiteral(10), DOUBLE)))
                 .outputRowsCount(rowCount)
                 .symbolStats("u", equalTo(capNDV(updateNDV(zeroNullsFraction(uStats), -1), rowCount)))
                 .symbolStats("z", equalTo(capNDV(zStats, rowCount)));

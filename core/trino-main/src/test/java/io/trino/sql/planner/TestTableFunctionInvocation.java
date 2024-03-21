@@ -27,11 +27,14 @@ import io.trino.connector.TestingTableFunctions.TwoTableArgumentsFunction;
 import io.trino.spi.connector.TableFunctionApplicationResult;
 import io.trino.spi.function.table.Descriptor;
 import io.trino.spi.function.table.Descriptor.Field;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.RowNumberSymbolMatcher;
 import io.trino.sql.planner.plan.TableFunctionProcessorNode;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.LongLiteral;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -40,6 +43,9 @@ import java.util.Optional;
 import static io.trino.spi.connector.SortOrder.ASC_NULLS_LAST;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.planner.LogicalPlanner.Stage.CREATED;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -56,7 +62,6 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 import static io.trino.sql.planner.assertions.TableFunctionMatcher.DescriptorArgumentValue.descriptorArgument;
 import static io.trino.sql.planner.assertions.TableFunctionMatcher.DescriptorArgumentValue.nullDescriptor;
 import static io.trino.sql.planner.assertions.TableFunctionMatcher.TableArgumentValue.Builder.tableArgument;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 
 public class TestTableFunctionInvocation
         extends BasePlanTest
@@ -66,7 +71,7 @@ public class TestTableFunctionInvocation
     @BeforeAll
     public final void setup()
     {
-        getQueryRunner().installPlugin(new MockConnectorPlugin(MockConnectorFactory.builder()
+        getPlanTester().installPlugin(new MockConnectorPlugin(MockConnectorFactory.builder()
                 .withTableFunctions(ImmutableSet.of(
                         new DifferentArgumentTypesFunction(),
                         new TwoScalarArgumentsFunction(),
@@ -80,7 +85,7 @@ public class TestTableFunctionInvocation
                     throw new IllegalStateException("Unsupported table function handle: " + handle.getClass().getSimpleName());
                 })
                 .build()));
-        getQueryRunner().createCatalog(TESTING_CATALOG, "mock", ImmutableMap.of());
+        getPlanTester().createCatalog(TESTING_CATALOG, "mock", ImmutableMap.of());
     }
 
     @Test
@@ -125,9 +130,9 @@ public class TestTableFunctionInvocation
                                                 new Field("Y", Optional.of(BIGINT))))))
                                 .addCopartitioning(ImmutableList.of("INPUT_1", "INPUT_3"))
                                 .properOutputs(ImmutableList.of("OUTPUT")),
-                        anyTree(project(ImmutableMap.of("c1", expression("'a'")), values(1))),
-                        anyTree(values(ImmutableList.of("c2"), ImmutableList.of(ImmutableList.of(new LongLiteral("1"))))),
-                        anyTree(project(ImmutableMap.of("c3", expression("'b'")), values(1))))));
+                        anyTree(project(ImmutableMap.of("c1", expression(new StringLiteral("a"))), values(1))),
+                        anyTree(values(ImmutableList.of("c2"), ImmutableList.of(ImmutableList.of(new LongLiteral(1))))),
+                        anyTree(project(ImmutableMap.of("c3", expression(new StringLiteral("b"))), values(1))))));
     }
 
     @Test
@@ -155,9 +160,9 @@ public class TestTableFunctionInvocation
                                                 .passThroughSymbols(ImmutableSet.of("c2")))
                                 .addCopartitioning(ImmutableList.of("INPUT1", "INPUT2"))
                                 .properOutputs(ImmutableList.of("COLUMN")),
-                        project(ImmutableMap.of("c1_coerced", expression("CAST(c1 AS INTEGER)")),
-                                anyTree(values(ImmutableList.of("c1"), ImmutableList.of(ImmutableList.of(new GenericLiteral("SMALLINT", "1")))))),
-                        anyTree(values(ImmutableList.of("c2"), ImmutableList.of(ImmutableList.of(new GenericLiteral("INTEGER", "2"))))))));
+                        project(ImmutableMap.of("c1_coerced", expression(new Cast(new SymbolReference("c1"), INTEGER))),
+                                anyTree(values(ImmutableList.of("c1"), ImmutableList.of(ImmutableList.of(new GenericLiteral(SMALLINT, "1")))))),
+                        anyTree(values(ImmutableList.of("c2"), ImmutableList.of(ImmutableList.of(new GenericLiteral(INTEGER, "2"))))))));
     }
 
     @Test
@@ -209,14 +214,14 @@ public class TestTableFunctionInvocation
                                         .passThroughSymbols(ImmutableList.of(ImmutableList.of("a", "b")))
                                         .requiredSymbols(ImmutableList.of(ImmutableList.of("a")))
                                         .specification(specification(ImmutableList.of(), ImmutableList.of(), ImmutableMap.of())),
-                                values(ImmutableList.of("a", "b"), ImmutableList.of(ImmutableList.of(new LongLiteral("1"), TRUE_LITERAL))))));
+                                values(ImmutableList.of("a", "b"), ImmutableList.of(ImmutableList.of(new LongLiteral(1), TRUE_LITERAL))))));
 
         // no table function outputs are referenced. All pass-through symbols are pruned from the TableFunctionProcessorNode. The unused symbol "b" is pruned from the source values node.
         assertPlan("SELECT 'constant' c FROM TABLE(mock.system.pass_through_function(input => TABLE(SELECT 1, true) t(a, b)))",
                 strictOutput(
                         ImmutableList.of("c"),
                         strictProject(
-                                ImmutableMap.of("c", expression("'constant'")),
+                                ImmutableMap.of("c", expression(new StringLiteral("constant"))),
                                 tableFunctionProcessor(
                                         builder -> builder
                                                 .name("pass_through_function")
@@ -224,7 +229,7 @@ public class TestTableFunctionInvocation
                                                 .passThroughSymbols(ImmutableList.of(ImmutableList.of()))
                                                 .requiredSymbols(ImmutableList.of(ImmutableList.of("a")))
                                                 .specification(specification(ImmutableList.of(), ImmutableList.of(), ImmutableMap.of())),
-                                        values(ImmutableList.of("a"), ImmutableList.of(ImmutableList.of(new LongLiteral("1"))))))));
+                                        values(ImmutableList.of("a"), ImmutableList.of(ImmutableList.of(new LongLiteral(1))))))));
     }
 
     @Test
@@ -279,7 +284,7 @@ public class TestTableFunctionInvocation
                                         project(
                                                 rowNumber(
                                                         builder -> builder.partitionBy(ImmutableList.of()),
-                                                        values(ImmutableList.of("c"), ImmutableList.of(ImmutableList.of(new LongLiteral("2")))))
+                                                        values(ImmutableList.of("c"), ImmutableList.of(ImmutableList.of(new LongLiteral(2)))))
                                                         .withAlias("input_2_row_number", new RowNumberSymbolMatcher()))))));
     }
 }

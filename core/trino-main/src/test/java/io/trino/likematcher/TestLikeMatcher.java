@@ -13,9 +13,9 @@
  */
 package io.trino.likematcher;
 
-import com.google.common.base.Strings;
 import io.trino.type.LikePattern;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
@@ -87,13 +87,19 @@ public class TestLikeMatcher
         assertTrue(match("%abaca%", "abababababacabababa"));
         assertFalse(match("%bcccccccca%", "bbbbbbbbxax"));
         assertFalse(match("%bbxxxxxa%", "bbbxxxxaz"));
-        assertFalse(match("%aaaaaaxaaaaaa%", Strings.repeat("a", 20) +
-                                          Strings.repeat("b", 20) +
-                                          Strings.repeat("a", 20) +
-                                          Strings.repeat("b", 20) +
-                                          "the quick brown fox jumps over the lazy dog"));
+        assertFalse(match("%aaaaaaxaaaaaa%", "a".repeat(20) +
+                "b".repeat(20) +
+                "a".repeat(20) +
+                "b".repeat(20) +
+                "the quick brown fox jumps over the lazy dog"));
 
         assertFalse(match("%abaaa%", "ababaa"));
+
+        assertTrue(match("%paya%", "papaya"));
+        assertTrue(match("%paya%", "papapaya"));
+        assertTrue(match("%paya%", "papapapaya"));
+        assertTrue(match("%paya%", "papapapapaya"));
+        assertTrue(match("%paya%", "papapapapapaya"));
 
         // utf-8
         LikeMatcher singleOptimized = LikePattern.compile("_", Optional.empty(), true).getMatcher();
@@ -108,6 +114,13 @@ public class TestLikeMatcher
             assertTrue(multipleOptimized.match(value.getBytes(StandardCharsets.UTF_8)));
             assertTrue(multiple.match(value.getBytes(StandardCharsets.UTF_8)));
         }
+    }
+
+    @Test
+    @Timeout(2)
+    public void testExponentialBehavior()
+    {
+        assertTrue(match("%a________________", "xyza1234567890123456"));
     }
 
     @Test

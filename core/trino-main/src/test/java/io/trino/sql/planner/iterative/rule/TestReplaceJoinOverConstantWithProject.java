@@ -15,24 +15,31 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.Row;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.JoinNode.EquiJoinClause;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.QualifiedName;
-import io.trino.sql.tree.Row;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
+import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.RowType.field;
+import static io.trino.spi.type.RowType.rowType;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictProject;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
-import static io.trino.sql.planner.plan.JoinNode.Type.FULL;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
-import static io.trino.sql.planner.plan.JoinNode.Type.RIGHT;
+import static io.trino.sql.planner.plan.JoinType.FULL;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
+import static io.trino.sql.planner.plan.JoinType.RIGHT;
 
 public class TestReplaceJoinOverConstantWithProject
         extends BaseRuleTest
@@ -75,7 +82,7 @@ public class TestReplaceJoinOverConstantWithProject
                                 INNER,
                                 p.values(1, p.symbol("a")),
                                 p.values(5, p.symbol("b")),
-                                expression("a > b")))
+                                new ComparisonExpression(GREATER_THAN, new SymbolReference("a"), new SymbolReference("b"))))
                 .doesNotFire();
     }
 
@@ -110,7 +117,7 @@ public class TestReplaceJoinOverConstantWithProject
                 .on(p ->
                         p.join(
                                 INNER,
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a")), ImmutableList.of(expression("CAST(ROW('true') AS ROW(b boolean))"))),
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a")), ImmutableList.of(new Cast(new Row(ImmutableList.of(new StringLiteral("true"))), rowType(field("b", BOOLEAN))))),
                                 p.values(5, p.symbol("b"))))
                 .doesNotFire();
     }
@@ -124,7 +131,7 @@ public class TestReplaceJoinOverConstantWithProject
                                 LEFT,
                                 p.values(1, p.symbol("a")),
                                 p.filter(
-                                        expression("b > 5"),
+                                        new ComparisonExpression(GREATER_THAN, new SymbolReference("b"), new LongLiteral(5)),
                                         p.values(10, p.symbol("b")))))
                 .doesNotFire();
 
@@ -133,7 +140,7 @@ public class TestReplaceJoinOverConstantWithProject
                         p.join(
                                 RIGHT,
                                 p.filter(
-                                        expression("a > 5"),
+                                        new ComparisonExpression(GREATER_THAN, new SymbolReference("a"), new LongLiteral(5)),
                                         p.values(10, p.symbol("a"))),
                                 p.values(1, p.symbol("b"))))
                 .doesNotFire();
@@ -144,7 +151,7 @@ public class TestReplaceJoinOverConstantWithProject
                                 FULL,
                                 p.values(1, p.symbol("a")),
                                 p.filter(
-                                        expression("b > 5"),
+                                        new ComparisonExpression(GREATER_THAN, new SymbolReference("b"), new LongLiteral(5)),
                                         p.values(10, p.symbol("b")))))
                 .doesNotFire();
 
@@ -153,7 +160,7 @@ public class TestReplaceJoinOverConstantWithProject
                         p.join(
                                 FULL,
                                 p.filter(
-                                        expression("a > 5"),
+                                        new ComparisonExpression(GREATER_THAN, new SymbolReference("a"), new LongLiteral(5)),
                                         p.values(10, p.symbol("a"))),
                                 p.values(1, p.symbol("b"))))
                 .doesNotFire();
@@ -166,14 +173,14 @@ public class TestReplaceJoinOverConstantWithProject
                 .on(p ->
                         p.join(
                                 INNER,
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')"))),
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x"))))),
                                 p.values(5, p.symbol("c"))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
 
         tester().assertThat(new ReplaceJoinOverConstantWithProject(tester().getMetadata()))
@@ -181,13 +188,13 @@ public class TestReplaceJoinOverConstantWithProject
                         p.join(
                                 INNER,
                                 p.values(5, p.symbol("c")),
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')")))))
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x")))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
     }
 
@@ -198,14 +205,14 @@ public class TestReplaceJoinOverConstantWithProject
                 .on(p ->
                         p.join(
                                 LEFT,
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')"))),
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x"))))),
                                 p.values(5, p.symbol("c"))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
 
         tester().assertThat(new ReplaceJoinOverConstantWithProject(tester().getMetadata()))
@@ -213,13 +220,13 @@ public class TestReplaceJoinOverConstantWithProject
                         p.join(
                                 LEFT,
                                 p.values(5, p.symbol("c")),
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')")))))
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x")))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
     }
 
@@ -230,14 +237,14 @@ public class TestReplaceJoinOverConstantWithProject
                 .on(p ->
                         p.join(
                                 RIGHT,
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')"))),
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x"))))),
                                 p.values(5, p.symbol("c"))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
 
         tester().assertThat(new ReplaceJoinOverConstantWithProject(tester().getMetadata()))
@@ -245,13 +252,13 @@ public class TestReplaceJoinOverConstantWithProject
                         p.join(
                                 RIGHT,
                                 p.values(5, p.symbol("c")),
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')")))))
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x")))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
     }
 
@@ -262,14 +269,14 @@ public class TestReplaceJoinOverConstantWithProject
                 .on(p ->
                         p.join(
                                 FULL,
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')"))),
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x"))))),
                                 p.values(5, p.symbol("c"))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
 
         tester().assertThat(new ReplaceJoinOverConstantWithProject(tester().getMetadata()))
@@ -277,13 +284,13 @@ public class TestReplaceJoinOverConstantWithProject
                         p.join(
                                 FULL,
                                 p.values(5, p.symbol("c")),
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')")))))
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x")))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
     }
 
@@ -294,7 +301,7 @@ public class TestReplaceJoinOverConstantWithProject
                 .on(p ->
                         p.join(
                                 INNER,
-                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(expression("ROW(1, 'x')"))),
+                                p.valuesOfExpressions(ImmutableList.of(p.symbol("a"), p.symbol("b")), ImmutableList.of(new Row(ImmutableList.of(new LongLiteral(1), new StringLiteral("x"))))),
                                 p.values(5, p.symbol("c")),
                                 ImmutableList.of(),
                                 ImmutableList.of(p.symbol("a"), p.symbol("b"), p.symbol("a"), p.symbol("b")),
@@ -303,9 +310,9 @@ public class TestReplaceJoinOverConstantWithProject
                 .matches(
                         strictProject(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("1"),
-                                        "b", PlanMatchPattern.expression("'x'"),
-                                        "c", PlanMatchPattern.expression("c")),
+                                        "a", PlanMatchPattern.expression(new LongLiteral(1)),
+                                        "b", PlanMatchPattern.expression(new StringLiteral("x")),
+                                        "c", PlanMatchPattern.expression(new SymbolReference("c"))),
                                 values("c")));
     }
 
@@ -313,7 +320,7 @@ public class TestReplaceJoinOverConstantWithProject
     public void testNonDeterministicValues()
     {
         FunctionCall randomFunction = new FunctionCall(
-                tester().getMetadata().resolveFunction(tester().getSession(), QualifiedName.of("random"), ImmutableList.of()).toQualifiedName(),
+                tester().getMetadata().resolveBuiltinFunction("random", ImmutableList.of()).toQualifiedName(),
                 ImmutableList.of());
 
         tester().assertThat(new ReplaceJoinOverConstantWithProject(tester().getMetadata()))
@@ -325,7 +332,7 @@ public class TestReplaceJoinOverConstantWithProject
                 .doesNotFire();
 
         FunctionCall uuidFunction = new FunctionCall(
-                tester().getMetadata().resolveFunction(tester().getSession(), QualifiedName.of("uuid"), ImmutableList.of()).toQualifiedName(),
+                tester().getMetadata().resolveBuiltinFunction("uuid", ImmutableList.of()).toQualifiedName(),
                 ImmutableList.of());
 
         tester().assertThat(new ReplaceJoinOverConstantWithProject(tester().getMetadata()))

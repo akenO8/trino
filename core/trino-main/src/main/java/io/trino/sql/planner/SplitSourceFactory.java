@@ -30,6 +30,8 @@ import io.trino.split.SplitManager;
 import io.trino.split.SplitSource;
 import io.trino.sql.DynamicFilters;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.planner.plan.AdaptivePlanNode;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AssignUniqueId;
 import io.trino.sql.planner.plan.DistinctLimitNode;
@@ -65,6 +67,7 @@ import io.trino.sql.planner.plan.TableExecuteNode;
 import io.trino.sql.planner.plan.TableFinishNode;
 import io.trino.sql.planner.plan.TableFunctionProcessorNode;
 import io.trino.sql.planner.plan.TableScanNode;
+import io.trino.sql.planner.plan.TableUpdateNode;
 import io.trino.sql.planner.plan.TableWriterNode;
 import io.trino.sql.planner.plan.TopNNode;
 import io.trino.sql.planner.plan.TopNRankingNode;
@@ -72,7 +75,6 @@ import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.planner.plan.UnnestNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.Expression;
 
 import java.util.List;
 import java.util.Map;
@@ -81,7 +83,7 @@ import java.util.Optional;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.spi.connector.Constraint.alwaysTrue;
 import static io.trino.spi.connector.DynamicFilter.EMPTY;
-import static io.trino.sql.ExpressionUtils.filterConjuncts;
+import static io.trino.sql.ir.IrUtils.filterConjuncts;
 import static java.util.Objects.requireNonNull;
 
 public class SplitSourceFactory
@@ -91,10 +93,10 @@ public class SplitSourceFactory
     private final SplitManager splitManager;
     private final PlannerContext plannerContext;
     private final DynamicFilterService dynamicFilterService;
-    private final TypeAnalyzer typeAnalyzer;
+    private final IrTypeAnalyzer typeAnalyzer;
 
     @Inject
-    public SplitSourceFactory(SplitManager splitManager, PlannerContext plannerContext, DynamicFilterService dynamicFilterService, TypeAnalyzer typeAnalyzer)
+    public SplitSourceFactory(SplitManager splitManager, PlannerContext plannerContext, DynamicFilterService dynamicFilterService, IrTypeAnalyzer typeAnalyzer)
     {
         this.splitManager = requireNonNull(splitManager, "splitManager is null");
         this.plannerContext = requireNonNull(plannerContext, "metadata is null");
@@ -438,6 +440,13 @@ public class SplitSourceFactory
         }
 
         @Override
+        public Map<PlanNodeId, SplitSource> visitTableUpdate(TableUpdateNode node, Void context)
+        {
+            // node does not have splits
+            return ImmutableMap.of();
+        }
+
+        @Override
         public Map<PlanNodeId, SplitSource> visitTableExecute(TableExecuteNode node, Void context)
         {
             return node.getSource().accept(this, context);
@@ -458,6 +467,12 @@ public class SplitSourceFactory
 
         @Override
         public Map<PlanNodeId, SplitSource> visitExchange(ExchangeNode node, Void context)
+        {
+            return processSources(node.getSources(), context);
+        }
+
+        @Override
+        public Map<PlanNodeId, SplitSource> visitAdaptivePlanNode(AdaptivePlanNode node, Void context)
         {
             return processSources(node.getSources(), context);
         }

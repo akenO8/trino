@@ -159,6 +159,11 @@ public abstract class PlanVisitor<R, C>
         return visitPlan(node, context);
     }
 
+    public R visitTableUpdate(TableUpdateNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
     public R visitTableFinish(TableFinishNode node, C context)
     {
         return visitPlan(node, context);
@@ -250,6 +255,11 @@ public abstract class PlanVisitor<R, C>
     }
 
     public R visitTableFunctionProcessor(TableFunctionProcessorNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitAdaptivePlanNode(AdaptivePlanNode node, C context)
     {
         return visitPlan(node, context);
     }

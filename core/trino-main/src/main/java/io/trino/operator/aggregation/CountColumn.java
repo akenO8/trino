@@ -14,8 +14,8 @@
 package io.trino.operator.aggregation;
 
 import io.trino.operator.aggregation.state.LongState;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.AggregationFunction;
 import io.trino.spi.function.AggregationState;
 import io.trino.spi.function.BlockIndex;
@@ -40,19 +40,20 @@ public final class CountColumn
     @TypeParameter("T")
     public static void input(
             @AggregationState LongState state,
-            @BlockPosition @SqlType("T") Block block,
+            @BlockPosition @SqlType("T") ValueBlock block,
             @BlockIndex int position)
     {
         state.setValue(state.getValue() + 1);
     }
 
     @RemoveInputFunction
-    public static void removeInput(
+    public static boolean removeInput(
             @AggregationState LongState state,
-            @BlockPosition @SqlType("T") Block block,
+            @BlockPosition @SqlType("T") ValueBlock block,
             @BlockIndex int position)
     {
         state.setValue(state.getValue() - 1);
+        return true;
     }
 
     @CombineFunction

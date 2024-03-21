@@ -15,6 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -53,7 +54,7 @@ public class TestPruneIndexJoinColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression("a"), "b", expression("b")),
+                                ImmutableMap.of("a", expression(new SymbolReference("a")), "b", expression(new SymbolReference("b"))),
                                 indexJoin(
                                         INNER,
                                         ImmutableList.of(indexJoinEquiClause("a", "b")),
@@ -61,7 +62,7 @@ public class TestPruneIndexJoinColumns
                                         Optional.empty(),
                                         values("a"),
                                         strictProject(
-                                                ImmutableMap.of("b", expression("b")),
+                                                ImmutableMap.of("b", expression(new SymbolReference("b"))),
                                                 values("b", "c")))));
 
         tester().assertThat(new PruneIndexJoinColumns())
@@ -82,17 +83,17 @@ public class TestPruneIndexJoinColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression("a"), "c", expression("c")),
+                                ImmutableMap.of("a", expression(new SymbolReference("a")), "c", expression(new SymbolReference("c"))),
                                 indexJoin(
                                         INNER,
                                         ImmutableList.of(indexJoinEquiClause("a", "c")),
                                         Optional.empty(),
                                         Optional.empty(),
                                         strictProject(
-                                                ImmutableMap.of("a", expression("a")),
+                                                ImmutableMap.of("a", expression(new SymbolReference("a"))),
                                                 values("a", "b")),
                                         strictProject(
-                                                ImmutableMap.of("c", expression("c")),
+                                                ImmutableMap.of("c", expression(new SymbolReference("c"))),
                                                 values("c", "d")))));
     }
 

@@ -15,21 +15,24 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
+import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.AggregationNode;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.LogicalExpression.Operator.AND;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregationFunction;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.globalAggregation;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.singleGroupingSet;
@@ -50,22 +53,22 @@ public class TestImplementFilteredAggregations
                             .singleGroupingSet(g)
                             .addAggregation(
                                     p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT))
                             .source(p.values(a, g, filter)));
                 })
                 .matches(
                         aggregation(
                                 singleGroupingSet("g"),
-                                ImmutableMap.of(Optional.of("sum"), functionCall("sum", ImmutableList.of("a"))),
+                                ImmutableMap.of(Optional.of("sum"), aggregationFunction("sum", ImmutableList.of("a"))),
                                 ImmutableList.of(),
                                 ImmutableList.of("filter"),
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "true",
+                                        TRUE_LITERAL,
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "filter", expression("filter")),
+                                                ImmutableMap.of("a", expression(new SymbolReference("a")), "g", expression(new SymbolReference("g")), "filter", expression(new SymbolReference("filter"))),
                                                 values("a", "g", "filter")))));
     }
 
@@ -82,7 +85,7 @@ public class TestImplementFilteredAggregations
                             .singleGroupingSet(g)
                             .addAggregation(
                                     p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT),
                                     mask)
                             .source(p.values(a, g, mask, filter)));
@@ -90,15 +93,20 @@ public class TestImplementFilteredAggregations
                 .matches(
                         aggregation(
                                 singleGroupingSet("g"),
-                                ImmutableMap.of(Optional.of("sum"), functionCall("sum", ImmutableList.of("a"))),
+                                ImmutableMap.of(Optional.of("sum"), aggregationFunction("sum", ImmutableList.of("a"))),
                                 ImmutableList.of(),
                                 ImmutableList.of("new_mask"),
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "true",
+                                        TRUE_LITERAL,
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "mask", expression("mask"), "filter", expression("filter"), "new_mask", expression("mask AND filter")),
+                                                ImmutableMap.of(
+                                                        "a", expression(new SymbolReference("a")),
+                                                        "g", expression(new SymbolReference("g")),
+                                                        "mask", expression(new SymbolReference("mask")),
+                                                        "filter", expression(new SymbolReference("filter")),
+                                                        "new_mask", expression(new LogicalExpression(AND, ImmutableList.of(new SymbolReference("mask"), new SymbolReference("filter"))))),
                                                 values("a", "g", "mask", "filter")))));
     }
 
@@ -114,22 +122,22 @@ public class TestImplementFilteredAggregations
                             .globalGrouping()
                             .addAggregation(
                                     p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT))
                             .source(p.values(a, g, filter)));
                 })
                 .matches(
                         aggregation(
                                 globalAggregation(),
-                                ImmutableMap.of(Optional.of("sum"), functionCall("sum", ImmutableList.of("a"))),
+                                ImmutableMap.of(Optional.of("sum"), aggregationFunction("sum", ImmutableList.of("a"))),
                                 ImmutableList.of(),
                                 ImmutableList.of("filter"),
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "filter",
+                                        new SymbolReference("filter"),
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "filter", expression("filter")),
+                                                ImmutableMap.of("a", expression(new SymbolReference("a")), "g", expression(new SymbolReference("g")), "filter", expression(new SymbolReference("filter"))),
                                                 values("a", "g", "filter")))));
     }
 
@@ -145,40 +153,26 @@ public class TestImplementFilteredAggregations
                             .globalGrouping()
                             .addAggregation(
                                     p.symbol("sum"),
-                                    functionWithFilter("sum", a, Optional.of(filter)),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(a.toSymbolReference()), filter),
                                     ImmutableList.of(BIGINT))
                             .addAggregation(
                                     p.symbol("avg"),
-                                    functionWithFilter("avg", a, Optional.empty()),
+                                    PlanBuilder.aggregation("avg", ImmutableList.of(a.toSymbolReference())),
                                     ImmutableList.of(BIGINT))
                             .source(p.values(a, g, filter)));
                 })
                 .matches(
                         aggregation(
                                 globalAggregation(),
-                                ImmutableMap.of(Optional.of("sum"), functionCall("sum", ImmutableList.of("a")), Optional.of("avg"), functionCall("avg", ImmutableList.of("a"))),
+                                ImmutableMap.of(Optional.of("sum"), aggregationFunction("sum", ImmutableList.of("a")), Optional.of("avg"), aggregationFunction("avg", ImmutableList.of("a"))),
                                 ImmutableList.of(),
                                 ImmutableList.of("filter"),
                                 Optional.empty(),
                                 AggregationNode.Step.SINGLE,
                                 filter(
-                                        "true",
+                                        TRUE_LITERAL,
                                         project(
-                                                ImmutableMap.of("a", expression("a"), "g", expression("g"), "filter", expression("filter")),
+                                                ImmutableMap.of("a", expression(new SymbolReference("a")), "g", expression(new SymbolReference("g")), "filter", expression(new SymbolReference("filter"))),
                                                 values("a", "g", "filter")))));
-    }
-
-    private FunctionCall functionWithFilter(String name, Symbol argument, Optional<Symbol> filter)
-    {
-        return new FunctionCall(
-                Optional.empty(),
-                QualifiedName.of(name),
-                Optional.empty(),
-                filter.map(Symbol::toSymbolReference),
-                Optional.empty(),
-                false,
-                Optional.empty(),
-                Optional.empty(),
-                ImmutableList.of(argument.toSymbolReference()));
     }
 }

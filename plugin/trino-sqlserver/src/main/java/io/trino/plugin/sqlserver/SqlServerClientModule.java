@@ -20,6 +20,7 @@ import com.google.inject.Scopes;
 import com.google.inject.Singleton;
 import com.microsoft.sqlserver.jdbc.SQLServerDriver;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
+import io.opentelemetry.api.OpenTelemetry;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
@@ -68,8 +69,13 @@ public class SqlServerClientModule
     public static ConnectionFactory getConnectionFactory(
             BaseJdbcConfig config,
             SqlServerConfig sqlServerConfig,
-            CredentialProvider credentialProvider)
+            CredentialProvider credentialProvider,
+            OpenTelemetry openTelemetry)
     {
-        return new SqlServerConnectionFactory(new DriverConnectionFactory(new SQLServerDriver(), config, credentialProvider), sqlServerConfig.isSnapshotIsolationDisabled());
+        return new SqlServerConnectionFactory(
+                DriverConnectionFactory.builder(new SQLServerDriver(), config.getConnectionUrl(), credentialProvider)
+                        .setOpenTelemetry(openTelemetry)
+                        .build(),
+                sqlServerConfig.isSnapshotIsolationDisabled());
     }
 }

@@ -19,6 +19,8 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Streams;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.IsNotNullPredicate;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -30,13 +32,12 @@ import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AssignUniqueId;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.CorrelatedJoinNode;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.UnnestNode;
 import io.trino.sql.planner.plan.UnnestNode.Mapping;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.IsNotNullPredicate;
 
 import java.util.List;
 import java.util.Map;
@@ -48,19 +49,19 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.ExpressionUtils.and;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.planner.iterative.rule.AggregationDecorrelation.rewriteWithMasks;
 import static io.trino.sql.planner.iterative.rule.Util.restrictOutputs;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.isScalar;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.correlation;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.filter;
 import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 
 /**
  * This rule finds correlated UnnestNode in CorrelatedJoinNode's subquery and folds
@@ -116,7 +117,7 @@ public class DecorrelateInnerUnnestWithGlobalAggregation
     private static final Pattern<CorrelatedJoinNode> PATTERN = correlatedJoin()
             .with(nonEmpty(correlation()))
             .with(filter().equalTo(TRUE_LITERAL))
-            .matching(node -> node.getType() == CorrelatedJoinNode.Type.INNER || node.getType() == CorrelatedJoinNode.Type.LEFT);
+            .matching(node -> node.getType() == JoinType.INNER || node.getType() == JoinType.LEFT);
 
     @Override
     public Pattern<CorrelatedJoinNode> getPattern()
@@ -182,8 +183,7 @@ public class DecorrelateInnerUnnestWithGlobalAggregation
                 input.getOutputSymbols(),
                 unnestNode.getMappings(),
                 Optional.of(ordinalitySymbol),
-                LEFT,
-                Optional.empty());
+                LEFT);
 
         // append mask symbol based on ordinality to distinguish between the unnested rows and synthetic null rows
         Symbol mask = context.getSymbolAllocator().newSymbol("mask", BOOLEAN);
@@ -257,8 +257,7 @@ public class DecorrelateInnerUnnestWithGlobalAggregation
         return isScalar(unnestNode.getSource(), lookup) &&
                 unnestNode.getReplicateSymbols().isEmpty() &&
                 basedOnCorrelation &&
-                unnestNode.getJoinType() == INNER &&
-                (unnestNode.getFilter().isEmpty() || unnestNode.getFilter().get().equals(TRUE_LITERAL));
+                unnestNode.getJoinType() == INNER;
     }
 
     private static PlanNode rewriteNodeSequence(PlanNode root, List<Symbol> leftOutputs, Symbol mask, PlanNode sequenceSource, PlanNodeId reducingAggregationId, PlanNodeId correlatedUnnestId, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, Lookup lookup)

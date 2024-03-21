@@ -24,12 +24,12 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 
+import static io.trino.hive.formats.HiveClassNames.REGEX_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_OPEN_ERROR;
-import static io.trino.plugin.hive.util.HiveClassNames.REGEX_SERDE_CLASS;
 
 public class RegexFileWriterFactory
         implements HiveFileWriterFactory
@@ -40,7 +40,7 @@ public class RegexFileWriterFactory
             List<String> inputColumnNames,
             StorageFormat storageFormat,
             HiveCompressionCodec compressionCodec,
-            Properties schema,
+            Map<String, String> schema,
             ConnectorSession session,
             OptionalInt bucketNumber,
             AcidTransaction transaction,

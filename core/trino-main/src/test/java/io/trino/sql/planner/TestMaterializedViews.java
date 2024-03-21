@@ -33,9 +33,17 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.ViewExpression;
 import io.trino.spi.transaction.IsolationLevel;
+import io.trino.spi.type.TestingTypeManager;
+import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeManager;
+import io.trino.spi.type.TypeParameter;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.BasePlanTest;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.PlanTester;
 import io.trino.testing.TestingAccessControlManager;
 import io.trino.testing.TestingMetadata;
 import org.junit.jupiter.api.Test;
@@ -46,12 +54,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.trino.spi.connector.SaveMode.FAIL;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.TimestampWithTimeZoneParametricType.TIMESTAMP_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
+import static io.trino.spi.type.TimestampWithTimeZoneType.createTimestampWithTimeZoneType;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
@@ -68,7 +83,7 @@ public class TestMaterializedViews
     private static final String SCHEMA = "tiny";
 
     @Override
-    protected LocalQueryRunner createLocalQueryRunner()
+    protected PlanTester createPlanTester()
     {
         Session.SessionBuilder sessionBuilder = testSessionBuilder()
                 .setCatalog(TEST_CATALOG_NAME)
@@ -77,12 +92,14 @@ public class TestMaterializedViews
 
         TestingMetadata testingConnectorMetadata = new TestingMetadata();
 
-        LocalQueryRunner queryRunner = LocalQueryRunner.create(sessionBuilder.build());
-        queryRunner.createCatalog(TEST_CATALOG_NAME, new StaticConnectorFactory("test", new TestMaterializedViewConnector(testingConnectorMetadata)), ImmutableMap.of());
+        PlanTester planTester = PlanTester.create(sessionBuilder.build());
+        planTester.createCatalog(TEST_CATALOG_NAME, new StaticConnectorFactory("test", new TestMaterializedViewConnector(testingConnectorMetadata)), ImmutableMap.of());
 
-        Metadata metadata = queryRunner.getMetadata();
+        TypeManager typeManager = new TestingTypeManager();
+
+        Metadata metadata = planTester.getPlannerContext().getMetadata();
         SchemaTableName testTable = new SchemaTableName(SCHEMA, "test_table");
-        queryRunner.inTransaction(session -> {
+        planTester.inTransaction(session -> {
             metadata.createTable(
                     session,
                     TEST_CATALOG_NAME,
@@ -91,12 +108,12 @@ public class TestMaterializedViews
                             ImmutableList.of(
                                     new ColumnMetadata("a", BIGINT),
                                     new ColumnMetadata("b", BIGINT))),
-                    false);
+                    FAIL);
             return null;
         });
 
         SchemaTableName storageTable = new SchemaTableName(SCHEMA, "storage_table");
-        queryRunner.inTransaction(session -> {
+        planTester.inTransaction(session -> {
             metadata.createTable(
                     session,
                     TEST_CATALOG_NAME,
@@ -105,12 +122,12 @@ public class TestMaterializedViews
                             ImmutableList.of(
                                     new ColumnMetadata("a", BIGINT),
                                     new ColumnMetadata("b", BIGINT))),
-                    false);
+                    FAIL);
             return null;
         });
 
         SchemaTableName storageTableWithCasts = new SchemaTableName(SCHEMA, "storage_table_with_casts");
-        queryRunner.inTransaction(session -> {
+        planTester.inTransaction(session -> {
             metadata.createTable(
                     session,
                     TEST_CATALOG_NAME,
@@ -119,7 +136,36 @@ public class TestMaterializedViews
                             ImmutableList.of(
                                     new ColumnMetadata("a", TINYINT),
                                     new ColumnMetadata("b", VARCHAR))),
-                    false);
+                    FAIL);
+            return null;
+        });
+
+        Type timestampWithTimezone3 = TIMESTAMP_WITH_TIME_ZONE.createType(typeManager, ImmutableList.of(TypeParameter.of(3)));
+        SchemaTableName timestampTest = new SchemaTableName(SCHEMA, "timestamp_test");
+        planTester.inTransaction(session -> {
+            metadata.createTable(
+                    session,
+                    TEST_CATALOG_NAME,
+                    new ConnectorTableMetadata(
+                            timestampTest,
+                            ImmutableList.of(
+                                    new ColumnMetadata("id", BIGINT),
+                                    new ColumnMetadata("ts", timestampWithTimezone3))),
+                    FAIL);
+            return null;
+        });
+
+        SchemaTableName timestampTestStorage = new SchemaTableName(SCHEMA, "timestamp_test_storage");
+        planTester.inTransaction(session -> {
+            metadata.createTable(
+                    session,
+                    TEST_CATALOG_NAME,
+                    new ConnectorTableMetadata(
+                            timestampTestStorage,
+                            ImmutableList.of(
+                                    new ColumnMetadata("id", BIGINT),
+                                    new ColumnMetadata("ts", VARCHAR))),
+                    FAIL);
             return null;
         });
 
@@ -132,13 +178,14 @@ public class TestMaterializedViews
                 Optional.of(STALE_MV_STALENESS.plusHours(1)),
                 Optional.empty(),
                 Identity.ofUser("some user"),
-                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table")),
-                ImmutableMap.of());
-        queryRunner.inTransaction(session -> {
+                ImmutableList.of(),
+                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table")));
+        planTester.inTransaction(session -> {
             metadata.createMaterializedView(
                     session,
                     freshMaterializedView,
                     materializedViewDefinition,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
@@ -146,11 +193,12 @@ public class TestMaterializedViews
         testingConnectorMetadata.markMaterializedViewIsFresh(freshMaterializedView.asSchemaTableName());
 
         QualifiedObjectName notFreshMaterializedView = new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "not_fresh_materialized_view");
-        queryRunner.inTransaction(session -> {
+        planTester.inTransaction(session -> {
             metadata.createMaterializedView(
                     session,
                     notFreshMaterializedView,
                     materializedViewDefinition,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
@@ -164,31 +212,56 @@ public class TestMaterializedViews
                 Optional.empty(),
                 Optional.empty(),
                 Identity.ofUser("some user"),
-                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table_with_casts")),
-                ImmutableMap.of());
+                ImmutableList.of(),
+                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "storage_table_with_casts")));
         QualifiedObjectName materializedViewWithCasts = new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "materialized_view_with_casts");
-        queryRunner.inTransaction(session -> {
+        planTester.inTransaction(session -> {
             metadata.createMaterializedView(
                     session,
                     materializedViewWithCasts,
                     materializedViewDefinitionWithCasts,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
         });
         testingConnectorMetadata.markMaterializedViewIsFresh(materializedViewWithCasts.asSchemaTableName());
 
-        queryRunner.inTransaction(session -> {
+        planTester.inTransaction(session -> {
             metadata.createMaterializedView(
                     session,
                     new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "stale_materialized_view_with_casts"),
                     materializedViewDefinitionWithCasts,
+                    ImmutableMap.of(),
                     false,
                     false);
             return null;
         });
 
-        return queryRunner;
+        MaterializedViewDefinition materializedViewDefinitionWithTimestamp = new MaterializedViewDefinition(
+                "SELECT id, ts FROM timestamp_test",
+                Optional.of(TEST_CATALOG_NAME),
+                Optional.of(SCHEMA),
+                ImmutableList.of(new ViewColumn("id", BIGINT.getTypeId(), Optional.empty()), new ViewColumn("ts", timestampWithTimezone3.getTypeId(), Optional.empty())),
+                Optional.empty(),
+                Optional.empty(),
+                Identity.ofUser("some user"),
+                ImmutableList.of(),
+                Optional.of(new CatalogSchemaTableName(TEST_CATALOG_NAME, SCHEMA, "timestamp_test_storage")));
+        QualifiedObjectName materializedViewWithTimestamp = new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "timestamp_mv_test");
+        planTester.inTransaction(session -> {
+            metadata.createMaterializedView(
+                    session,
+                    materializedViewWithTimestamp,
+                    materializedViewDefinitionWithTimestamp,
+                    ImmutableMap.of(),
+                    false,
+                    false);
+            return null;
+        });
+        testingConnectorMetadata.markMaterializedViewIsFresh(materializedViewWithTimestamp.asSchemaTableName());
+
+        return planTester;
     }
 
     @Test
@@ -202,7 +275,7 @@ public class TestMaterializedViews
     @Test
     public void testNotFreshMaterializedView()
     {
-        Session defaultSession = getQueryRunner().getDefaultSession();
+        Session defaultSession = getPlanTester().getDefaultSession();
         Session legacyGracePeriod = Session.builder(defaultSession)
                 .setSystemProperty(SystemSessionProperties.LEGACY_MATERIALIZED_VIEW_GRACE_PERIOD, "true")
                 .build();
@@ -231,18 +304,18 @@ public class TestMaterializedViews
     @Test
     public void testMaterializedViewWithCasts()
     {
-        TestingAccessControlManager accessControl = getQueryRunner().getAccessControl();
+        TestingAccessControlManager accessControl = getPlanTester().getAccessControl();
         accessControl.columnMask(
                 new QualifiedObjectName(TEST_CATALOG_NAME, SCHEMA, "materialized_view_with_casts"),
                 "a",
                 "user",
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "a + 1"));
+                ViewExpression.builder().expression("a + 1").build());
         assertPlan("SELECT * FROM materialized_view_with_casts",
                 anyTree(
                         project(
                                 ImmutableMap.of(
-                                        "A_CAST", expression("CAST(A as BIGINT) + BIGINT '1'"),
-                                        "B_CAST", expression("CAST(B as BIGINT)")),
+                                        "A_CAST", expression(new ArithmeticBinaryExpression(ADD, new Cast(new SymbolReference("A"), BIGINT), new GenericLiteral(BIGINT, "1"))),
+                                        "B_CAST", expression(new Cast(new SymbolReference("B"), BIGINT))),
                                 tableScan("storage_table_with_casts", ImmutableMap.of("A", "a", "B", "b")))));
     }
 
@@ -253,13 +326,26 @@ public class TestMaterializedViews
                 anyTree(
                         tableWriter(List.of("A_CAST", "B_CAST"), List.of("a", "b"),
                                 exchange(LOCAL,
-                                        project(Map.of("A_CAST", expression("CAST(A AS tinyint)"), "B_CAST", expression("CAST(B AS varchar)")),
+                                        project(Map.of(
+                                                        "A_CAST", expression(new Cast(new SymbolReference("A"), TINYINT)),
+                                                        "B_CAST", expression(new Cast(new SymbolReference("B"), VARCHAR))),
                                                 tableScan("test_table", Map.of("A", "a", "B", "b")))))));
 
         // No-op REFRESH
         assertPlan("REFRESH MATERIALIZED VIEW materialized_view_with_casts",
                 output(
-                        values(List.of("rows"), List.of(List.of(new GenericLiteral("BIGINT", "0"))))));
+                        values(List.of("rows"), List.of(List.of(new GenericLiteral(BIGINT, "0"))))));
+    }
+
+    @Test
+    public void testMaterializedViewWithTimestamp()
+    {
+        assertPlan("SELECT * FROM timestamp_mv_test WHERE ts < TIMESTAMP '2024-01-01 00:00:00.000 America/New_York'",
+                anyTree(
+                        project(ImmutableMap.of("ts_0", expression(new Cast(new SymbolReference("ts"), TIMESTAMP_TZ_MILLIS))),
+                                filter(
+                                        new ComparisonExpression(LESS_THAN, new Cast(new SymbolReference("ts"), TIMESTAMP_TZ_MILLIS), new GenericLiteral(createTimestampWithTimeZoneType(3), "2024-01-01 00:00:00.000 America/New_York")),
+                                        tableScan("timestamp_test_storage", ImmutableMap.of("ts", "ts", "id", "id"))))));
     }
 
     private static class TestMaterializedViewConnector

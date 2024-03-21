@@ -15,27 +15,24 @@ package io.trino.sql.planner.assertions;
 
 import io.trino.Session;
 import io.trino.metadata.Metadata;
-import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.PlanNode;
-import io.trino.sql.tree.FunctionCall;
 
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkState;
-import static io.trino.metadata.ResolvedFunction.extractFunctionName;
 import static java.util.Objects.requireNonNull;
 
 public class AggregationFunctionMatcher
         implements RvalueMatcher
 {
-    private final ExpectedValueProvider<FunctionCall> callMaker;
+    private final ExpectedValueProvider<AggregationFunction> callMaker;
 
-    public AggregationFunctionMatcher(ExpectedValueProvider<FunctionCall> callMaker)
+    public AggregationFunctionMatcher(ExpectedValueProvider<AggregationFunction> callMaker)
     {
         this.callMaker = requireNonNull(callMaker, "callMaker is null");
     }
@@ -48,7 +45,7 @@ public class AggregationFunctionMatcher
             return result;
         }
 
-        FunctionCall expectedCall = callMaker.getExpectedValue(symbolAliases);
+        AggregationFunction expectedCall = callMaker.getExpectedValue(symbolAliases);
         for (Map.Entry<Symbol, Aggregation> assignment : aggregationNode.getAggregations().entrySet()) {
             Aggregation aggregation = assignment.getValue();
             if (aggregationMatches(aggregation, expectedCall)) {
@@ -60,16 +57,13 @@ public class AggregationFunctionMatcher
         return result;
     }
 
-    private static boolean aggregationMatches(Aggregation aggregation, FunctionCall expectedCall)
+    private static boolean aggregationMatches(Aggregation aggregation, AggregationFunction expectedCall)
     {
-        if (expectedCall.getWindow().isPresent()) {
-            return false;
-        }
-        return Objects.equals(extractFunctionName(expectedCall.getName()), aggregation.getResolvedFunction().getSignature().getName()) &&
-                Objects.equals(expectedCall.getFilter(), aggregation.getFilter().map(Symbol::toSymbolReference)) &&
-                Objects.equals(expectedCall.getOrderBy().map(OrderingScheme::fromOrderBy), aggregation.getOrderingScheme()) &&
-                Objects.equals(expectedCall.isDistinct(), aggregation.isDistinct()) &&
-                Objects.equals(expectedCall.getArguments(), aggregation.getArguments());
+        return Objects.equals(expectedCall.name(), aggregation.getResolvedFunction().getSignature().getName().getFunctionName()) &&
+                Objects.equals(expectedCall.filter(), aggregation.getFilter()) &&
+                Objects.equals(expectedCall.orderBy(), aggregation.getOrderingScheme()) &&
+                Objects.equals(expectedCall.distinct(), aggregation.isDistinct()) &&
+                Objects.equals(expectedCall.arguments(), aggregation.getArguments());
     }
 
     @Override

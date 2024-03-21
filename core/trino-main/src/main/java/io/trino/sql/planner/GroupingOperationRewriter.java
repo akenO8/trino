@@ -13,17 +13,19 @@
  */
 package io.trino.sql.planner;
 
+import io.trino.spi.type.BigintType;
+import io.trino.spi.type.IntegerType;
+import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.FieldId;
 import io.trino.sql.analyzer.RelationId;
 import io.trino.sql.analyzer.ResolvedField;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.Array;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.GenericLiteral;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Array;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.SubscriptExpression;
 import io.trino.sql.tree.GroupingOperation;
-import io.trino.sql.tree.LongLiteral;
 import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.SubscriptExpression;
 
 import java.util.List;
 import java.util.Map;
@@ -32,14 +34,16 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.sql.tree.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
 import static java.util.Objects.requireNonNull;
 
 public final class GroupingOperationRewriter
 {
     private GroupingOperationRewriter() {}
 
-    public static Expression rewriteGroupingOperation(GroupingOperation expression, List<Set<Integer>> groupingSets, Map<NodeRef<Expression>, ResolvedField> columnReferenceFields, Optional<Symbol> groupIdSymbol)
+    public static Expression rewriteGroupingOperation(GroupingOperation expression, Type type, List<Set<Integer>> groupingSets, Map<NodeRef<io.trino.sql.tree.Expression>, ResolvedField> columnReferenceFields, Optional<Symbol> groupIdSymbol)
     {
         requireNonNull(groupIdSymbol, "groupIdSymbol is null");
 
@@ -49,7 +53,11 @@ public final class GroupingOperationRewriter
         // GroupingOperation to a constant literal of 0.
         // See SQL:2011:4.16.2 and SQL:2011:6.9.10.
         if (groupingSets.size() == 1) {
-            return new LongLiteral("0");
+            return switch (type) {
+                case BigintType unused -> new GenericLiteral(BIGINT, "0");
+                case IntegerType unused -> new GenericLiteral(INTEGER, "0");
+                default -> throw new IllegalArgumentException("Unexpected type for GROUPING operation: " + type);
+            };
         }
         checkState(groupIdSymbol.isPresent(), "groupId symbol is missing");
 
@@ -65,13 +73,17 @@ public final class GroupingOperationRewriter
 
         List<Expression> groupingResults = groupingSets.stream()
                 .map(groupingSet -> String.valueOf(calculateGrouping(groupingSet, columns)))
-                .map(LongLiteral::new)
+                .map(value -> switch (type) {
+                    case BigintType unused -> new GenericLiteral(BIGINT, value);
+                    case IntegerType unused -> new GenericLiteral(INTEGER, value);
+                    default -> throw new IllegalArgumentException("Unexpected type for GROUPING operation: " + type);
+                })
                 .collect(toImmutableList());
 
         // It is necessary to add a 1 to the groupId because the underlying array is indexed starting at 1
         return new SubscriptExpression(
                 new Array(groupingResults),
-                new ArithmeticBinaryExpression(ADD, groupIdSymbol.get().toSymbolReference(), new GenericLiteral("BIGINT", "1")));
+                new ArithmeticBinaryExpression(ADD, groupIdSymbol.get().toSymbolReference(), new GenericLiteral(BIGINT, "1")));
     }
 
     private static int translateFieldToInteger(FieldId fieldId, RelationId requiredOriginRelationId)

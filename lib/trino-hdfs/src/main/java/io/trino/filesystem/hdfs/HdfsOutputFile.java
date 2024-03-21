@@ -13,6 +13,7 @@
  */
 package io.trino.filesystem.hdfs;
 
+import com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem;
 import io.airlift.stats.TimeStat;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoOutputFile;
@@ -21,6 +22,7 @@ import io.trino.hdfs.HdfsContext;
 import io.trino.hdfs.HdfsEnvironment;
 import io.trino.hdfs.MemoryAwareFileSystem;
 import io.trino.hdfs.authentication.GenericExceptionAction;
+import io.trino.hdfs.gcs.GcsAtomicOutputStream;
 import io.trino.memory.context.AggregatedMemoryContext;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -33,6 +35,7 @@ import java.nio.file.FileAlreadyExistsException;
 import static io.trino.filesystem.hdfs.HadoopPaths.hadoopPath;
 import static io.trino.filesystem.hdfs.HdfsFileSystem.withCause;
 import static io.trino.hdfs.FileSystemUtils.getRawFileSystem;
+import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static java.util.Objects.requireNonNull;
 
 class HdfsOutputFile
@@ -60,10 +63,27 @@ class HdfsOutputFile
     }
 
     @Override
-    public OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
+    public void createOrOverwrite(byte[] data)
             throws IOException
     {
-        return create(true, memoryContext);
+        try (OutputStream out = create(true, newSimpleAggregatedMemoryContext())) {
+            out.write(data);
+        }
+    }
+
+    @Override
+    public void createExclusive(byte[] data)
+            throws IOException
+    {
+        Path file = hadoopPath(location);
+        FileSystem fileSystem = getRawFileSystem(environment.getFileSystem(context, file));
+        if (fileSystem instanceof GoogleHadoopFileSystem) {
+            GcsAtomicOutputStream atomicOutputStream = new GcsAtomicOutputStream(environment, context, file);
+            atomicOutputStream.write(data);
+            atomicOutputStream.close();
+            return;
+        }
+        throw new UnsupportedOperationException("createExclusive not supported for " + fileSystem);
     }
 
     private OutputStream create(boolean overwrite, AggregatedMemoryContext memoryContext)

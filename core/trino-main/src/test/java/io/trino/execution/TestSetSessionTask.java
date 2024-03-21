@@ -15,13 +15,12 @@ package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import io.trino.client.NodeVersion;
 import io.trino.connector.MockConnectorFactory;
+import io.trino.connector.MockConnectorPlugin;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.SessionPropertyManager;
-import io.trino.metadata.TestingFunctionResolution;
 import io.trino.security.AccessControl;
 import io.trino.spi.TrinoException;
 import io.trino.spi.resourcegroups.ResourceGroupId;
@@ -33,11 +32,14 @@ import io.trino.sql.tree.Parameter;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.SetSession;
 import io.trino.sql.tree.StringLiteral;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
 import io.trino.transaction.TransactionManager;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.net.URI;
 import java.util.List;
@@ -53,13 +55,17 @@ import static io.trino.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
 import static io.trino.spi.session.PropertyMetadata.enumProperty;
 import static io.trino.spi.session.PropertyMetadata.integerProperty;
 import static io.trino.spi.session.PropertyMetadata.stringProperty;
-import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.testing.TestingSession.testSession;
 import static java.lang.String.format;
 import static java.util.Collections.emptyList;
 import static java.util.concurrent.Executors.newCachedThreadPool;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestSetSessionTask
 {
     private static final String CATALOG_NAME = "my_catalog";
@@ -72,7 +78,7 @@ public class TestSetSessionTask
         LARGE,
     }
 
-    private LocalQueryRunner queryRunner;
+    private QueryRunner queryRunner;
     private TransactionManager transactionManager;
     private AccessControl accessControl;
     private Metadata metadata;
@@ -80,20 +86,11 @@ public class TestSetSessionTask
     private SessionPropertyManager sessionPropertyManager;
     private ExecutorService executor = newCachedThreadPool(daemonThreadsNamed(getClass().getSimpleName() + "-%s"));
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
-        queryRunner = LocalQueryRunner.builder(TEST_SESSION)
-                .withExtraSystemSessionProperties(ImmutableSet.of(() -> ImmutableList.of(
-                        stringProperty(
-                                "foo",
-                                "test property",
-                                null,
-                                false))))
-                .build();
-
-        queryRunner.createCatalog(
-                CATALOG_NAME,
+        queryRunner = new StandaloneQueryRunner(TEST_SESSION);
+        queryRunner.installPlugin(new MockConnectorPlugin(
                 MockConnectorFactory.builder()
                         .withSessionProperty(stringProperty(
                                 "bar",
@@ -112,12 +109,12 @@ public class TestSetSessionTask
                                 Size.class,
                                 null,
                                 false))
-                        .build(),
-                ImmutableMap.of());
+                        .build()));
+        queryRunner.createCatalog(CATALOG_NAME, "mock", ImmutableMap.of());
 
         transactionManager = queryRunner.getTransactionManager();
         accessControl = queryRunner.getAccessControl();
-        metadata = queryRunner.getMetadata();
+        metadata = queryRunner.getPlannerContext().getMetadata();
         plannerContext = queryRunner.getPlannerContext();
         sessionPropertyManager = queryRunner.getSessionPropertyManager();
     }
@@ -130,7 +127,7 @@ public class TestSetSessionTask
         }
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         queryRunner.close();
@@ -148,12 +145,11 @@ public class TestSetSessionTask
     public void testSetSession()
     {
         testSetSession("bar", new StringLiteral("baz"), "baz");
-        testSetSession("bar",
-                new TestingFunctionResolution(transactionManager, plannerContext)
-                        .functionCallBuilder(QualifiedName.of("concat"))
-                        .addArgument(VARCHAR, new StringLiteral("ban"))
-                        .addArgument(VARCHAR, new StringLiteral("ana"))
-                        .build(),
+        testSetSession(
+                "bar",
+                new FunctionCall(QualifiedName.of("concat"), ImmutableList.of(
+                        new StringLiteral("ban"),
+                        new StringLiteral("ana"))),
                 "banana");
     }
 
@@ -180,11 +176,10 @@ public class TestSetSessionTask
     @Test
     public void testSetSessionWithParameters()
     {
-        FunctionCall functionCall = new TestingFunctionResolution(transactionManager, plannerContext)
-                .functionCallBuilder(QualifiedName.of("concat"))
-                .addArgument(VARCHAR, new StringLiteral("ban"))
-                .addArgument(VARCHAR, new Parameter(0))
-                .build();
+        FunctionCall functionCall = new FunctionCall(QualifiedName.of("concat"), ImmutableList.of(
+                        new StringLiteral("ban"),
+                        new Parameter(0)));
+
         testSetSessionWithParameters("bar", functionCall, "banana", ImmutableList.of(new StringLiteral("ana")));
     }
 
@@ -200,7 +195,7 @@ public class TestSetSessionTask
                 Optional.empty(),
                 format("set %s = 'old_value'", qualifiedPropName),
                 Optional.empty(),
-                TEST_SESSION,
+                testSession(),
                 URI.create("fake://uri"),
                 new ResourceGroupId("test"),
                 false,
@@ -216,6 +211,6 @@ public class TestSetSessionTask
         getFutureValue(new SetSessionTask(plannerContext, accessControl, sessionPropertyManager).execute(new SetSession(qualifiedPropName, expression), stateMachine, parameters, WarningCollector.NOOP));
 
         Map<String, String> sessionProperties = stateMachine.getSetSessionProperties();
-        assertEquals(sessionProperties, ImmutableMap.of(qualifiedPropName.toString(), expectedValue));
+        assertThat(sessionProperties).isEqualTo(ImmutableMap.of(qualifiedPropName.toString(), expectedValue));
     }
 }

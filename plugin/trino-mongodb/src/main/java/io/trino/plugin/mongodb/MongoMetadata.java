@@ -456,7 +456,12 @@ public class MongoMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public Optional<ConnectorOutputMetadata> finishInsert(
+            ConnectorSession session,
+            ConnectorInsertTableHandle insertHandle,
+            List<ConnectorTableHandle> sourceTableHandles,
+            Collection<Slice> fragments,
+            Collection<ComputedStatistics> computedStatistics)
     {
         MongoInsertTableHandle handle = (MongoInsertTableHandle) insertHandle;
         if (handle.getTemporaryTableName().isPresent()) {
@@ -631,7 +636,7 @@ public class MongoMetadata
                 handle.getProjectedColumns(),
                 handle.getLimit());
 
-        return Optional.of(new ConstraintApplicationResult<>(handle, remainingFilter, false));
+        return Optional.of(new ConstraintApplicationResult<>(handle, remainingFilter, constraint.getExpression(), false));
     }
 
     @Override

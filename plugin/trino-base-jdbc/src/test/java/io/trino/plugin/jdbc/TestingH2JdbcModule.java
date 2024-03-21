@@ -66,12 +66,14 @@ public class TestingH2JdbcModule
     @ForBaseJdbc
     public ConnectionFactory getConnectionFactory(BaseJdbcConfig config, CredentialProvider credentialProvider)
     {
-        return new DriverConnectionFactory(new Driver(), config, credentialProvider);
+        return DriverConnectionFactory.builder(new Driver(), config.getConnectionUrl(), credentialProvider).build();
     }
 
     public static Map<String, String> createProperties()
     {
-        return ImmutableMap.of("connection-url", createH2ConnectionUrl());
+        return ImmutableMap.of(
+                "connection-url", createH2ConnectionUrl(),
+                "bootstrap.quiet", "true");
     }
 
     public static String createH2ConnectionUrl()

@@ -55,6 +55,7 @@ import static java.util.Objects.requireNonNull;
         @JsonSubTypes.Type(value = MergeWriterNode.class, name = "mergeWriter"),
         @JsonSubTypes.Type(value = MergeProcessorNode.class, name = "mergeProcessor"),
         @JsonSubTypes.Type(value = TableDeleteNode.class, name = "tableDelete"),
+        @JsonSubTypes.Type(value = TableUpdateNode.class, name = "tableUpdate"),
         @JsonSubTypes.Type(value = TableFinishNode.class, name = "tablecommit"),
         @JsonSubTypes.Type(value = UnnestNode.class, name = "unnest"),
         @JsonSubTypes.Type(value = ExchangeNode.class, name = "exchange"),
@@ -70,6 +71,7 @@ import static java.util.Objects.requireNonNull;
         @JsonSubTypes.Type(value = PatternRecognitionNode.class, name = "patternRecognition"),
         @JsonSubTypes.Type(value = TableFunctionNode.class, name = "tableFunction"),
         @JsonSubTypes.Type(value = TableFunctionProcessorNode.class, name = "tableFunctionProcessor"),
+        @JsonSubTypes.Type(value = AdaptivePlanNode.class, name = "adaptivePlanNode"),
 })
 public abstract class PlanNode
 {

@@ -13,15 +13,36 @@
  */
 package io.trino.sql.planner;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.Session;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.IsNullPredicate;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.planner.plan.ExchangeNode;
+import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
+import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.spi.type.VarcharType.createVarcharType;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.semiJoin;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
 
 public class TestPredicatePushdownWithoutDynamicFilter
         extends AbstractPredicatePushdownTest
@@ -52,13 +73,13 @@ public class TestPredicatePushdownWithoutDynamicFilter
                                 .left(
                                         project(
                                                 filter(
-                                                        "CAST('x' AS varchar(4)) = CAST(t_v AS varchar(4))",
+                                                        new ComparisonExpression(EQUAL, new Cast(new StringLiteral("x"), createVarcharType(4)), new Cast(new SymbolReference("t_v"), createVarcharType(4))),
                                                         tableScan("nation", ImmutableMap.of("t_k", "nationkey", "t_v", "name")))))
                                 .right(
                                         anyTree(
                                                 project(
                                                         filter(
-                                                                "CAST('x' AS varchar(4)) = CAST(u_v AS varchar(4))",
+                                                                new ComparisonExpression(EQUAL, new Cast(new StringLiteral("x"), createVarcharType(4)), new Cast(new SymbolReference("u_v"), createVarcharType(4))),
                                                                 tableScan("nation", ImmutableMap.of("u_k", "nationkey", "u_v", "name")))))))));
 
         // values have different types (varchar(4) vs varchar(5)) in each table
@@ -74,13 +95,100 @@ public class TestPredicatePushdownWithoutDynamicFilter
                                 .equiCriteria("t_k", "u_k")
                                 .left(
                                         project(
-                                                filter("CAST('x' AS varchar(4)) = CAST(t_v AS varchar(4))",
+                                                filter(
+                                                        new ComparisonExpression(EQUAL, new Cast(new StringLiteral("x"), createVarcharType(4)), new Cast(new SymbolReference("t_v"), createVarcharType(4))),
                                                         tableScan("nation", ImmutableMap.of("t_k", "nationkey", "t_v", "name")))))
                                 .right(
                                         anyTree(
                                                 project(
                                                         filter(
-                                                                "CAST('x' AS varchar(5)) = CAST(u_v AS varchar(5))",
+                                                                new ComparisonExpression(EQUAL, new Cast(new StringLiteral("x"), createVarcharType(5)), new Cast(new SymbolReference("u_v"), createVarcharType(5))),
                                                                 tableScan("nation", ImmutableMap.of("u_k", "nationkey", "u_v", "name")))))))));
+    }
+
+    @Test
+    public void testNormalizeOuterJoinToInner()
+    {
+        Session disableJoinReordering = Session.builder(getPlanTester().getDefaultSession())
+                .setSystemProperty(JOIN_REORDERING_STRATEGY, "NONE")
+                .build();
+
+        // one join
+        assertPlan(
+                "SELECT customer.name, orders.orderdate " +
+                        "FROM orders " +
+                        "LEFT JOIN customer ON orders.custkey = customer.custkey " +
+                        "WHERE customer.name IS NOT NULL",
+                disableJoinReordering,
+                anyTree(
+                        join(INNER, builder -> builder
+                                .equiCriteria("o_custkey", "c_custkey")
+                                .left(
+                                        tableScan("orders", ImmutableMap.of("o_orderdate", "orderdate", "o_custkey", "custkey")))
+                                .right(
+                                        anyTree(
+                                                filter(
+                                                        new NotExpression(new IsNullPredicate(new SymbolReference("c_name"))),
+                                                        tableScan("customer", ImmutableMap.of("c_custkey", "custkey", "c_name", "name"))))))));
+
+        // nested joins
+        assertPlan(
+                "SELECT customer.name, lineitem.partkey " +
+                        "FROM lineitem " +
+                        "LEFT JOIN orders ON lineitem.orderkey = orders.orderkey " +
+                        "LEFT JOIN customer ON orders.custkey = customer.custkey " +
+                        "WHERE customer.name IS NOT NULL",
+                disableJoinReordering,
+                anyTree(
+                        join(INNER, builder -> builder
+                                .equiCriteria("o_custkey", "c_custkey")
+                                .left(
+                                        join(LEFT, // TODO (https://github.com/trinodb/trino/issues/2392) this should be INNER also when dynamic filtering is off
+                                                leftJoinBuilder -> leftJoinBuilder
+                                                        .equiCriteria("l_orderkey", "o_orderkey")
+                                                        .left(
+                                                                tableScan("lineitem", ImmutableMap.of("l_orderkey", "orderkey")))
+                                                        .right(
+                                                                anyTree(
+                                                                        tableScan("orders", ImmutableMap.of("o_orderkey", "orderkey", "o_custkey", "custkey"))))))
+                                .right(
+                                        anyTree(
+                                                filter(
+                                                        new NotExpression(new IsNullPredicate(new SymbolReference("c_name"))),
+                                                        tableScan("customer", ImmutableMap.of("c_custkey", "custkey", "c_name", "name"))))))));
+    }
+
+    @Test
+    public void testNonDeterministicPredicateDoesNotPropagateFromFilteringSideToSourceSideOfSemiJoin()
+    {
+        assertPlan("SELECT * FROM lineitem WHERE orderkey IN (SELECT orderkey FROM orders WHERE orderkey = random(5))",
+                noSemiJoinRewrite(),
+                anyTree(
+                        semiJoin("LINE_ORDER_KEY", "ORDERS_ORDER_KEY", "SEMI_JOIN_RESULT", false,
+                                tableScan("lineitem", ImmutableMap.of(
+                                        "LINE_ORDER_KEY", "orderkey")),
+                                node(ExchangeNode.class,
+                                        filter(
+                                                new ComparisonExpression(EQUAL, new SymbolReference("ORDERS_ORDER_KEY"), new Cast(new FunctionCall(QualifiedName.of("random"), ImmutableList.of(new LongLiteral(5))), BIGINT)),
+                                                tableScan("orders", ImmutableMap.of("ORDERS_ORDER_KEY", "orderkey")))))));
+    }
+
+    @Test
+    public void testNonStraddlingJoinExpression()
+    {
+        assertPlan(
+                "SELECT * FROM orders JOIN lineitem ON orders.orderkey = lineitem.orderkey AND cast(lineitem.linenumber AS varchar) = '2'",
+                anyTree(
+                        join(INNER, builder -> builder
+                                .equiCriteria("LINEITEM_OK", "ORDERS_OK")
+                                .left(
+                                        filter(
+                                                new ComparisonExpression(EQUAL, new Cast(new SymbolReference("LINEITEM_LINENUMBER"), VARCHAR), new GenericLiteral(VARCHAR, "2")),
+                                                tableScan("lineitem", ImmutableMap.of(
+                                                        "LINEITEM_OK", "orderkey",
+                                                        "LINEITEM_LINENUMBER", "linenumber"))))
+                                .right(
+                                        anyTree(
+                                                tableScan("orders", ImmutableMap.of("ORDERS_OK", "orderkey")))))));
     }
 }

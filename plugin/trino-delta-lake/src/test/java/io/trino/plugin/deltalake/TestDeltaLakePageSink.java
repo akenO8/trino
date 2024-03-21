@@ -36,22 +36,19 @@ import io.trino.tpch.LineItem;
 import io.trino.tpch.LineItemColumn;
 import io.trino.tpch.LineItemGenerator;
 import io.trino.tpch.TpchColumnType;
-import io.trino.type.BlockTypeOperators;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.file.Files;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
@@ -73,8 +70,7 @@ import static io.trino.testing.TestingPageSinkId.TESTING_PAGE_SINK_ID;
 import static java.lang.Math.round;
 import static java.time.temporal.ChronoUnit.MINUTES;
 import static java.util.stream.Collectors.toList;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestDeltaLakePageSink
 {
@@ -122,23 +118,23 @@ public class TestDeltaLakePageSink
                     .map(dataFileInfoCodec::fromJson)
                     .collect(toImmutableList());
 
-            assertEquals(dataFileInfos.size(), 1);
+            assertThat(dataFileInfos.size()).isEqualTo(1);
             DataFileInfo dataFileInfo = dataFileInfos.get(0);
 
             List<File> files = ImmutableList.copyOf(new File(tablePath).listFiles((dir, name) -> !name.endsWith(".crc")));
-            assertEquals(files.size(), 1);
+            assertThat(files.size()).isEqualTo(1);
             File outputFile = files.get(0);
 
-            assertEquals(round(stats.getInputPageSizeInBytes().getAllTime().getMax()), page.getRetainedSizeInBytes());
+            assertThat(round(stats.getInputPageSizeInBytes().getAllTime().getMax())).isEqualTo(page.getRetainedSizeInBytes());
 
-            assertEquals(dataFileInfo.getStatistics().getNumRecords(), Optional.of(rows));
-            assertEquals(dataFileInfo.getPartitionValues(), ImmutableList.of());
-            assertEquals(dataFileInfo.getSize(), outputFile.length());
-            assertEquals(dataFileInfo.getPath(), outputFile.getName());
+            assertThat(dataFileInfo.getStatistics().getNumRecords()).isEqualTo(Optional.of(rows));
+            assertThat(dataFileInfo.getPartitionValues()).isEqualTo(ImmutableList.of());
+            assertThat(dataFileInfo.getSize()).isEqualTo(outputFile.length());
+            assertThat(dataFileInfo.getPath()).isEqualTo(outputFile.getName());
 
             Instant now = Instant.now();
-            assertTrue(dataFileInfo.getCreationTime() < now.toEpochMilli());
-            assertTrue(dataFileInfo.getCreationTime() > now.minus(1, MINUTES).toEpochMilli());
+            assertThat(dataFileInfo.getCreationTime() < now.toEpochMilli()).isTrue();
+            assertThat(dataFileInfo.getCreationTime() > now.minus(1, MINUTES).toEpochMilli()).isTrue();
         }
         finally {
             deleteRecursively(tempDir.toPath(), ALLOW_INSECURE);
@@ -161,14 +157,11 @@ public class TestDeltaLakePageSink
     {
         HiveTransactionHandle transaction = new HiveTransactionHandle(false);
         DeltaLakeConfig deltaLakeConfig = new DeltaLakeConfig();
-        String schemaString = serializeSchemaAsJson(
-                getColumnHandles().stream().map(DeltaLakeColumnHandle::getColumnName).collect(toImmutableList()),
-                getColumnHandles().stream()
-                        .map(column -> Map.entry(column.getColumnName(), serializeColumnType(NONE, new AtomicInteger(), column.getType())))
-                        .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue)),
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                ImmutableMap.of());
+        DeltaLakeTable.Builder deltaTable = DeltaLakeTable.builder();
+        for (DeltaLakeColumnHandle column : getColumnHandles()) {
+            deltaTable.addColumn(column.getColumnName(), serializeColumnType(NONE, new AtomicInteger(), column.getType()), true, null, ImmutableMap.of());
+        }
+        String schemaString = serializeSchemaAsJson(deltaTable.build());
         DeltaLakeOutputTableHandle tableHandle = new DeltaLakeOutputTableHandle(
                 SCHEMA_NAME,
                 TABLE_NAME,
@@ -184,7 +177,7 @@ public class TestDeltaLakePageSink
                 new ProtocolEntry(DEFAULT_READER_VERSION, DEFAULT_WRITER_VERSION, Optional.empty(), Optional.empty()));
 
         DeltaLakePageSinkProvider provider = new DeltaLakePageSinkProvider(
-                new GroupByHashPageIndexerFactory(new JoinCompiler(new TypeOperators()), new BlockTypeOperators()),
+                new GroupByHashPageIndexerFactory(new JoinCompiler(new TypeOperators())),
                 new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS),
                 JsonCodec.jsonCodec(DataFileInfo.class),
                 JsonCodec.jsonCodec(DeltaLakeMergeResult.class),

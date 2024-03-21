@@ -244,7 +244,9 @@ public class CassandraMetadata
 
         String clusteringKeyPredicates = "";
         TupleDomain<ColumnHandle> unenforcedConstraint;
-        if (partitionResult.isUnpartitioned()) {
+        if (partitionResult.isUnpartitioned() || partitionResult.isIndexedColumnPredicatePushdown()) {
+            // When the filter is missing at least one of the partition keys or when the table is not partitioned,
+            // use the raw unenforced constraint of the partitionResult
             unenforcedConstraint = partitionResult.getUnenforcedConstraint();
         }
         else {
@@ -273,6 +275,7 @@ public class CassandraMetadata
                         // TODO this should probably be AND-ed with handle.getClusteringKeyPredicates()
                         clusteringKeyPredicates)),
                         unenforcedConstraint,
+                        constraint.getExpression(),
                         false));
     }
 
@@ -405,7 +408,12 @@ public class CassandraMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public Optional<ConnectorOutputMetadata> finishInsert(
+            ConnectorSession session,
+            ConnectorInsertTableHandle insertHandle,
+            List<ConnectorTableHandle> sourceTableHandles,
+            Collection<Slice> fragments,
+            Collection<ComputedStatistics> computedStatistics)
     {
         return Optional.empty();
     }

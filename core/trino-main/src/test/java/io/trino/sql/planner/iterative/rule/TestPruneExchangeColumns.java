@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.spi.connector.SortOrder;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
@@ -127,7 +128,7 @@ public class TestPruneExchangeColumns
                 })
                 .matches(
                         project(
-                                ImmutableMap.of("a", expression("a")),
+                                ImmutableMap.of("a", expression(new SymbolReference("a"))),
                                 exchange(
                                         REMOTE,
                                         GATHER,

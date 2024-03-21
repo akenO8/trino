@@ -15,16 +15,18 @@ package io.trino.plugin.iceberg.catalog.jdbc;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.filesystem.Location;
-import io.trino.hadoop.ConfigurationInstantiator;
 import io.trino.plugin.iceberg.BaseIcebergConnectorSmokeTest;
 import io.trino.plugin.iceberg.IcebergConfig;
 import io.trino.plugin.iceberg.IcebergQueryRunner;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.jdbc.JdbcCatalog;
-import org.testng.annotations.AfterClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.io.File;
 import java.io.IOException;
@@ -46,7 +48,9 @@ import static org.apache.iceberg.CatalogUtil.buildIcebergCatalog;
 import static org.apache.iceberg.FileFormat.PARQUET;
 import static org.apache.iceberg.jdbc.JdbcCatalog.PROPERTY_PREFIX;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestIcebergJdbcCatalogConnectorSmokeTest
         extends BaseIcebergConnectorSmokeTest
 {
@@ -58,14 +62,16 @@ public class TestIcebergJdbcCatalogConnectorSmokeTest
         super(new IcebergConfig().getFileFormat().toIceberg());
     }
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
         return switch (connectorBehavior) {
-            case SUPPORTS_RENAME_SCHEMA -> false;
-            case SUPPORTS_CREATE_VIEW, SUPPORTS_COMMENT_ON_VIEW, SUPPORTS_COMMENT_ON_VIEW_COLUMN -> false;
-            case SUPPORTS_CREATE_MATERIALIZED_VIEW, SUPPORTS_RENAME_MATERIALIZED_VIEW -> false;
+            case SUPPORTS_COMMENT_ON_VIEW,
+                    SUPPORTS_COMMENT_ON_VIEW_COLUMN,
+                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                    SUPPORTS_CREATE_VIEW,
+                    SUPPORTS_RENAME_MATERIALIZED_VIEW,
+                    SUPPORTS_RENAME_SCHEMA -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -84,7 +90,7 @@ public class TestIcebergJdbcCatalogConnectorSmokeTest
                         .put(PROPERTY_PREFIX + "password", PASSWORD)
                         .put(WAREHOUSE_LOCATION, warehouseLocation.getAbsolutePath())
                         .buildOrThrow(),
-                ConfigurationInstantiator.newEmptyConfiguration());
+                new Configuration(false));
         return IcebergQueryRunner.builder()
                 .setIcebergProperties(
                         ImmutableMap.<String, String>builder()
@@ -103,13 +109,14 @@ public class TestIcebergJdbcCatalogConnectorSmokeTest
                 .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public final void destroy()
     {
         jdbcCatalog.close();
         jdbcCatalog = null;
     }
 
+    @Test
     @Override
     public void testView()
     {
@@ -117,6 +124,7 @@ public class TestIcebergJdbcCatalogConnectorSmokeTest
                 .hasMessageContaining("createView is not supported for Iceberg JDBC catalogs");
     }
 
+    @Test
     @Override
     public void testMaterializedView()
     {
@@ -124,6 +132,7 @@ public class TestIcebergJdbcCatalogConnectorSmokeTest
                 .hasMessageContaining("createMaterializedView is not supported for Iceberg JDBC catalogs");
     }
 
+    @Test
     @Override
     public void testRenameSchema()
     {

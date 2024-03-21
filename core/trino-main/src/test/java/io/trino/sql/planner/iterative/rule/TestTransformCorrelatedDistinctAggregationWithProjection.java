@@ -15,14 +15,20 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
-import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.Assignments;
-import io.trino.sql.planner.plan.CorrelatedJoinNode;
+import io.trino.sql.planner.plan.JoinType;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.assignUniqueId;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -32,7 +38,7 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.singleGroupingSet;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
 
 public class TestTransformCorrelatedDistinctAggregationWithProjection
         extends BaseRuleTest
@@ -70,30 +76,32 @@ public class TestTransformCorrelatedDistinctAggregationWithProjection
                 .on(p -> p.correlatedJoin(
                         ImmutableList.of(p.symbol("corr")),
                         p.values(p.symbol("corr")),
-                        CorrelatedJoinNode.Type.LEFT,
-                        PlanBuilder.expression("true"),
+                        JoinType.LEFT,
+                        TRUE_LITERAL,
                         p.project(
-                                Assignments.of(p.symbol("x"), PlanBuilder.expression("a + 100")),
+                                Assignments.of(p.symbol("x"), new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new LongLiteral(100))),
                                 p.aggregation(innerBuilder -> innerBuilder
                                         .singleGroupingSet(p.symbol("a"))
                                         .source(p.filter(
-                                                PlanBuilder.expression("b > corr"),
+                                                new ComparisonExpression(GREATER_THAN, new SymbolReference("b"), new SymbolReference("corr")),
                                                 p.values(p.symbol("a"), p.symbol("b"))))))))
                 .matches(
-                        project(ImmutableMap.of("corr", expression("corr"), "x", expression("a + 100")),
+                        project(ImmutableMap.of(
+                                        "corr", expression(new SymbolReference("corr")),
+                                        "x", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new LongLiteral(100)))),
                                 aggregation(
                                         singleGroupingSet("corr", "unique", "a"),
                                         ImmutableMap.of(),
                                         Optional.empty(),
                                         SINGLE,
                                         join(LEFT, builder -> builder
-                                                .filter("b > corr")
+                                                .filter(new ComparisonExpression(GREATER_THAN, new SymbolReference("b"), new SymbolReference("corr")))
                                                 .left(
                                                         assignUniqueId(
                                                                 "unique",
                                                                 values("corr")))
                                                 .right(filter(
-                                                        "true",
+                                                        TRUE_LITERAL,
                                                         values("a", "b")))))));
     }
 }

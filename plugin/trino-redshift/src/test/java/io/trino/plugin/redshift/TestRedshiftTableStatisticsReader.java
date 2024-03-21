@@ -16,7 +16,6 @@ package io.trino.plugin.redshift;
 import com.amazon.redshift.Driver;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcTableHandle;
@@ -34,8 +33,7 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.TestTable;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.assertj.core.api.SoftAssertions;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Types;
 import java.util.List;
@@ -59,8 +57,6 @@ import static java.util.Collections.emptyMap;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.from;
 import static org.assertj.core.api.Assertions.withinPercentage;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNull;
 
 public class TestRedshiftTableStatisticsReader
         extends AbstractTestQueryFramework
@@ -78,17 +74,9 @@ public class TestRedshiftTableStatisticsReader
             createVarcharJdbcColumnHandle("mktsegment", 10),
             createVarcharJdbcColumnHandle("comment", 117));
 
-    private RedshiftTableStatisticsReader statsReader;
-
-    @BeforeClass
-    public void setup()
-    {
-        DriverConnectionFactory connectionFactory = new DriverConnectionFactory(
-                new Driver(),
-                new BaseJdbcConfig().setConnectionUrl(JDBC_URL),
-                new StaticCredentialProvider(Optional.of(JDBC_USER), Optional.of(JDBC_PASSWORD)));
-        statsReader = new RedshiftTableStatisticsReader(connectionFactory);
-    }
+    private final RedshiftTableStatisticsReader statsReader = new RedshiftTableStatisticsReader(
+            DriverConnectionFactory.builder(new Driver(), JDBC_URL, new StaticCredentialProvider(Optional.of(JDBC_USER), Optional.of(JDBC_PASSWORD)))
+                    .build());
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -155,7 +143,7 @@ public class TestRedshiftTableStatisticsReader
         TableStatistics stats = collectStats(
                 "SELECT CASE custkey % 3 WHEN 0 THEN NULL ELSE custkey END FROM " + TEST_SCHEMA + ".customer",
                 ImmutableList.of(custkeyColumnHandle));
-        assertEquals(stats.getRowCount(), Estimate.of(1500));
+        assertThat(stats.getRowCount()).isEqualTo(Estimate.of(1500));
 
         ColumnStatistics columnStatistics = stats.getColumnStatistics().get(custkeyColumnHandle);
         assertThat(columnStatistics.getNullsFraction().getValue()).isCloseTo(1.0 / 3, withinPercentage(1));
@@ -195,7 +183,7 @@ public class TestRedshiftTableStatisticsReader
                 .hasEntrySatisfying(columns.get(3), statsCloseTo(1.0, 0.99, 14))
                 .hasEntrySatisfying(columns.get(4), statsCloseTo(1.0, 0.5, 700))
                 .hasEntrySatisfying(columns.get(5), statsCloseTo(51, 0.5, 800))
-                .satisfies(stats -> assertNull(stats.get(columns.get(6))));
+                .satisfies(stats -> assertThat(stats.get(columns.get(6))).isNull());
     }
 
     @Test

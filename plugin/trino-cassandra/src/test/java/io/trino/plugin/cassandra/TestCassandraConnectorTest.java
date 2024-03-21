@@ -27,9 +27,9 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.TestTable;
 import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -65,6 +65,7 @@ import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.QueryAssertions.assertContains;
 import static io.trino.testing.QueryAssertions.assertContainsEventually;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.testing.assertions.Assert.assertEventually;
 import static io.trino.type.IpAddressType.IPADDRESS;
 import static java.lang.String.format;
 import static java.util.Comparator.comparing;
@@ -72,9 +73,10 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
+import static org.junit.jupiter.api.Assumptions.abort;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestCassandraConnectorTest
         extends BaseConnectorTest
 {
@@ -86,53 +88,29 @@ public class TestCassandraConnectorTest
     private CassandraServer server;
     private CassandraSession session;
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_UPDATE:
-            case SUPPORTS_MERGE:
-                return false;
-
-            case SUPPORTS_DELETE:
-            case SUPPORTS_TRUNCATE:
-                return true;
-
-            case SUPPORTS_TOPN_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_CREATE_SCHEMA:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_RENAME_TABLE:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN:
-            case SUPPORTS_RENAME_COLUMN:
-            case SUPPORTS_SET_COLUMN_TYPE:
-                return false;
-
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-                return false;
-
-            case SUPPORTS_CREATE_VIEW:
-            case SUPPORTS_CREATE_MATERIALIZED_VIEW:
-                return false;
-
-            case SUPPORTS_NOT_NULL_CONSTRAINT:
-                return false;
-
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN,
+                    SUPPORTS_ARRAY,
+                    SUPPORTS_COMMENT_ON_COLUMN,
+                    SUPPORTS_COMMENT_ON_TABLE,
+                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                    SUPPORTS_CREATE_SCHEMA,
+                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                    SUPPORTS_CREATE_VIEW,
+                    SUPPORTS_MERGE,
+                    SUPPORTS_NOT_NULL_CONSTRAINT,
+                    SUPPORTS_RENAME_COLUMN,
+                    SUPPORTS_RENAME_TABLE,
+                    SUPPORTS_ROW_TYPE,
+                    SUPPORTS_SET_COLUMN_TYPE,
+                    SUPPORTS_TOPN_PUSHDOWN,
+                    SUPPORTS_UPDATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
@@ -145,7 +123,7 @@ public class TestCassandraConnectorTest
         return createCassandraQueryRunner(server, ImmutableMap.of(), ImmutableMap.of(), REQUIRED_TPCH_TABLES);
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanUp()
     {
         session.close();
@@ -155,7 +133,7 @@ public class TestCassandraConnectorTest
     @Override
     protected TestTable createTableWithDefaultColumns()
     {
-        throw new SkipException("Cassandra connector does not support column default values");
+        return abort("Cassandra connector does not support column default values");
     }
 
     @Override
@@ -199,7 +177,7 @@ public class TestCassandraConnectorTest
     @Override
     public void testShowColumns()
     {
-        assertThat(query("SHOW COLUMNS FROM orders")).matches(getDescribeOrdersResult());
+        assertThat(query("SHOW COLUMNS FROM orders")).result().matches(getDescribeOrdersResult());
     }
 
     @Override
@@ -236,6 +214,7 @@ public class TestCassandraConnectorTest
                         ")");
     }
 
+    @Test
     @Override
     public void testCharVarcharComparison()
     {
@@ -328,7 +307,7 @@ public class TestCassandraConnectorTest
                     "";
             MaterializedResult result = execute(sql);
 
-            assertEquals(result.getRowCount(), 1);
+            assertThat(result.getRowCount()).isEqualTo(1);
         }
     }
 
@@ -420,7 +399,7 @@ public class TestCassandraConnectorTest
                     "";
             MaterializedResult result = execute(sql);
 
-            assertEquals(result.getRowCount(), 1);
+            assertThat(result.getRowCount()).isEqualTo(1);
         }
     }
 
@@ -437,7 +416,7 @@ public class TestCassandraConnectorTest
                             "WHERE c1 = TIMESTAMP '2017-04-01 11:21:59.001 UTC'", testCassandraTable.getTableName());
             MaterializedResult result = execute(sql);
 
-            assertEquals(result.getRowCount(), 1);
+            assertThat(result.getRowCount()).isEqualTo(1);
         }
     }
 
@@ -644,23 +623,23 @@ public class TestCassandraConnectorTest
                         rowNumber -> format("'clust_three_%d'", rowNumber),
                         rowNumber -> "null")))) {
             String sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key IN ('key_1','key_2') AND clust_one='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one!='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 0);
+            assertThat(execute(sql).getRowCount()).isEqualTo(0);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key IN ('key_1','key_2','key_3','key_4') AND clust_one='clust_one' AND clust_two>'clust_two_1'";
-            assertEquals(execute(sql).getRowCount(), 3);
+            assertThat(execute(sql).getRowCount()).isEqualTo(3);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key IN ('key_1','key_2') AND clust_one='clust_one' AND " +
                     "((clust_two='clust_two_1') OR (clust_two='clust_two_2'))";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key IN ('key_1','key_2') AND clust_one='clust_one' AND " +
                     "((clust_two='clust_two_1' AND clust_three='clust_three_1') OR (clust_two='clust_two_2' AND clust_three='clust_three_2'))";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key IN ('key_1','key_2') AND clust_one='clust_one' AND clust_three='clust_three_1'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key IN ('key_1','key_2') AND clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2')";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
         }
     }
 
@@ -685,26 +664,26 @@ public class TestCassandraConnectorTest
                         rowNumber -> "null")))) {
             String partitionInPredicates = " partition_one IN ('partition_one_1','partition_one_2') AND partition_two IN ('partition_two_1','partition_two_2') ";
             String sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE partition_one='partition_one_1' AND partition_two='partition_two_1' AND clust_one='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE " + partitionInPredicates + " AND clust_one='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE partition_one='partition_one_1' AND partition_two='partition_two_1' AND clust_one!='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 0);
+            assertThat(execute(sql).getRowCount()).isEqualTo(0);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE " +
                     "partition_one IN ('partition_one_1','partition_one_2','partition_one_3','partition_one_4') AND " +
                     "partition_two IN ('partition_two_1','partition_two_2','partition_two_3','partition_two_4') AND " +
                     "clust_one='clust_one' AND clust_two>'clust_two_1'";
-            assertEquals(execute(sql).getRowCount(), 3);
+            assertThat(execute(sql).getRowCount()).isEqualTo(3);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE " + partitionInPredicates + " AND clust_one='clust_one' AND " +
                     "((clust_two='clust_two_1') OR (clust_two='clust_two_2'))";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE " + partitionInPredicates + " AND clust_one='clust_one' AND " +
                     "((clust_two='clust_two_1' AND clust_three='clust_three_1') OR (clust_two='clust_two_2' AND clust_three='clust_three_2'))";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE " + partitionInPredicates + " AND clust_one='clust_one' AND clust_three='clust_three_1'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE " + partitionInPredicates + " AND clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2')";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
         }
     }
 
@@ -726,11 +705,11 @@ public class TestCassandraConnectorTest
                         rowNumber -> format("'clust_three_%d'", rowNumber),
                         rowNumber -> "null")))) {
             String sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 9);
+            assertThat(execute(sql).getRowCount()).isEqualTo(9);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two='clust_two_2'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two='clust_two_2' AND clust_three='clust_three_2'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
         }
 
         try (TestCassandraTable testCassandraTable = testTable(
@@ -751,29 +730,29 @@ public class TestCassandraConnectorTest
             // for the smaller table (<200 partitions by default) connector fetches all the partitions id
             // and the partitioned patch is being followed
             String sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two='clust_two_2'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two='clust_two_2' AND clust_three='clust_three_2'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two='clust_two_2' AND clust_three IN ('clust_three_1', 'clust_three_2', 'clust_three_3')";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2') AND clust_three IN ('clust_three_1', 'clust_three_2', 'clust_three_3')";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two > 'clust_two_998'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two > 'clust_two_997' AND clust_two < 'clust_two_999'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2') AND clust_three > 'clust_three_998'";
-            assertEquals(execute(sql).getRowCount(), 0);
+            assertThat(execute(sql).getRowCount()).isEqualTo(0);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2') AND clust_three < 'clust_three_3'";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2') AND clust_three > 'clust_three_1' AND clust_three < 'clust_three_3'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2','clust_two_3') AND clust_two < 'clust_two_2'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two IN ('clust_two_997','clust_two_998','clust_two_999') AND clust_two > 'clust_two_998'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE clust_one='clust_one' AND clust_two IN ('clust_two_1','clust_two_2','clust_two_3') AND clust_two = 'clust_two_2'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
         }
     }
 
@@ -795,13 +774,13 @@ public class TestCassandraConnectorTest
                         rowNumber -> format("%d", Timestamp.from(TIMESTAMP_VALUE.toInstant()).getTime() + rowNumber * 10),
                         rowNumber -> "null")))) {
             String sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one != 'clust_one'";
-            assertEquals(execute(sql).getRowCount(), 0);
+            assertThat(execute(sql).getRowCount()).isEqualTo(0);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two != 2";
-            assertEquals(execute(sql).getRowCount(), 3);
+            assertThat(execute(sql).getRowCount()).isEqualTo(3);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two >= 2 AND clust_two != 3";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two > 2 AND clust_two != 3";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
         }
     }
 
@@ -823,28 +802,71 @@ public class TestCassandraConnectorTest
                         rowNumber -> format("%d", Timestamp.from(TIMESTAMP_VALUE.toInstant()).getTime() + rowNumber * 10),
                         rowNumber -> "null")))) {
             String sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one'";
-            assertEquals(execute(sql).getRowCount(), 4);
+            assertThat(execute(sql).getRowCount()).isEqualTo(4);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two=2";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two=2 AND clust_three = timestamp '1970-01-01 03:04:05.020Z'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two=2 AND clust_three = timestamp '1970-01-01 03:04:05.010Z'";
-            assertEquals(execute(sql).getRowCount(), 0);
+            assertThat(execute(sql).getRowCount()).isEqualTo(0);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two IN (1,2)";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two > 1 AND clust_two < 3";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two=2 AND clust_three >= timestamp '1970-01-01 03:04:05.010Z' AND clust_three <= timestamp '1970-01-01 03:04:05.020Z'";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two IN (1,2) AND clust_three >= timestamp '1970-01-01 03:04:05.010Z' AND clust_three <= timestamp '1970-01-01 03:04:05.020Z'";
-            assertEquals(execute(sql).getRowCount(), 2);
+            assertThat(execute(sql).getRowCount()).isEqualTo(2);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two IN (1,2,3) AND clust_two < 2";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two IN (1,2,3) AND clust_two > 2";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
             sql = "SELECT * FROM " + testCassandraTable.getTableName() + " WHERE key='key_1' AND clust_one='clust_one' AND clust_two IN (1,2,3) AND clust_two = 2";
-            assertEquals(execute(sql).getRowCount(), 1);
+            assertThat(execute(sql).getRowCount()).isEqualTo(1);
         }
+    }
+
+    @Test
+    public void testSelectWithSecondaryIndex()
+    {
+        testSelectWithSecondaryIndex(true);
+        testSelectWithSecondaryIndex(false);
+    }
+
+    private void testSelectWithSecondaryIndex(boolean withClusteringKey)
+    {
+        String table = "test_cluster_key_" + randomNameSuffix();
+
+        if (withClusteringKey) {
+            onCassandra("CREATE TABLE tpch." + table + "(pk1_col text, pk2_col text, idx1_col text, idx2_col text, cluster_col tinyint, PRIMARY KEY ((pk1_col, pk2_col), cluster_col)) WITH CLUSTERING ORDER BY (cluster_col ASC)");
+        }
+        else {
+            onCassandra("CREATE TABLE tpch." + table + "(pk1_col text, pk2_col text, idx1_col text, idx2_col text, cluster_col tinyint, PRIMARY KEY ((pk1_col, pk2_col)))");
+        }
+
+        onCassandra("CREATE INDEX ON tpch." + table + " (idx1_col)");
+        onCassandra("CREATE INDEX ON tpch." + table + " (idx2_col)");
+
+        onCassandra("INSERT INTO tpch." + table + "(pk1_col, pk2_col, cluster_col, idx1_col, idx2_col) VALUES('v11', 'v21', 1, 'value1', 'value21')");
+        onCassandra("INSERT INTO tpch." + table + "(pk1_col, pk2_col, cluster_col, idx1_col, idx2_col) VALUES('v11', 'v22', 2, 'value1', 'value22')");
+        onCassandra("INSERT INTO tpch." + table + "(pk1_col, pk2_col, cluster_col, idx1_col, idx2_col) VALUES('v12', 'v23', 1, 'value2', 'value23')");
+
+        assertQuery("SELECT * FROM tpch." + table, "VALUES ('v11', 'v21', 1, 'value1', 'value21'), ('v11', 'v22', 2, 'value1', 'value22'), ('v12', 'v23', 1, 'value2', 'value23')");
+
+        assertEventually(() -> {
+            // Wait for indexes to be created successfully.
+            assertThat(query("SELECT * FROM tpch." + table + " WHERE idx2_col = 'value1'")).isFullyPushedDown(); // Verify single indexed column predicate is pushed down.
+        });
+
+        // Execute a query on Trino with where clause having all the secondary key columns and another column (potentially a cluster key column)
+        assertQuery("SELECT * FROM tpch." + table + " WHERE idx1_col = 'value1' AND idx2_col = 'value21' AND cluster_col = 1", "VALUES ('v11', 'v21', 1, 'value1', 'value21')");
+        // Execute a query on Trino with where clause not having all the secondary key columns and another column (potentially a cluster key column)
+        assertQuery("SELECT * FROM tpch." + table + " WHERE idx1_col = 'value1' AND cluster_col = 1", "VALUES ('v11', 'v21', 1, 'value1', 'value21')");
+
+        onCassandra("DROP INDEX tpch." + table + "_idx1_col_idx");
+        onCassandra("DROP INDEX tpch." + table + "_idx2_col_idx");
+
+        onCassandra("DROP TABLE tpch." + table);
     }
 
     @Test
@@ -870,7 +892,7 @@ public class TestCassandraConnectorTest
 
         execute("INSERT INTO keyspace_1.table_1 (column_1) VALUES (1)");
 
-        assertEquals(execute("SELECT column_1 FROM cassandra.keyspace_1.table_1").getRowCount(), 1);
+        assertThat(execute("SELECT column_1 FROM cassandra.keyspace_1.table_1").getRowCount()).isEqualTo(1);
         assertUpdate("DROP TABLE cassandra.keyspace_1.table_1");
 
         // when an identifier is unquoted the lowercase and uppercase spelling may be used interchangeable
@@ -900,7 +922,7 @@ public class TestCassandraConnectorTest
 
         execute("INSERT INTO \"KEYSPACE_2\".\"TABLE_2\" (\"COLUMN_2\") VALUES (1)");
 
-        assertEquals(execute("SELECT column_2 FROM cassandra.keyspace_2.table_2").getRowCount(), 1);
+        assertThat(execute("SELECT column_2 FROM cassandra.keyspace_2.table_2").getRowCount()).isEqualTo(1);
         assertUpdate("DROP TABLE cassandra.keyspace_2.table_2");
 
         // when an identifier is unquoted the lowercase and uppercase spelling may be used interchangeable
@@ -1112,16 +1134,13 @@ public class TestCassandraConnectorTest
                 .build(), new Duration(1, MINUTES));
 
         session.execute("INSERT INTO keyspace_test_nested_collection.table_set (column_5, nested_collection) VALUES (1, {{1, 2, 3}})");
-        assertEquals(execute("SELECT nested_collection FROM cassandra.keyspace_test_nested_collection.table_set").getMaterializedRows().get(0),
-                new MaterializedRow(DEFAULT_PRECISION, "[[1,2,3]]"));
+        assertThat(execute("SELECT nested_collection FROM cassandra.keyspace_test_nested_collection.table_set").getMaterializedRows().get(0)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION, "[[1,2,3]]"));
 
         session.execute("INSERT INTO keyspace_test_nested_collection.table_list (column_5, nested_collection) VALUES (1, [[4, 5, 6]])");
-        assertEquals(execute("SELECT nested_collection FROM cassandra.keyspace_test_nested_collection.table_list").getMaterializedRows().get(0),
-                new MaterializedRow(DEFAULT_PRECISION, "[[4,5,6]]"));
+        assertThat(execute("SELECT nested_collection FROM cassandra.keyspace_test_nested_collection.table_list").getMaterializedRows().get(0)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION, "[[4,5,6]]"));
 
         session.execute("INSERT INTO keyspace_test_nested_collection.table_map (column_5, nested_collection) VALUES (1, {7:{8:9}})");
-        assertEquals(execute("SELECT nested_collection FROM cassandra.keyspace_test_nested_collection.table_map").getMaterializedRows().get(0),
-                new MaterializedRow(DEFAULT_PRECISION, "{7:{8:9}}"));
+        assertThat(execute("SELECT nested_collection FROM cassandra.keyspace_test_nested_collection.table_map").getMaterializedRows().get(0)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION, "{7:{8:9}}"));
 
         session.execute("DROP KEYSPACE keyspace_test_nested_collection");
     }
@@ -1157,7 +1176,7 @@ public class TestCassandraConnectorTest
             String sql = "SELECT key, typeuuid, typeinteger, typelong, typebytes, typetimestamp, typeansi, typeboolean, typedecimal, " +
                     "typedouble, typefloat, typeinet, typevarchar, typevarint, typetimeuuid, typelist, typemap, typeset" +
                     " FROM " + testCassandraTable.getTableName();
-            assertEquals(execute(sql).getRowCount(), 0);
+            assertThat(execute(sql).getRowCount()).isEqualTo(0);
 
             // TODO Following types are not supported now. We need to change null into the value after fixing it
             // blob, frozen<set<type>>, list<type>, map<type,type>, set<type>, decimal, varint
@@ -1204,8 +1223,8 @@ public class TestCassandraConnectorTest
 
             MaterializedResult result = execute(sql);
             int rowCount = result.getRowCount();
-            assertEquals(rowCount, 1);
-            assertEquals(result.getMaterializedRows().get(0), new MaterializedRow(DEFAULT_PRECISION,
+            assertThat(rowCount).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
                     "key1",
                     java.util.UUID.fromString("12151fd2-7586-11e9-8f9e-2a86e4085a59"),
                     1,
@@ -1237,8 +1256,8 @@ public class TestCassandraConnectorTest
                     " FROM " + testCassandraTable.getTableName() + " WHERE key = 'key2'";
             result = execute(sql);
             rowCount = result.getRowCount();
-            assertEquals(rowCount, 1);
-            assertEquals(result.getMaterializedRows().get(0), new MaterializedRow(DEFAULT_PRECISION,
+            assertThat(rowCount).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
                     "key2", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null));
 
             // insert into only a subset of columns
@@ -1250,8 +1269,8 @@ public class TestCassandraConnectorTest
                     " FROM " + testCassandraTable.getTableName() + " WHERE key = 'key3'";
             result = execute(sql);
             rowCount = result.getRowCount();
-            assertEquals(rowCount, 1);
-            assertEquals(result.getMaterializedRows().get(0), new MaterializedRow(DEFAULT_PRECISION,
+            assertThat(rowCount).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
                     "key3", null, 999, null, null, null, "ansi", false, null, null, null, null, null, null, null, null, null, null));
         }
     }
@@ -1284,43 +1303,44 @@ public class TestCassandraConnectorTest
                         "1, 2, 'clust_one_3', null",
                         "2, 2, 'clust_one_1', null"))) {
             String keyspaceAndTable = testCassandraTable.getTableName();
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable).getRowCount(), 15);
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable).getRowCount()).isEqualTo(15);
 
             // error
-            assertThatThrownBy(() -> execute("DELETE FROM " + keyspaceAndTable))
-                    .isInstanceOf(RuntimeException.class);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable).getRowCount(), 15);
+            assertThat(query("DELETE FROM " + keyspaceAndTable))
+                    .failure().hasMessage("Deleting without partition key is not supported");
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable).getRowCount()).isEqualTo(15);
 
             String whereClusteringKeyOnly = " WHERE clust_one='clust_one_2'";
-            assertThatThrownBy(() -> execute("DELETE FROM " + keyspaceAndTable + whereClusteringKeyOnly))
-                    .isInstanceOf(RuntimeException.class);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable).getRowCount(), 15);
+            assertThat(query("DELETE FROM " + keyspaceAndTable + whereClusteringKeyOnly))
+                    .failure().hasMessage("Delete without primary key or partition key is not supported");
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable).getRowCount()).isEqualTo(15);
 
             String whereMultiplePartitionKeyWithClusteringKey = " WHERE " +
                     " (partition_one=1 AND partition_two=1 AND clust_one='clust_one_1') OR " +
                     " (partition_one=1 AND partition_two=2 AND clust_one='clust_one_2') ";
-            assertThatThrownBy(() -> execute("DELETE FROM " + keyspaceAndTable + whereMultiplePartitionKeyWithClusteringKey))
-                    .isInstanceOf(RuntimeException.class);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable).getRowCount(), 15);
+            assertThat(query("DELETE FROM " + keyspaceAndTable + whereMultiplePartitionKeyWithClusteringKey))
+                    .failure().hasMessage("Delete without primary key or partition key is not supported");
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable).getRowCount()).isEqualTo(15);
 
             // success
             String wherePrimaryKey = " WHERE partition_one=3 AND partition_two=3 AND clust_one='clust_one_3'";
             execute("DELETE FROM " + keyspaceAndTable + wherePrimaryKey);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable).getRowCount(), 14);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable + wherePrimaryKey).getRowCount(), 0);
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable).getRowCount()).isEqualTo(14);
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable + wherePrimaryKey).getRowCount()).isEqualTo(0);
 
             String wherePartitionKey = " WHERE partition_one=2 AND partition_two=2";
             execute("DELETE FROM " + keyspaceAndTable + wherePartitionKey);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable).getRowCount(), 12);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable + wherePartitionKey).getRowCount(), 0);
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable).getRowCount()).isEqualTo(12);
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable + wherePartitionKey).getRowCount()).isEqualTo(0);
 
             String whereMultiplePartitionKey = " WHERE (partition_one=1 AND partition_two=1) OR (partition_one=1 AND partition_two=2)";
             execute("DELETE FROM " + keyspaceAndTable + whereMultiplePartitionKey);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable).getRowCount(), 6);
-            assertEquals(execute("SELECT * FROM " + keyspaceAndTable + whereMultiplePartitionKey).getRowCount(), 0);
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable).getRowCount()).isEqualTo(6);
+            assertThat(execute("SELECT * FROM " + keyspaceAndTable + whereMultiplePartitionKey).getRowCount()).isEqualTo(0);
         }
     }
 
+    @Test
     @Override
     public void testDeleteWithLike()
     {
@@ -1328,6 +1348,7 @@ public class TestCassandraConnectorTest
                 .hasStackTraceContaining("Delete without primary key or partition key is not supported");
     }
 
+    @Test
     @Override
     public void testDeleteWithComplexPredicate()
     {
@@ -1335,6 +1356,7 @@ public class TestCassandraConnectorTest
                 .hasStackTraceContaining("Delete without primary key or partition key is not supported");
     }
 
+    @Test
     @Override
     public void testDeleteWithSemiJoin()
     {
@@ -1342,6 +1364,7 @@ public class TestCassandraConnectorTest
                 .hasStackTraceContaining("Delete without primary key or partition key is not supported");
     }
 
+    @Test
     @Override
     public void testDeleteWithSubquery()
     {
@@ -1349,6 +1372,7 @@ public class TestCassandraConnectorTest
                 .hasStackTraceContaining("Delete without primary key or partition key is not supported");
     }
 
+    @Test
     @Override
     public void testExplainAnalyzeWithDeleteWithSubquery()
     {
@@ -1356,6 +1380,7 @@ public class TestCassandraConnectorTest
                 .hasStackTraceContaining("Delete without primary key or partition key is not supported");
     }
 
+    @Test
     @Override
     public void testDeleteWithVarcharPredicate()
     {
@@ -1363,6 +1388,7 @@ public class TestCassandraConnectorTest
                 .hasStackTraceContaining("Delete without primary key or partition key is not supported");
     }
 
+    @Test
     @Override
     public void testDeleteAllDataFromTable()
     {
@@ -1370,6 +1396,7 @@ public class TestCassandraConnectorTest
                 .hasStackTraceContaining("Deleting without partition key is not supported");
     }
 
+    @Test
     @Override
     public void testRowLevelDelete()
     {
@@ -1451,19 +1478,21 @@ public class TestCassandraConnectorTest
     public void testNativeQueryCreateTableFailure()
     {
         String tableName = "test_create" + randomNameSuffix();
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(cassandra.system.query(query => 'CREATE TABLE tpch." + tableName + "(col INT PRIMARY KEY)'))"))
-                .hasMessage("Handle doesn't have columns info");
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        assertThat(query("SELECT * FROM TABLE(cassandra.system.query(query => 'CREATE TABLE tpch." + tableName + "(col INT PRIMARY KEY)'))"))
+                .nonTrinoExceptionFailure().hasMessage("Handle doesn't have columns info");
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     @Test
     public void testNativeQueryPreparingStatementFailure()
     {
         String tableName = "test_insert" + randomNameSuffix();
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(cassandra.system.query(query => 'INSERT INTO tpch." + tableName + "(col) VALUES (1)'))"))
-                .hasMessageContaining("unconfigured table");
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        assertThat(query("SELECT * FROM TABLE(cassandra.system.query(query => 'INSERT INTO tpch." + tableName + "(col) VALUES (1)'))"))
+                .failure()
+                .hasMessage("Cannot get column definition")
+                .hasStackTraceContaining("unconfigured table");
     }
 
     @Test
@@ -1476,10 +1505,10 @@ public class TestCassandraConnectorTest
                 .row(tableName)
                 .build(), new Duration(1, MINUTES));
 
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(cassandra.system.query(query => 'INSERT INTO tpch." + tableName + "(col) VALUES (3)'))"))
-                .hasMessage("Handle doesn't have columns info");
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(cassandra.system.query(query => 'DELETE FROM tpch." + tableName + " WHERE col = 1'))"))
-                .hasMessage("Handle doesn't have columns info");
+        assertThat(query("SELECT * FROM TABLE(cassandra.system.query(query => 'INSERT INTO tpch." + tableName + "(col) VALUES (3)'))"))
+                .nonTrinoExceptionFailure().hasMessage("Handle doesn't have columns info");
+        assertThat(query("SELECT * FROM TABLE(cassandra.system.query(query => 'DELETE FROM tpch." + tableName + " WHERE col = 1'))"))
+                .nonTrinoExceptionFailure().hasMessage("Handle doesn't have columns info");
 
         assertQuery("SELECT * FROM " + tableName, "VALUES 1");
 
@@ -1489,8 +1518,10 @@ public class TestCassandraConnectorTest
     @Test
     public void testNativeQueryIncorrectSyntax()
     {
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(system.query(query => 'some wrong syntax'))"))
-                .hasMessageContaining("no viable alternative at input 'some'");
+        assertThat(query("SELECT * FROM TABLE(system.query(query => 'some wrong syntax'))"))
+                .failure()
+                .hasMessage("Cannot get column definition")
+                .hasStackTraceContaining("no viable alternative at input 'some'");
     }
 
     @Override
@@ -1543,8 +1574,8 @@ public class TestCassandraConnectorTest
         MaterializedResult result = execute(sql);
 
         int rowCount = result.getRowCount();
-        assertEquals(rowCount, 9);
-        assertEquals(result.getTypes(), ImmutableList.of(
+        assertThat(rowCount).isEqualTo(9);
+        assertThat(result.getTypes()).isEqualTo(ImmutableList.of(
                 createUnboundedVarcharType(),
                 UUID,
                 INTEGER,
@@ -1569,7 +1600,7 @@ public class TestCassandraConnectorTest
                 .collect(toList());
 
         for (int rowNumber = 1; rowNumber <= rowCount; rowNumber++) {
-            assertEquals(sortedRows.get(rowNumber - 1), new MaterializedRow(DEFAULT_PRECISION,
+            assertThat(sortedRows.get(rowNumber - 1)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
                     "key " + rowNumber,
                     java.util.UUID.fromString(format("00000000-0000-0000-0000-%012d", rowNumber)),
                     rowNumber,

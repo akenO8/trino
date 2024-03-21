@@ -16,13 +16,11 @@ package io.trino.filesystem.azure;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestInstance.Lifecycle;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.io.IOException;
 
 import static io.trino.filesystem.azure.AbstractTestAzureFileSystem.AccountKind.HIERARCHICAL;
 
-@EnabledIfEnvironmentVariable(named = "ABFS_ACCOUNT", matches = ".+")
 @TestInstance(Lifecycle.PER_CLASS)
 class TestAzureFileSystemGen2Hierarchical
         extends AbstractTestAzureFileSystem
@@ -31,6 +29,6 @@ class TestAzureFileSystemGen2Hierarchical
     void setup()
             throws IOException
     {
-        initialize(getRequiredEnvironmentVariable("ABFS_ACCOUNT"), getRequiredEnvironmentVariable("ABFS_ACCESS_KEY"), HIERARCHICAL);
+        initializeWithAccessKey(getRequiredEnvironmentVariable("ABFS_HIERARCHICAL_ACCOUNT"), getRequiredEnvironmentVariable("ABFS_HIERARCHICAL_ACCESS_KEY"), HIERARCHICAL);
     }
 }

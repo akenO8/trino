@@ -15,64 +15,60 @@ package io.trino.sql.relational;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
 import io.trino.Session;
 import io.trino.metadata.FunctionManager;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
+import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalParseResult;
 import io.trino.spi.type.Decimals;
 import io.trino.spi.type.RowType;
+import io.trino.spi.type.TimeType;
 import io.trino.spi.type.TimeWithTimeZoneType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeManager;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ArithmeticUnaryExpression;
+import io.trino.sql.ir.BetweenPredicate;
+import io.trino.sql.ir.BinaryLiteral;
+import io.trino.sql.ir.BindExpression;
+import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.CoalesceExpression;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.ComparisonExpression.Operator;
+import io.trino.sql.ir.DecimalLiteral;
+import io.trino.sql.ir.DoubleLiteral;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.IfExpression;
+import io.trino.sql.ir.InPredicate;
+import io.trino.sql.ir.IntervalLiteral;
+import io.trino.sql.ir.IrVisitor;
+import io.trino.sql.ir.IsNotNullPredicate;
+import io.trino.sql.ir.IsNullPredicate;
+import io.trino.sql.ir.LambdaExpression;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.NullIfExpression;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.Row;
+import io.trino.sql.ir.SearchedCaseExpression;
+import io.trino.sql.ir.SimpleCaseExpression;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SubscriptExpression;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.relational.SpecialForm.Form;
 import io.trino.sql.relational.optimizer.ExpressionOptimizer;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.ArithmeticUnaryExpression;
-import io.trino.sql.tree.AstVisitor;
-import io.trino.sql.tree.BetweenPredicate;
-import io.trino.sql.tree.BinaryLiteral;
-import io.trino.sql.tree.BindExpression;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.CharLiteral;
-import io.trino.sql.tree.CoalesceExpression;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.ComparisonExpression.Operator;
-import io.trino.sql.tree.DecimalLiteral;
-import io.trino.sql.tree.DoubleLiteral;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FieldReference;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.Identifier;
-import io.trino.sql.tree.IfExpression;
-import io.trino.sql.tree.InListExpression;
-import io.trino.sql.tree.InPredicate;
-import io.trino.sql.tree.IntervalLiteral;
-import io.trino.sql.tree.IsNotNullPredicate;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.LambdaArgumentDeclaration;
-import io.trino.sql.tree.LambdaExpression;
-import io.trino.sql.tree.LogicalExpression;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.NotExpression;
-import io.trino.sql.tree.NullIfExpression;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.QualifiedName;
-import io.trino.sql.tree.Row;
-import io.trino.sql.tree.SearchedCaseExpression;
-import io.trino.sql.tree.SimpleCaseExpression;
-import io.trino.sql.tree.StringLiteral;
-import io.trino.sql.tree.SubscriptExpression;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.sql.tree.TimeLiteral;
-import io.trino.sql.tree.TimestampLiteral;
-import io.trino.sql.tree.WhenClause;
+import io.trino.type.JsonType;
+import io.trino.type.TypeCoercion;
 import io.trino.type.UnknownType;
 
 import java.util.List;
@@ -81,6 +77,7 @@ import java.util.Map;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
@@ -89,7 +86,6 @@ import static io.trino.spi.function.OperatorType.NEGATION;
 import static io.trino.spi.function.OperatorType.SUBSCRIPT;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.spi.type.CharType.createCharType;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
@@ -117,7 +113,6 @@ import static io.trino.type.DateTimes.parseTime;
 import static io.trino.type.DateTimes.parseTimeWithTimeZone;
 import static io.trino.type.DateTimes.parseTimestamp;
 import static io.trino.type.DateTimes.parseTimestampWithTimeZone;
-import static io.trino.type.JsonType.JSON;
 import static io.trino.util.DateTimeUtils.parseDayTimeInterval;
 import static io.trino.util.DateTimeUtils.parseYearMonthInterval;
 import static java.util.Objects.requireNonNull;
@@ -132,14 +127,11 @@ public final class SqlToRowExpressionTranslator
             Map<Symbol, Integer> layout,
             Metadata metadata,
             FunctionManager functionManager,
+            TypeManager typeManager,
             Session session,
             boolean optimize)
     {
-        Visitor visitor = new Visitor(
-                metadata,
-                types,
-                layout,
-                session);
+        Visitor visitor = new Visitor(metadata, typeManager, types, layout);
         RowExpression result = visitor.process(expression, null);
 
         requireNonNull(result, "result is null");
@@ -152,26 +144,26 @@ public final class SqlToRowExpressionTranslator
         return result;
     }
 
-    private static class Visitor
-            extends AstVisitor<RowExpression, Void>
+    public static class Visitor
+            extends IrVisitor<RowExpression, Void>
     {
         private final Metadata metadata;
+        private final TypeCoercion typeCoercion;
         private final Map<NodeRef<Expression>, Type> types;
         private final Map<Symbol, Integer> layout;
-        private final Session session;
         private final StandardFunctionResolution standardFunctionResolution;
 
-        private Visitor(
+        protected Visitor(
                 Metadata metadata,
+                TypeManager typeManager,
                 Map<NodeRef<Expression>, Type> types,
-                Map<Symbol, Integer> layout,
-                Session session)
+                Map<Symbol, Integer> layout)
         {
             this.metadata = metadata;
+            this.typeCoercion = new TypeCoercion(typeManager::getType);
             this.types = ImmutableMap.copyOf(requireNonNull(types, "types is null"));
             this.layout = layout;
-            this.session = session;
-            standardFunctionResolution = new StandardFunctionResolution(session, metadata);
+            standardFunctionResolution = new StandardFunctionResolution(metadata);
         }
 
         private Type getType(Expression node)
@@ -183,12 +175,6 @@ public final class SqlToRowExpressionTranslator
         protected RowExpression visitExpression(Expression node, Void context)
         {
             throw new UnsupportedOperationException("not yet implemented: expression translator for " + node.getClass().getName());
-        }
-
-        @Override
-        protected RowExpression visitFieldReference(FieldReference node, Void context)
-        {
-            return field(node.getFieldIndex(), getType(node));
         }
 
         @Override
@@ -206,10 +192,10 @@ public final class SqlToRowExpressionTranslator
         @Override
         protected RowExpression visitLongLiteral(LongLiteral node, Void context)
         {
-            if (node.getParsedValue() >= Integer.MIN_VALUE && node.getParsedValue() <= Integer.MAX_VALUE) {
-                return constant(node.getParsedValue(), INTEGER);
+            if (node.getValue() >= Integer.MIN_VALUE && node.getValue() <= Integer.MAX_VALUE) {
+                return constant(node.getValue(), INTEGER);
             }
-            return constant(node.getParsedValue(), BIGINT);
+            return constant(node.getValue(), BIGINT);
         }
 
         @Override
@@ -232,12 +218,6 @@ public final class SqlToRowExpressionTranslator
         }
 
         @Override
-        protected RowExpression visitCharLiteral(CharLiteral node, Void context)
-        {
-            return constant(utf8Slice(node.getValue()), createCharType(node.length()));
-        }
-
-        @Override
         protected RowExpression visitBinaryLiteral(BinaryLiteral node, Void context)
         {
             return constant(wrappedBuffer(node.getValue()), VARBINARY);
@@ -246,52 +226,19 @@ public final class SqlToRowExpressionTranslator
         @Override
         protected RowExpression visitGenericLiteral(GenericLiteral node, Void context)
         {
-            Type type = getType(node);
-
-            if (JSON.equals(type)) {
-                return call(
-                        metadata.resolveFunction(session, QualifiedName.of("json_parse"), fromTypes(VARCHAR)),
+            return switch (getType(node)) {
+                case CharType type -> constant(utf8Slice(node.getValue()), type);
+                case TimeType type -> constant(parseTime(node.getValue()), type);
+                case TimeWithTimeZoneType type -> constant(parseTimeWithTimeZone(type.getPrecision(), node.getValue()), type);
+                case TimestampType type -> constant(parseTimestamp(type.getPrecision(), node.getValue()), type);
+                case TimestampWithTimeZoneType type -> constant(parseTimestampWithTimeZone(type.getPrecision(), node.getValue()), type);
+                case JsonType unused -> call(
+                        metadata.resolveBuiltinFunction("json_parse", fromTypes(VARCHAR)),
                         constant(utf8Slice(node.getValue()), VARCHAR));
-            }
-
-            return call(
-                    metadata.getCoercion(session, VARCHAR, type),
-                    constant(utf8Slice(node.getValue()), VARCHAR));
-        }
-
-        @Override
-        protected RowExpression visitTimeLiteral(TimeLiteral node, Void context)
-        {
-            Type type = getType(node);
-            Object value;
-            if (type instanceof TimeWithTimeZoneType) {
-                value = parseTimeWithTimeZone(((TimeWithTimeZoneType) type).getPrecision(), node.getValue());
-            }
-            else {
-                value = parseTime(node.getValue());
-            }
-            return constant(value, type);
-        }
-
-        @Override
-        protected RowExpression visitTimestampLiteral(TimestampLiteral node, Void context)
-        {
-            Type type = getType(node);
-
-            Object value;
-            if (type instanceof TimestampType) {
-                int precision = ((TimestampType) type).getPrecision();
-                value = parseTimestamp(precision, node.getValue());
-            }
-            else if (type instanceof TimestampWithTimeZoneType) {
-                int precision = ((TimestampWithTimeZoneType) type).getPrecision();
-                value = parseTimestampWithTimeZone(precision, node.getValue());
-            }
-            else {
-                throw new IllegalStateException("Unexpected type: " + type);
-            }
-
-            return constant(value, type);
+                case Type type -> call(
+                        metadata.getCoercion(VARCHAR, type),
+                        constant(utf8Slice(node.getValue()), VARCHAR));
+            };
         }
 
         @Override
@@ -317,7 +264,7 @@ public final class SqlToRowExpressionTranslator
             switch (node.getOperator()) {
                 case NOT_EQUAL:
                     return new CallExpression(
-                            metadata.resolveFunction(session, QualifiedName.of("not"), fromTypes(BOOLEAN)),
+                            metadata.resolveBuiltinFunction("not", fromTypes(BOOLEAN)),
                             ImmutableList.of(visitComparisonExpression(Operator.EQUAL, left, right)));
                 case GREATER_THAN:
                     return visitComparisonExpression(Operator.LESS_THAN, right, left);
@@ -365,10 +312,7 @@ public final class SqlToRowExpressionTranslator
             Type type = getType(node);
             List<Type> typeParameters = type.getTypeParameters();
             List<Type> argumentTypes = typeParameters.subList(0, typeParameters.size() - 1);
-            List<String> argumentNames = node.getArguments().stream()
-                    .map(LambdaArgumentDeclaration::getName)
-                    .map(Identifier::getValue)
-                    .collect(toImmutableList());
+            List<String> argumentNames = node.getArguments();
 
             return new LambdaDefinitionExpression(argumentTypes, argumentNames, body);
         }
@@ -411,7 +355,7 @@ public final class SqlToRowExpressionTranslator
                     return expression;
                 case MINUS:
                     return call(
-                            metadata.resolveOperator(session, NEGATION, ImmutableList.of(expression.getType())),
+                            metadata.resolveOperator(NEGATION, ImmutableList.of(expression.getType())),
                             expression);
             }
 
@@ -446,18 +390,18 @@ public final class SqlToRowExpressionTranslator
             RowExpression value = process(node.getExpression(), context);
 
             Type returnType = getType(node);
-            if (node.isTypeOnly()) {
+            if (typeCoercion.isTypeOnlyCoercion(value.getType(), returnType)) {
                 return changeType(value, returnType);
             }
 
             if (node.isSafe()) {
                 return call(
-                        metadata.getCoercion(session, QualifiedName.of("TRY_CAST"), value.getType(), returnType),
+                        metadata.getCoercion(builtinFunctionName("TRY_CAST"), value.getType(), returnType),
                         value);
             }
 
             return call(
-                    metadata.getCoercion(session, value.getType(), returnType),
+                    metadata.getCoercion(value.getType(), returnType),
                     value);
         }
 
@@ -486,7 +430,7 @@ public final class SqlToRowExpressionTranslator
             @Override
             public RowExpression visitSpecialForm(SpecialForm specialForm, Void context)
             {
-                return new SpecialForm(specialForm.getForm(), targetType, specialForm.getArguments());
+                return new SpecialForm(specialForm.getForm(), targetType, specialForm.getArguments(), specialForm.getFunctionDependencies());
             }
 
             @Override
@@ -537,7 +481,7 @@ public final class SqlToRowExpressionTranslator
                 RowExpression operand = process(clause.getOperand(), context);
                 RowExpression result = process(clause.getResult(), context);
 
-                functionDependencies.add(metadata.resolveOperator(session, EQUAL, ImmutableList.of(value.getType(), operand.getType())));
+                functionDependencies.add(metadata.resolveOperator(EQUAL, ImmutableList.of(value.getType(), operand.getType())));
 
                 arguments.add(new SpecialForm(
                         WHEN,
@@ -582,7 +526,7 @@ public final class SqlToRowExpressionTranslator
                     .map(value -> process(value, context))
                     .orElse(constantNull(getType(node)));
 
-            for (WhenClause clause : Lists.reverse(node.getWhenClauses())) {
+            for (WhenClause clause : node.getWhenClauses().reversed()) {
                 expression = new SpecialForm(
                         IF,
                         getType(node),
@@ -618,15 +562,14 @@ public final class SqlToRowExpressionTranslator
             ImmutableList.Builder<RowExpression> arguments = ImmutableList.builder();
             RowExpression value = process(node.getValue(), context);
             arguments.add(value);
-            InListExpression values = (InListExpression) node.getValueList();
-            for (Expression testValue : values.getValues()) {
+            for (Expression testValue : node.getValueList()) {
                 arguments.add(process(testValue, context));
             }
 
             List<ResolvedFunction> functionDependencies = ImmutableList.<ResolvedFunction>builder()
-                    .add(metadata.resolveOperator(session, EQUAL, ImmutableList.of(value.getType(), value.getType())))
-                    .add(metadata.resolveOperator(session, HASH_CODE, ImmutableList.of(value.getType())))
-                    .add(metadata.resolveOperator(session, INDETERMINATE, ImmutableList.of(value.getType())))
+                    .add(metadata.resolveOperator(EQUAL, ImmutableList.of(value.getType(), value.getType())))
+                    .add(metadata.resolveOperator(HASH_CODE, ImmutableList.of(value.getType())))
+                    .add(metadata.resolveOperator(INDETERMINATE, ImmutableList.of(value.getType())))
                     .build();
 
             return new SpecialForm(IN, BOOLEAN, arguments.build(), functionDependencies);
@@ -657,7 +600,7 @@ public final class SqlToRowExpressionTranslator
         private RowExpression notExpression(RowExpression value)
         {
             return new CallExpression(
-                    metadata.resolveFunction(session, QualifiedName.of("not"), fromTypes(BOOLEAN)),
+                    metadata.resolveBuiltinFunction("not", fromTypes(BOOLEAN)),
                     ImmutableList.of(value));
         }
 
@@ -667,11 +610,11 @@ public final class SqlToRowExpressionTranslator
             RowExpression first = process(node.getFirst(), context);
             RowExpression second = process(node.getSecond(), context);
 
-            ResolvedFunction resolvedFunction = metadata.resolveOperator(session, EQUAL, ImmutableList.of(first.getType(), second.getType()));
+            ResolvedFunction resolvedFunction = metadata.resolveOperator(EQUAL, ImmutableList.of(first.getType(), second.getType()));
             List<ResolvedFunction> functionDependencies = ImmutableList.<ResolvedFunction>builder()
                     .add(resolvedFunction)
-                    .add(metadata.getCoercion(session, first.getType(), resolvedFunction.getSignature().getArgumentTypes().get(0)))
-                    .add(metadata.getCoercion(session, second.getType(), resolvedFunction.getSignature().getArgumentTypes().get(0)))
+                    .add(metadata.getCoercion(first.getType(), resolvedFunction.getSignature().getArgumentTypes().get(0)))
+                    .add(metadata.getCoercion(second.getType(), resolvedFunction.getSignature().getArgumentTypes().get(0)))
                     .build();
 
             return new SpecialForm(
@@ -689,7 +632,7 @@ public final class SqlToRowExpressionTranslator
             RowExpression max = process(node.getMax(), context);
 
             List<ResolvedFunction> functionDependencies = ImmutableList.of(
-                    metadata.resolveOperator(session, LESS_THAN_OR_EQUAL, ImmutableList.of(value.getType(), max.getType())));
+                    metadata.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(value.getType(), max.getType())));
 
             return new SpecialForm(
                     BETWEEN,
@@ -706,11 +649,11 @@ public final class SqlToRowExpressionTranslator
 
             if (getType(node.getBase()) instanceof RowType) {
                 long value = (Long) ((ConstantExpression) index).getValue();
-                return new SpecialForm(DEREFERENCE, getType(node), base, constant((int) value - 1, INTEGER));
+                return new SpecialForm(DEREFERENCE, getType(node), base, constant(value - 1, INTEGER));
             }
 
             return call(
-                    metadata.resolveOperator(session, SUBSCRIPT, ImmutableList.of(base.getType(), index.getType())),
+                    metadata.resolveOperator(SUBSCRIPT, ImmutableList.of(base.getType(), index.getType())),
                     base,
                     index);
         }

@@ -13,40 +13,33 @@
  */
 package io.trino.cost;
 
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
 import com.google.inject.Inject;
 import io.trino.Session;
-import io.trino.execution.warnings.WarningCollector;
-import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.type.Type;
-import io.trino.sql.ExpressionUtils;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.analyzer.ExpressionAnalyzer;
-import io.trino.sql.analyzer.Scope;
-import io.trino.sql.planner.ExpressionInterpreter;
+import io.trino.sql.ir.BetweenPredicate;
+import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.InPredicate;
+import io.trino.sql.ir.IrUtils;
+import io.trino.sql.ir.IrVisitor;
+import io.trino.sql.ir.IsNotNullPredicate;
+import io.trino.sql.ir.IsNullPredicate;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.planner.IrExpressionInterpreter;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.LiteralEncoder;
 import io.trino.sql.planner.NoOpSymbolResolver;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.TypeProvider;
-import io.trino.sql.tree.AstVisitor;
-import io.trino.sql.tree.BetweenPredicate;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.InListExpression;
-import io.trino.sql.tree.InPredicate;
-import io.trino.sql.tree.IsNotNullPredicate;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.LogicalExpression;
-import io.trino.sql.tree.Node;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.NotExpression;
-import io.trino.sql.tree.SymbolReference;
 import io.trino.util.DisjointSet;
 import jakarta.annotation.Nullable;
 
@@ -72,13 +65,12 @@ import static io.trino.cost.PlanNodeStatsEstimateMath.subtractSubsetStats;
 import static io.trino.spi.statistics.StatsUtil.toStatsRepresentation;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.sql.DynamicFilters.isDynamicFilter;
-import static io.trino.sql.ExpressionUtils.and;
-import static io.trino.sql.ExpressionUtils.getExpressionTypes;
-import static io.trino.sql.planner.ExpressionInterpreter.evaluateConstantExpression;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.IrUtils.and;
+import static io.trino.sql.planner.IrExpressionInterpreter.evaluateConstantExpression;
 import static io.trino.sql.planner.SymbolsExtractor.extractUnique;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
 import static java.lang.Double.NaN;
 import static java.lang.Double.isInfinite;
 import static java.lang.Double.isNaN;
@@ -93,13 +85,15 @@ public class FilterStatsCalculator
     private final PlannerContext plannerContext;
     private final ScalarStatsCalculator scalarStatsCalculator;
     private final StatsNormalizer normalizer;
+    private final IrTypeAnalyzer typeAnalyzer;
 
     @Inject
-    public FilterStatsCalculator(PlannerContext plannerContext, ScalarStatsCalculator scalarStatsCalculator, StatsNormalizer normalizer)
+    public FilterStatsCalculator(PlannerContext plannerContext, ScalarStatsCalculator scalarStatsCalculator, StatsNormalizer normalizer, IrTypeAnalyzer typeAnalyzer)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
         this.scalarStatsCalculator = requireNonNull(scalarStatsCalculator, "scalarStatsCalculator is null");
         this.normalizer = requireNonNull(normalizer, "normalizer is null");
+        this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
     }
 
     public PlanNodeStatsEstimate filterStats(
@@ -117,19 +111,19 @@ public class FilterStatsCalculator
     {
         // TODO reuse io.trino.sql.planner.iterative.rule.SimplifyExpressions.rewrite
 
-        Map<NodeRef<Expression>, Type> expressionTypes = getExpressionTypes(plannerContext, session, predicate, types);
-        ExpressionInterpreter interpreter = new ExpressionInterpreter(predicate, plannerContext, session, expressionTypes);
+        Map<NodeRef<Expression>, Type> expressionTypes = typeAnalyzer.getTypes(session, types, predicate);
+        IrExpressionInterpreter interpreter = new IrExpressionInterpreter(predicate, plannerContext, session, expressionTypes);
         Object value = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
 
         if (value == null) {
             // Expression evaluates to SQL null, which in Filter is equivalent to false. This assumes the expression is a top-level expression (eg. not in NOT).
             value = false;
         }
-        return new LiteralEncoder(plannerContext).toExpression(session, value, BOOLEAN);
+        return new LiteralEncoder(plannerContext).toExpression(value, BOOLEAN);
     }
 
     private class FilterExpressionStatsCalculatingVisitor
-            extends AstVisitor<PlanNodeStatsEstimate, Void>
+            extends IrVisitor<PlanNodeStatsEstimate, Void>
     {
         private final PlanNodeStatsEstimate input;
         private final Session session;
@@ -143,7 +137,7 @@ public class FilterStatsCalculator
         }
 
         @Override
-        public PlanNodeStatsEstimate process(Node node, @Nullable Void context)
+        public PlanNodeStatsEstimate process(Expression node, @Nullable Void context)
         {
             PlanNodeStatsEstimate output;
             if (input.getOutputRowCount() == 0 || input.isOutputRowCountUnknown()) {
@@ -343,11 +337,7 @@ public class FilterStatsCalculator
         @Override
         protected PlanNodeStatsEstimate visitInPredicate(InPredicate node, Void context)
         {
-            if (!(node.getValueList() instanceof InListExpression inList)) {
-                return PlanNodeStatsEstimate.unknown();
-            }
-
-            ImmutableList<PlanNodeStatsEstimate> equalityEstimates = inList.getValues().stream()
+            ImmutableList<PlanNodeStatsEstimate> equalityEstimates = node.getValueList().stream()
                     .map(inValue -> process(new ComparisonExpression(EQUAL, node.getValue(), inValue)))
                     .collect(toImmutableList());
 
@@ -382,6 +372,7 @@ public class FilterStatsCalculator
             return result.build();
         }
 
+        @SuppressWarnings("ArgumentSelectionDefectChecker")
         @Override
         protected PlanNodeStatsEstimate visitComparisonExpression(ComparisonExpression node, Void context)
         {
@@ -410,13 +401,7 @@ public class FilterStatsCalculator
             Optional<Symbol> leftSymbol = left instanceof SymbolReference ? Optional.of(Symbol.from(left)) : Optional.empty();
             if (isEffectivelyLiteral(right)) {
                 Type type = getType(left);
-                Object literalValue = evaluateConstantExpression(
-                        right,
-                        type,
-                        plannerContext,
-                        session,
-                        new AllowAllAccessControl(),
-                        ImmutableMap.of());
+                Object literalValue = evaluateConstantExpression(right, plannerContext, session);
                 if (literalValue == null) {
                     // Possible when we process `x IN (..., NULL)` case.
                     return input.mapOutputRowCount(rowCountEstimate -> 0.);
@@ -451,17 +436,7 @@ public class FilterStatsCalculator
                 return requireNonNull(types.get(symbol), () -> format("No type for symbol %s", symbol));
             }
 
-            ExpressionAnalyzer expressionAnalyzer = ExpressionAnalyzer.createWithoutSubqueries(
-                    plannerContext,
-                    new AllowAllAccessControl(),
-                    session,
-                    types,
-                    ImmutableMap.of(),
-                    // At this stage, there should be no subqueries in the plan.
-                    node -> new VerifyException("Unexpected subquery"),
-                    WarningCollector.NOOP,
-                    false);
-            return expressionAnalyzer.analyze(expression, Scope.create());
+            return typeAnalyzer.getType(session, types, expression);
         }
 
         private SymbolStatsEstimate getExpressionStats(Expression expression)
@@ -475,7 +450,7 @@ public class FilterStatsCalculator
 
         private boolean isEffectivelyLiteral(Expression expression)
         {
-            return ExpressionUtils.isEffectivelyLiteral(plannerContext, session, expression);
+            return IrUtils.isEffectivelyLiteral(plannerContext, session, expression);
         }
     }
 

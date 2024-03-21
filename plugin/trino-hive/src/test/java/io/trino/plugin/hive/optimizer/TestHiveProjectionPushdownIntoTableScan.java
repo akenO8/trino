@@ -24,12 +24,21 @@ import io.trino.plugin.hive.HiveTableHandle;
 import io.trino.plugin.hive.TestingHiveConnectorFactory;
 import io.trino.plugin.hive.metastore.Database;
 import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.PrincipalType;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SubscriptExpression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.BasePushdownPlanTest;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.PlanTester;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
@@ -43,8 +52,11 @@ import java.util.Optional;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.trino.plugin.hive.TestHiveReaderProjectionsUtil.createProjectedColumnHandle;
-import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
+import static io.trino.plugin.hive.TestingHiveUtils.getConnectorService;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.LogicalExpression.Operator.AND;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -52,10 +64,10 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
+import static io.trino.sql.planner.plan.JoinType.INNER;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestHiveProjectionPushdownIntoTableScan
         extends BasePushdownPlanTest
@@ -71,7 +83,7 @@ public class TestHiveProjectionPushdownIntoTableScan
     private File baseDir;
 
     @Override
-    protected LocalQueryRunner createLocalQueryRunner()
+    protected PlanTester createPlanTester()
     {
         try {
             baseDir = Files.createTempDirectory(null).toFile();
@@ -79,19 +91,20 @@ public class TestHiveProjectionPushdownIntoTableScan
         catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        HiveMetastore metastore = createTestingFileHiveMetastore(baseDir);
-        Database database = Database.builder()
+
+        PlanTester planTester = PlanTester.create(HIVE_SESSION);
+        planTester.createCatalog(HIVE_CATALOG_NAME, new TestingHiveConnectorFactory(baseDir.toPath()), ImmutableMap.of());
+
+        HiveMetastore metastore = getConnectorService(planTester, HiveMetastoreFactory.class)
+                .createMetastore(Optional.empty());
+
+        metastore.createDatabase(Database.builder()
                 .setDatabaseName(SCHEMA_NAME)
                 .setOwnerName(Optional.of("public"))
                 .setOwnerType(Optional.of(PrincipalType.ROLE))
-                .build();
+                .build());
 
-        metastore.createDatabase(database);
-
-        LocalQueryRunner queryRunner = LocalQueryRunner.create(HIVE_SESSION);
-        queryRunner.createCatalog(HIVE_CATALOG_NAME, new TestingHiveConnectorFactory(metastore), ImmutableMap.of());
-
-        return queryRunner;
+        return planTester;
     }
 
     @Test
@@ -99,11 +112,11 @@ public class TestHiveProjectionPushdownIntoTableScan
     {
         String testTable = "test_disabled_pushdown";
 
-        Session session = Session.builder(getQueryRunner().getDefaultSession())
+        Session session = Session.builder(getPlanTester().getDefaultSession())
                 .setCatalogSessionProperty(HIVE_CATALOG_NAME, "projection_pushdown_enabled", "false")
                 .build();
 
-        getQueryRunner().execute(format(
+        getPlanTester().executeStatement(format(
                 "CREATE TABLE %s (col0) AS" +
                         " SELECT cast(row(5, 6) as row(a bigint, b bigint)) AS col0 WHERE false",
                 testTable));
@@ -113,7 +126,9 @@ public class TestHiveProjectionPushdownIntoTableScan
                 session,
                 any(
                         project(
-                                ImmutableMap.of("expr", expression("col0[1]"), "expr_2", expression("col0[2]")),
+                                ImmutableMap.of(
+                                        "expr", expression(new SubscriptExpression(new SymbolReference("col0"), new LongLiteral(1))),
+                                        "expr_2", expression(new SubscriptExpression(new SymbolReference("col0"), new LongLiteral(2)))),
                                 tableScan(testTable, ImmutableMap.of("col0", "col0")))));
     }
 
@@ -123,15 +138,17 @@ public class TestHiveProjectionPushdownIntoTableScan
         String testTable = "test_simple_projection_pushdown";
         QualifiedObjectName completeTableName = new QualifiedObjectName(HIVE_CATALOG_NAME, SCHEMA_NAME, testTable);
 
-        getQueryRunner().execute(format(
+        getPlanTester().executeStatement(format(
                 "CREATE TABLE %s (col0, col1) AS" +
                         " SELECT cast(row(5, 6) as row(x bigint, y bigint)) AS col0, 5 AS col1 WHERE false",
                 testTable));
 
-        Session session = getQueryRunner().getDefaultSession();
+        Session session = getPlanTester().getDefaultSession();
 
         Optional<TableHandle> tableHandle = getTableHandle(session, completeTableName);
-        assertTrue(tableHandle.isPresent(), "expected the table handle to be present");
+        assertThat(tableHandle.isPresent())
+                .describedAs("expected the table handle to be present")
+                .isTrue();
 
         Map<String, ColumnHandle> columns = getColumnHandles(session, completeTableName);
 
@@ -155,7 +172,7 @@ public class TestHiveProjectionPushdownIntoTableScan
                 format("SELECT col0.x FROM %s WHERE col0.x = col1 + 3 and col0.y = 2", testTable),
                 anyTree(
                         filter(
-                                "col0_y = BIGINT '2' AND (col0_x =  cast((col1 + 3) as BIGINT))",
+                                new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(EQUAL, new SymbolReference("col0_y"), new GenericLiteral(BIGINT, "2")), new ComparisonExpression(EQUAL, new SymbolReference("col0_x"), new Cast(new ArithmeticBinaryExpression(ADD, new SymbolReference("col1"), new LongLiteral(3)), BIGINT)))),
                                 tableScan(
                                         table -> {
                                             HiveTableHandle hiveTableHandle = (HiveTableHandle) table;
@@ -172,7 +189,7 @@ public class TestHiveProjectionPushdownIntoTableScan
                 format("SELECT col0, col0.y expr_y FROM %s WHERE col0.x = 5", testTable),
                 anyTree(
                         filter(
-                                "col0_x = BIGINT '5'",
+                                new ComparisonExpression(EQUAL, new SymbolReference("col0_x"), new GenericLiteral(BIGINT, "5")),
                                 tableScan(
                                         table -> {
                                             HiveTableHandle hiveTableHandle = (HiveTableHandle) table;
@@ -190,15 +207,15 @@ public class TestHiveProjectionPushdownIntoTableScan
                 anyTree(
                         project(
                                 ImmutableMap.of(
-                                        "expr_0_x", expression("expr_0[1]"),
-                                        "expr_0", expression("expr_0"),
-                                        "expr_0_y", expression("expr_0[2]")),
+                                        "expr_0_x", expression(new SubscriptExpression(new SymbolReference("expr_0"), new LongLiteral(1))),
+                                        "expr_0", expression(new SymbolReference("expr_0")),
+                                        "expr_0_y", expression(new SubscriptExpression(new SymbolReference("expr_0"), new LongLiteral(2)))),
                                 join(INNER, builder -> builder
                                         .equiCriteria("t_expr_1", "s_expr_1")
                                         .left(
                                                 anyTree(
                                                         filter(
-                                                                "expr_0_x = BIGINT '2'",
+                                                                new ComparisonExpression(EQUAL, new SymbolReference("expr_0_x"), new GenericLiteral(BIGINT, "2")),
                                                                 tableScan(
                                                                         table -> ((HiveTableHandle) table).getCompactEffectivePredicate().getDomains().get()
                                                                                 .equals(ImmutableMap.of(columnX, Domain.singleValue(BIGINT, 2L))),

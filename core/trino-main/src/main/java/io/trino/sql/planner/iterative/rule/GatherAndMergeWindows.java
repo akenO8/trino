@@ -21,6 +21,7 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.matching.PropertyPattern;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolsExtractor;
@@ -29,7 +30,6 @@ import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.Expression;
 
 import java.util.Iterator;
 import java.util.List;
@@ -215,7 +215,7 @@ public final class GatherAndMergeWindows
         @Override
         protected Optional<PlanNode> manipulateAdjacentWindowNodes(WindowNode parent, WindowNode child, Context context)
         {
-            if ((compare(parent, child) < 0) && (!dependsOn(parent, child))) {
+            if ((compare(parent, child) < 0) && !dependsOn(parent, child)) {
                 PlanNode transposedWindows = transpose(parent, child);
                 return Optional.of(
                         restrictOutputs(context.getIdAllocator(), transposedWindows, ImmutableSet.copyOf(parent.getOutputSymbols()))

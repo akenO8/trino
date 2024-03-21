@@ -13,37 +13,38 @@
  */
 package io.trino.sql.query;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.DoubleLiteral;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.BasePlanTest;
+import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.plan.FilterNode;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.LogicalExpression.Operator.OR;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertFalse;
 
 public class TestFilteredAggregations
         extends BasePlanTest
 {
-    private QueryAssertions assertions;
-
-    @BeforeAll
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
+    private final QueryAssertions assertions = new QueryAssertions();
 
     @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -118,14 +119,15 @@ public class TestFilteredAggregations
     @Test
     public void rewriteAddFilterWithMultipleFilters()
     {
+        PlanMatchPattern source = tableScan(
+                "orders", ImmutableMap.of("totalprice", "totalprice",
+                        "custkey", "custkey"));
         assertPlan(
                 "SELECT sum(totalprice) FILTER(WHERE totalprice > 0), sum(custkey) FILTER(WHERE custkey > 0) FROM orders",
                 anyTree(
                         filter(
-                                "(\"totalprice\" > 0E0 OR \"custkey\" > BIGINT '0')",
-                                tableScan(
-                                        "orders", ImmutableMap.of("totalprice", "totalprice",
-                                                "custkey", "custkey")))));
+                                new LogicalExpression(OR, ImmutableList.of(new ComparisonExpression(GREATER_THAN, new SymbolReference("totalprice"), new DoubleLiteral(0.0)), new ComparisonExpression(GREATER_THAN, new SymbolReference("custkey"), new GenericLiteral(BIGINT, "0")))),
+                                source)));
     }
 
     @Test
@@ -152,10 +154,10 @@ public class TestFilteredAggregations
 
     private void assertPlanContainsNoFilter(String sql)
     {
-        assertFalse(
-                searchFrom(plan(sql, OPTIMIZED).getRoot())
-                        .whereIsInstanceOfAny(FilterNode.class)
-                        .matches(),
-                "Unexpected node for query: " + sql);
+        assertThat(searchFrom(plan(sql, OPTIMIZED).getRoot())
+                .whereIsInstanceOfAny(FilterNode.class)
+                .matches())
+                .describedAs("Unexpected node for query: " + sql)
+                .isFalse();
     }
 }

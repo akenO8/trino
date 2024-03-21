@@ -13,15 +13,17 @@
  */
 package io.trino.util;
 
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
+import io.trino.spi.function.CatalogSchemaFunctionName;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
 
 import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.metadata.ResolvedFunction.extractFunctionName;
-import static io.trino.sql.ExpressionUtils.extractConjuncts;
+import static io.trino.sql.ir.IrUtils.extractConjuncts;
 
 public final class SpatialJoinUtils
 {
@@ -51,10 +53,10 @@ public final class SpatialJoinUtils
 
     private static boolean isSupportedSpatialFunction(FunctionCall functionCall)
     {
-        String functionName = extractFunctionName(functionCall.getName());
-        return functionName.equalsIgnoreCase(ST_CONTAINS) ||
-                functionName.equalsIgnoreCase(ST_WITHIN) ||
-                functionName.equalsIgnoreCase(ST_INTERSECTS);
+        CatalogSchemaFunctionName functionName = extractFunctionName(functionCall.getName());
+        return functionName.equals(builtinFunctionName(ST_CONTAINS)) ||
+                functionName.equals(builtinFunctionName(ST_WITHIN)) ||
+                functionName.equals(builtinFunctionName(ST_INTERSECTS));
     }
 
     /**
@@ -93,7 +95,7 @@ public final class SpatialJoinUtils
     private static boolean isSTDistance(Expression expression)
     {
         if (expression instanceof FunctionCall) {
-            return extractFunctionName(((FunctionCall) expression).getName()).equalsIgnoreCase(ST_DISTANCE);
+            return extractFunctionName(((FunctionCall) expression).getName()).equals(builtinFunctionName(ST_DISTANCE));
         }
 
         return false;

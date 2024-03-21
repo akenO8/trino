@@ -27,7 +27,6 @@ import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.function.AggregationImplementation;
 import io.trino.spi.function.WindowIndex;
 import io.trino.spi.type.Type;
-import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
@@ -146,7 +145,7 @@ public abstract class AbstractTestAggregationFunction
         pagesIndex.addPage(inputPage);
         WindowIndex windowIndex = new PagesWindowIndex(pagesIndex, 0, totalPositions - 1);
 
-        ResolvedFunction resolvedFunction = functionResolution.resolveFunction(QualifiedName.of(getFunctionName()), fromTypes(getFunctionParameterTypes()));
+        ResolvedFunction resolvedFunction = functionResolution.resolveFunction(getFunctionName(), fromTypes(getFunctionParameterTypes()));
         AggregationImplementation aggregationImplementation = functionResolution.getPlannerContext().getFunctionManager().getAggregationImplementation(resolvedFunction);
         WindowAccumulator aggregation = createWindowAccumulator(resolvedFunction, aggregationImplementation);
         int oldStart = 0;
@@ -157,7 +156,8 @@ public abstract class AbstractTestAggregationFunction
             if (aggregationImplementation.getRemoveInputFunction().isPresent()) {
                 for (int oldi = oldStart; oldi < oldStart + oldWidth; ++oldi) {
                     if (oldi < start || oldi >= start + width) {
-                        aggregation.removeInput(windowIndex, oldi, oldi);
+                        boolean res = aggregation.removeInput(windowIndex, oldi, oldi);
+                        assertThat(res).isTrue();
                     }
                 }
                 for (int newi = start; newi < start + width; ++newi) {
@@ -185,7 +185,7 @@ public abstract class AbstractTestAggregationFunction
         }
     }
 
-    private static WindowAccumulator createWindowAccumulator(ResolvedFunction resolvedFunction, AggregationImplementation aggregationImplementation)
+    protected static WindowAccumulator createWindowAccumulator(ResolvedFunction resolvedFunction, AggregationImplementation aggregationImplementation)
     {
         try {
             Constructor<? extends WindowAccumulator> constructor = generateWindowAccumulatorClass(
@@ -221,7 +221,7 @@ public abstract class AbstractTestAggregationFunction
     {
         assertAggregation(
                 functionResolution,
-                QualifiedName.of(getFunctionName()),
+                getFunctionName(),
                 fromTypes(getFunctionParameterTypes()),
                 expectedValue,
                 blocks);

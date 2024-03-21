@@ -20,6 +20,13 @@ import io.trino.Session;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.IfExpression;
+import io.trino.sql.ir.IsNullPredicate;
+import io.trino.sql.ir.NullLiteral;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -33,7 +40,7 @@ import io.trino.sql.planner.plan.CorrelatedJoinNode;
 import io.trino.sql.planner.plan.DataOrganizationSpecification;
 import io.trino.sql.planner.plan.EnforceSingleRowNode;
 import io.trino.sql.planner.plan.FilterNode;
-import io.trino.sql.planner.plan.JoinNode.Type;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.LimitNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanVisitor;
@@ -42,14 +49,6 @@ import io.trino.sql.planner.plan.RowNumberNode;
 import io.trino.sql.planner.plan.TopNNode;
 import io.trino.sql.planner.plan.UnnestNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.IfExpression;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.QualifiedName;
 
 import java.util.List;
 import java.util.Optional;
@@ -59,20 +58,19 @@ import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.StandardErrorCode.SUBQUERY_MULTIPLE_ROWS;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
 import static io.trino.sql.planner.LogicalPlanner.failFunction;
 import static io.trino.sql.planner.iterative.rule.ImplementLimitWithTies.rewriteLimitWithTiesWithPartitioning;
 import static io.trino.sql.planner.iterative.rule.Util.restrictOutputs;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.isScalar;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.correlation;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.filter;
 import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
 import static io.trino.sql.planner.plan.WindowNode.Frame.DEFAULT_FRAME;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -150,7 +148,7 @@ public class DecorrelateUnnest
     private static final Pattern<CorrelatedJoinNode> PATTERN = correlatedJoin()
             .with(nonEmpty(correlation()))
             .with(filter().equalTo(TRUE_LITERAL))
-            .matching(node -> node.getType() == CorrelatedJoinNode.Type.INNER || node.getType() == CorrelatedJoinNode.Type.LEFT);
+            .matching(node -> node.getType() == JoinType.INNER || node.getType() == JoinType.LEFT);
 
     private final Metadata metadata;
 
@@ -218,8 +216,8 @@ public class DecorrelateUnnest
         }
 
         // determine join type for rewritten UnnestNode
-        Type unnestJoinType = LEFT;
-        if (enforceSingleRow.isEmpty() && correlatedJoinNode.getType() == CorrelatedJoinNode.Type.INNER && unnestNode.getJoinType() == INNER) {
+        JoinType unnestJoinType = LEFT;
+        if (enforceSingleRow.isEmpty() && correlatedJoinNode.getType() == JoinType.INNER && unnestNode.getJoinType() == INNER) {
             unnestJoinType = INNER;
         }
 
@@ -233,8 +231,7 @@ public class DecorrelateUnnest
                 input.getOutputSymbols(),
                 unnestNode.getMappings(),
                 Optional.of(ordinalitySymbol),
-                unnestJoinType,
-                Optional.empty());
+                unnestJoinType);
 
         // restore all nodes from the subquery
         PlanNode rewrittenPlan = Rewriter.rewriteNodeSequence(
@@ -265,7 +262,7 @@ public class DecorrelateUnnest
                         subquerySymbol,
                         new IfExpression(
                                 new IsNullPredicate(ordinalitySymbol.toSymbolReference()),
-                                new Cast(new NullLiteral(), toSqlType(context.getSymbolAllocator().getTypes().get(subquerySymbol))),
+                                new Cast(new NullLiteral(), context.getSymbolAllocator().getTypes().get(subquerySymbol)),
                                 subquerySymbol.toSymbolReference()));
             }
             rewrittenPlan = new ProjectNode(
@@ -302,8 +299,7 @@ public class DecorrelateUnnest
         return isScalar(unnestNode.getSource(), lookup) &&
                 unnestNode.getReplicateSymbols().isEmpty() &&
                 basedOnCorrelation &&
-                (unnestNode.getJoinType() == INNER || unnestNode.getJoinType() == LEFT) &&
-                (unnestNode.getFilter().isEmpty() || unnestNode.getFilter().get().equals(TRUE_LITERAL));
+                (unnestNode.getJoinType() == INNER || unnestNode.getJoinType() == LEFT);
     }
 
     private static class Rewriter
@@ -409,10 +405,10 @@ public class DecorrelateUnnest
                     new ComparisonExpression(
                             GREATER_THAN,
                             rowNumberSymbol.toSymbolReference(),
-                            new GenericLiteral("BIGINT", "1")),
+                            new GenericLiteral(BIGINT, "1")),
                     new Cast(
-                            failFunction(metadata, session, SUBQUERY_MULTIPLE_ROWS, "Scalar sub-query has returned multiple rows"),
-                            toSqlType(BOOLEAN)),
+                            failFunction(metadata, SUBQUERY_MULTIPLE_ROWS, "Scalar sub-query has returned multiple rows"),
+                            BOOLEAN),
                     TRUE_LITERAL);
 
             return new RewriteResult(new FilterNode(idAllocator.getNextId(), sourceNode, predicate), Optional.of(rowNumberSymbol));
@@ -452,7 +448,7 @@ public class DecorrelateUnnest
                     new FilterNode(
                             idAllocator.getNextId(),
                             sourceNode,
-                            new ComparisonExpression(LESS_THAN_OR_EQUAL, rowNumberSymbol.toSymbolReference(), new GenericLiteral("BIGINT", Long.toString(node.getCount())))),
+                            new ComparisonExpression(LESS_THAN_OR_EQUAL, rowNumberSymbol.toSymbolReference(), new GenericLiteral(BIGINT, Long.toString(node.getCount())))),
                     Optional.of(rowNumberSymbol));
         }
 
@@ -464,7 +460,7 @@ public class DecorrelateUnnest
             // Do not reuse source's rowNumberSymbol, because it might not follow the TopNNode's ordering.
             Symbol rowNumberSymbol = symbolAllocator.newSymbol("row_number", BIGINT);
             WindowNode.Function rowNumberFunction = new WindowNode.Function(
-                    metadata.resolveFunction(session, QualifiedName.of("row_number"), ImmutableList.of()),
+                    metadata.resolveBuiltinFunction("row_number", ImmutableList.of()),
                     ImmutableList.of(),
                     DEFAULT_FRAME,
                     false);
@@ -481,7 +477,7 @@ public class DecorrelateUnnest
                     new FilterNode(
                             idAllocator.getNextId(),
                             windowNode,
-                            new ComparisonExpression(LESS_THAN_OR_EQUAL, rowNumberSymbol.toSymbolReference(), new GenericLiteral("BIGINT", Long.toString(node.getCount())))),
+                            new ComparisonExpression(LESS_THAN_OR_EQUAL, rowNumberSymbol.toSymbolReference(), new GenericLiteral(BIGINT, Long.toString(node.getCount())))),
                     Optional.of(rowNumberSymbol));
         }
 

@@ -16,11 +16,10 @@ package io.trino.faulttolerant;
 import io.trino.Session;
 import io.trino.testing.AbstractTestQueryFramework;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
 
 public abstract class BaseFaultTolerantExecutionTest
         extends AbstractTestQueryFramework
@@ -47,7 +46,7 @@ public abstract class BaseFaultTolerantExecutionTest
 
         // force single writer task to verify there is exactly one writer per task
         assertUpdate(withUnlimitedTargetTaskInputSize(session), createTableSql, 1000000);
-        assertEquals(computeActual(selectFileInfo).getRowCount(), 1);
+        assertThat(computeActual(selectFileInfo).getRowCount()).isEqualTo(1);
         assertUpdate("DROP TABLE test_table_writer_skew_mitigation");
 
         assertUpdate(withDisabledPreferredWritePartitioning(session), createTableSql, 1000000);
@@ -58,51 +57,15 @@ public abstract class BaseFaultTolerantExecutionTest
         assertUpdate(withEnabledPreferredWritePartitioning(session), createTableSql, 1000000);
         int actualNumberOfFiles = computeActual(selectFileInfo).getRowCount();
         assertUpdate("DROP TABLE test_table_writer_skew_mitigation");
-        assertEquals(actualNumberOfFiles, expectedNumberOfFiles);
-    }
-
-    @Test
-    public void testExecutePreferredWritePartitioningSkewMitigation()
-    {
-        @Language("SQL") String createTableSql = """
-                CREATE TABLE test_execute_skew_mitigation WITH (%s = ARRAY['returnflag']) AS
-                SELECT orderkey, partkey, suppkey, linenumber, quantity, extendedprice, discount, tax, linestatus, shipdate, commitdate, receiptdate, shipinstruct, shipmode, returnflag
-                FROM tpch.sf1.lineitem
-                WHERE returnflag = 'N'
-                LIMIT 1000000""".formatted(partitioningTablePropertyName);
-        assertUpdate(createTableSql, 1000000);
-
-        @Language("SQL") String executeSql = "ALTER TABLE test_execute_skew_mitigation EXECUTE optimize";
-        @Language("SQL") String selectFileInfo = "SELECT distinct \"$path\" FROM test_execute_skew_mitigation";
-
-        Session session = withSingleWriterPerTask(getSession());
-
-        // force single writer task to verify there is exactly one writer per task
-        assertUpdate(withUnlimitedTargetTaskInputSize(session), executeSql);
-        assertEquals(computeActual(selectFileInfo).getRowCount(), 1);
-
-        assertUpdate(withDisabledPreferredWritePartitioning(session), executeSql);
-        int expectedNumberOfFiles = computeActual(selectFileInfo).getRowCount();
-        assertThat(expectedNumberOfFiles)
-                .withFailMessage("optimize is expected to generate more than a single file per partition")
-                .isGreaterThan(1);
-
-        assertUpdate(withEnabledPreferredWritePartitioning(session), executeSql);
-        int actualNumberOfFiles = computeActual(selectFileInfo).getRowCount();
-        assertEquals(actualNumberOfFiles, expectedNumberOfFiles);
-
-        // verify no data is lost in process
-        assertQuery("SELECT count(*) FROM test_execute_skew_mitigation", "SELECT 1000000");
-
-        assertUpdate("DROP TABLE test_execute_skew_mitigation");
+        assertThat(actualNumberOfFiles).isEqualTo(expectedNumberOfFiles);
     }
 
     private static Session withSingleWriterPerTask(Session session)
     {
         return Session.builder(session)
                 // one writer per partition per task
-                .setSystemProperty("task_writer_count", "1")
-                .setSystemProperty("task_partitioned_writer_count", "1")
+                .setSystemProperty("task_min_writer_count", "1")
+                .setSystemProperty("task_max_writer_count", "1")
                 .setSystemProperty("task_scale_writers_enabled", "false")
                 .build();
     }

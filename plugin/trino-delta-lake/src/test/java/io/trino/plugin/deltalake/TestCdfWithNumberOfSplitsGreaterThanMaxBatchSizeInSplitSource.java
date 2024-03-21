@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createDeltaLakeQueryRunner;
@@ -91,6 +91,7 @@ public class TestCdfWithNumberOfSplitsGreaterThanMaxBatchSizeInSplitSource
     private void assertTableChangesQuery(@Language("SQL") String sql, @Language("SQL") String expectedResult)
     {
         assertThat(query(sql))
+                .result()
                 .exceptColumns("_commit_timestamp")
                 .skippingTypesCheck()
                 .matches(expectedResult);

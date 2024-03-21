@@ -94,6 +94,7 @@ public class MysqlEventListenerFactory
             catch (SQLException e) {
                 throw e;
             }
+
             return () -> DriverManager.getConnection(config.getUrl());
         }
 

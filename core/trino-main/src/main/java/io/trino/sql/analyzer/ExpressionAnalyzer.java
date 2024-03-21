@@ -22,11 +22,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
-<<<<<<< HEAD
-import com.google.common.collect.Streams;
-import io.airlift.log.Logger;
-=======
->>>>>>> 442
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.FunctionResolver;
@@ -2055,19 +2050,7 @@ public class ExpressionAnalyzer
                     .filter(Objects::nonNull)
                     .collect(toImmutableSet());
 
-<<<<<<< HEAD
-            List<Expression> unlabeledInputColumns = Streams.concat(
-                    extractExpressions(ImmutableList.of(node.getArguments().get(argumentIndex)), Identifier.class).stream(),
-                    extractExpressions(ImmutableList.of(node.getArguments().get(argumentIndex)), DereferenceExpression.class).stream())
-                    .filter(expression -> columnReferences.containsKey(NodeRef.of(expression)))
-                    .collect(toImmutableList());
-            List<Expression> labeledInputColumns = extractExpressions(ImmutableList.of(node.getArguments().get(argumentIndex)), DereferenceExpression.class).stream()
-                    .filter(expression -> labelDereferences.containsKey(NodeRef.of(expression)))
-                    .collect(toImmutableList());
-            List<FunctionCall> classifiers = extractExpressions(ImmutableList.of(node.getArguments().get(argumentIndex)), FunctionCall.class).stream()
-=======
             Set<Optional<String>> classifierLabels = extractExpressions(ImmutableList.of(node.getArguments().get(argumentIndex)), FunctionCall.class).stream()
->>>>>>> 442
                     .filter(this::isClassifierFunction)
                     .map(functionCall -> functionCall.getArguments().stream()
                             .findFirst()

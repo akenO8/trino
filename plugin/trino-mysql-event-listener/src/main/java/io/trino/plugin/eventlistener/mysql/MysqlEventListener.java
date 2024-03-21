@@ -56,7 +56,7 @@ public class MysqlEventListener
     private final JsonCodec<Set<String>> clientTagsJsonCodec;
     private final JsonCodec<Map<String, String>> sessionPropertiesJsonCodec;
     private final JsonCodec<List<QueryInputMetadata>> inputsJsonCodec;
-    //    private final JsonCodec<QueryOutputMetadata> outputJsonCodec;
+//    private final JsonCodec<QueryOutputMetadata> outputJsonCodec;
     private final JsonCodec<List<TrinoWarning>> warningsJsonCodec;
 
     @Inject

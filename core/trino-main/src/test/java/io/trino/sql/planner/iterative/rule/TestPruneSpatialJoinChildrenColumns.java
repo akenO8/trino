@@ -22,23 +22,24 @@ import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionKind;
 import io.trino.spi.function.FunctionNullability;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.SpatialJoinNode;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.FunctionCall;
+import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.spatialJoin;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictProject;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
 import static io.trino.util.SpatialJoinUtils.ST_DISTANCE;
 
 public class TestPruneSpatialJoinChildrenColumns
@@ -76,11 +77,11 @@ public class TestPruneSpatialJoinChildrenColumns
                 })
                 .matches(
                         spatialJoin(
-                                "ST_Distance(a, b) <= r",
+                                new ComparisonExpression(LESS_THAN_OR_EQUAL, new FunctionCall(QualifiedName.of("st_distance"), ImmutableList.of(new SymbolReference("a"), new SymbolReference("b"))), new SymbolReference("r")),
                                 Optional.empty(),
                                 Optional.of(ImmutableList.of("a", "b", "r")),
                                 strictProject(
-                                        ImmutableMap.of("a", PlanMatchPattern.expression("a")),
+                                        ImmutableMap.of("a", PlanMatchPattern.expression(new SymbolReference("a"))),
                                         values("a", "unused")),
                                 values("b", "r")));
     }
@@ -107,14 +108,14 @@ public class TestPruneSpatialJoinChildrenColumns
                 })
                 .matches(
                         spatialJoin(
-                                "ST_Distance(a, b) <= r",
+                                new ComparisonExpression(LESS_THAN_OR_EQUAL, new FunctionCall(QualifiedName.of("st_distance"), ImmutableList.of(new SymbolReference("a"), new SymbolReference("b"))), new SymbolReference("r")),
                                 Optional.empty(),
                                 Optional.of(ImmutableList.of("a", "b", "r")),
                                 strictProject(
-                                        ImmutableMap.of("a", PlanMatchPattern.expression("a")),
+                                        ImmutableMap.of("a", PlanMatchPattern.expression(new SymbolReference("a"))),
                                         values("a", "unused_left")),
                                 strictProject(
-                                        ImmutableMap.of("b", PlanMatchPattern.expression("b"), "r", PlanMatchPattern.expression("r")),
+                                        ImmutableMap.of("b", PlanMatchPattern.expression(new SymbolReference("b")), "r", PlanMatchPattern.expression(new SymbolReference("r"))),
                                         values("b", "r", "unused_right"))));
     }
 
@@ -132,7 +133,7 @@ public class TestPruneSpatialJoinChildrenColumns
                             p.values(a),
                             p.values(b, r, output),
                             ImmutableList.of(output),
-                            expression("ST_Distance(a, b) <= r"));
+                            new ComparisonExpression(LESS_THAN_OR_EQUAL, new FunctionCall(QualifiedName.of("st_distance"), ImmutableList.of(new SymbolReference("a"), new SymbolReference("b"))), new SymbolReference("r")));
                 })
                 .doesNotFire();
     }
@@ -152,7 +153,7 @@ public class TestPruneSpatialJoinChildrenColumns
                             p.values(a, leftPartitionSymbol),
                             p.values(b, r, rightPartitionSymbol),
                             ImmutableList.of(a, b, r),
-                            expression("ST_Distance(a, b) <= r"),
+                            new ComparisonExpression(LESS_THAN_OR_EQUAL, new FunctionCall(QualifiedName.of("st_distance"), ImmutableList.of(new SymbolReference("a"), new SymbolReference("b"))), new SymbolReference("r")),
                             Optional.of(leftPartitionSymbol),
                             Optional.of(rightPartitionSymbol),
                             Optional.of("some nice kdb tree"));

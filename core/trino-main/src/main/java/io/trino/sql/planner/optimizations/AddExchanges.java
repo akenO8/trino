@@ -27,15 +27,16 @@ import io.trino.cost.StatsCalculator;
 import io.trino.cost.StatsProvider;
 import io.trino.cost.TableStatsProvider;
 import io.trino.cost.TaskCountEstimator;
-import io.trino.execution.querystats.PlanOptimizersStatsCollector;
-import io.trino.execution.warnings.WarningCollector;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.GroupingProperty;
 import io.trino.spi.connector.LocalProperty;
 import io.trino.spi.connector.WriterScalingOptions;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.DomainTranslator;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.Partitioning;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.PartitioningScheme;
@@ -43,7 +44,6 @@ import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
 import io.trino.sql.planner.SystemPartitioningHandle;
-import io.trino.sql.planner.TypeAnalyzer;
 import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.iterative.rule.PushPredicateIntoTableScan;
 import io.trino.sql.planner.plan.AggregationNode;
@@ -90,8 +90,6 @@ import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.planner.plan.UnnestNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -115,6 +113,7 @@ import static io.trino.SystemSessionProperties.ignoreDownStreamPreferences;
 import static io.trino.SystemSessionProperties.isColocatedJoinEnabled;
 import static io.trino.SystemSessionProperties.isDistributedSortEnabled;
 import static io.trino.SystemSessionProperties.isForceSingleNodeOutput;
+import static io.trino.SystemSessionProperties.isScaleWriters;
 import static io.trino.SystemSessionProperties.isUseCostBasedPartitioning;
 import static io.trino.SystemSessionProperties.isUseExactPartitioning;
 import static io.trino.SystemSessionProperties.isUsePartialDistinctLimit;
@@ -143,11 +142,11 @@ public class AddExchanges
         implements PlanOptimizer
 {
     private final PlannerContext plannerContext;
-    private final TypeAnalyzer typeAnalyzer;
+    private final IrTypeAnalyzer typeAnalyzer;
     private final StatsCalculator statsCalculator;
     private final TaskCountEstimator taskCountEstimator;
 
-    public AddExchanges(PlannerContext plannerContext, TypeAnalyzer typeAnalyzer, StatsCalculator statsCalculator, TaskCountEstimator taskCountEstimator)
+    public AddExchanges(PlannerContext plannerContext, IrTypeAnalyzer typeAnalyzer, StatsCalculator statsCalculator, TaskCountEstimator taskCountEstimator)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
@@ -156,17 +155,11 @@ public class AddExchanges
     }
 
     @Override
-    public PlanNode optimize(
-            PlanNode plan,
-            Session session,
-            TypeProvider types,
-            SymbolAllocator symbolAllocator,
-            PlanNodeIdAllocator idAllocator,
-            WarningCollector warningCollector,
-            PlanOptimizersStatsCollector planOptimizersStatsCollector,
-            TableStatsProvider tableStatsProvider)
+    public PlanNode optimize(PlanNode plan, Context context)
     {
-        PlanWithProperties result = plan.accept(new Rewriter(idAllocator, symbolAllocator, session, tableStatsProvider), PreferredProperties.any());
+        PlanWithProperties result = plan.accept(
+                new Rewriter(context.idAllocator(), context.symbolAllocator(), context.session(), context.tableStatsProvider()),
+                PreferredProperties.any());
         return result.getNode();
     }
 
@@ -183,7 +176,6 @@ public class AddExchanges
         private final Session session;
         private final DomainTranslator domainTranslator;
         private final boolean redistributeWrites;
-        private final boolean scaleWriters;
 
         public Rewriter(PlanNodeIdAllocator idAllocator, SymbolAllocator symbolAllocator, Session session, TableStatsProvider tableStatsProvider)
         {
@@ -194,7 +186,6 @@ public class AddExchanges
             this.session = session;
             this.domainTranslator = new DomainTranslator(plannerContext);
             this.redistributeWrites = SystemSessionProperties.isRedistributeWrites(session);
-            this.scaleWriters = SystemSessionProperties.isScaleWriters(session);
         }
 
         @Override
@@ -710,13 +701,16 @@ public class AddExchanges
         @Override
         public PlanWithProperties visitTableWriter(TableWriterNode node, PreferredProperties preferredProperties)
         {
-            return visitTableWriter(node, node.getPartitioningScheme(), node.getSource(), preferredProperties, node.getTarget());
+            return visitTableWriter(node, node.getPartitioningScheme(), node.getSource(), preferredProperties, node.getTarget(), isScaleWriters(session));
         }
 
         @Override
         public PlanWithProperties visitTableExecute(TableExecuteNode node, PreferredProperties preferredProperties)
         {
-            return visitTableWriter(node, node.getPartitioningScheme(), node.getSource(), preferredProperties, node.getTarget());
+            // Disable scale writers for partitioned data in case of Optimize since it can lead to small files and
+            // not deterministic wrt to user provided min file size configuration.
+            boolean scaleWriters = node.getPartitioningScheme().isEmpty() && isScaleWriters(session);
+            return visitTableWriter(node, node.getPartitioningScheme(), node.getSource(), preferredProperties, node.getTarget(), scaleWriters);
         }
 
         @Override
@@ -729,10 +723,10 @@ public class AddExchanges
                             .build());
         }
 
-        private PlanWithProperties visitTableWriter(PlanNode node, Optional<PartitioningScheme> partitioningScheme, PlanNode source, PreferredProperties preferredProperties, TableWriterNode.WriterTarget writerTarget)
+        private PlanWithProperties visitTableWriter(PlanNode node, Optional<PartitioningScheme> partitioningScheme, PlanNode source, PreferredProperties preferredProperties, TableWriterNode.WriterTarget writerTarget, boolean scaleWriters)
         {
             PlanWithProperties newSource = source.accept(this, preferredProperties);
-            PlanWithProperties partitionedSource = getWriterPlanWithProperties(partitioningScheme, newSource, writerTarget);
+            PlanWithProperties partitionedSource = getWriterPlanWithProperties(partitioningScheme, newSource, writerTarget, scaleWriters);
 
             return rebaseAndDeriveProperties(node, partitionedSource);
         }
@@ -743,12 +737,15 @@ public class AddExchanges
             PlanWithProperties source = node.getSource().accept(this, preferredProperties);
 
             Optional<PartitioningScheme> partitioningScheme = node.getPartitioningScheme();
-            PlanWithProperties partitionedSource = getWriterPlanWithProperties(partitioningScheme, source, node.getTarget());
+            // Disable scale writers for merge operation. Currently, merge operation is not supported with scale
+            // writers since it is supposed to writer a single partition from a single writer.
+            // TODO: Add support for scale writers for merge operation. https://github.com/trinodb/trino/issues/14622
+            PlanWithProperties partitionedSource = getWriterPlanWithProperties(partitioningScheme, source, node.getTarget(), false);
 
             return rebaseAndDeriveProperties(node, partitionedSource);
         }
 
-        private PlanWithProperties getWriterPlanWithProperties(Optional<PartitioningScheme> partitioningScheme, PlanWithProperties newSource, TableWriterNode.WriterTarget writerTarget)
+        private PlanWithProperties getWriterPlanWithProperties(Optional<PartitioningScheme> partitioningScheme, PlanWithProperties newSource, TableWriterNode.WriterTarget writerTarget, boolean scaleWriters)
         {
             WriterScalingOptions scalingOptions = writerTarget.getWriterScalingOptions(plannerContext.getMetadata(), session);
             if (partitioningScheme.isEmpty()) {

@@ -16,6 +16,9 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
@@ -29,11 +32,11 @@ import java.util.Optional;
 import java.util.function.Predicate;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictProject;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
+import static io.trino.sql.planner.plan.JoinType.INNER;
 
 public class TestPruneJoinChildrenColumns
         extends BaseRuleTest
@@ -46,13 +49,13 @@ public class TestPruneJoinChildrenColumns
                 .matches(
                         join(INNER, builder -> builder
                                 .equiCriteria("leftKey", "rightKey")
-                                .filter("leftValue > 5")
+                                .filter(new ComparisonExpression(GREATER_THAN, new SymbolReference("leftValue"), new LongLiteral(5)))
                                 .left(values("leftKey", "leftKeyHash", "leftValue"))
                                 .right(
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "rightKey", PlanMatchPattern.expression("rightKey"),
-                                                        "rightKeyHash", PlanMatchPattern.expression("rightKeyHash")),
+                                                        "rightKey", PlanMatchPattern.expression(new SymbolReference("rightKey")),
+                                                        "rightKeyHash", PlanMatchPattern.expression(new SymbolReference("rightKeyHash"))),
                                                 values("rightKey", "rightKeyHash", "rightValue")))));
     }
 
@@ -112,7 +115,7 @@ public class TestPruneJoinChildrenColumns
                 rightOutputs.stream()
                         .filter(joinOutputFilter)
                         .collect(toImmutableList()),
-                Optional.of(expression("leftValue > 5")),
+                Optional.of(new ComparisonExpression(GREATER_THAN, new SymbolReference("leftValue"), new LongLiteral(5))),
                 Optional.of(leftKeyHash),
                 Optional.of(rightKeyHash));
     }

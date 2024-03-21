@@ -16,6 +16,7 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.SortOrder;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.TopNRankingSymbolMatcher;
@@ -125,7 +126,7 @@ public class TestPruneTopNRankingColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression("a"), "ranking", expression("ranking")),
+                                ImmutableMap.of("a", expression(new SymbolReference("a")), "ranking", expression(new SymbolReference("ranking"))),
                                 topNRanking(
                                         pattern -> pattern
                                                 .specification(
@@ -135,7 +136,7 @@ public class TestPruneTopNRankingColumns
                                                 .rankingType(ROW_NUMBER)
                                                 .maxRankingPerPartition(5),
                                         strictProject(
-                                                ImmutableMap.of("a", expression("a")),
+                                                ImmutableMap.of("a", expression(new SymbolReference("a"))),
                                                 values("a", "b")))
                                         .withAlias("ranking", new TopNRankingSymbolMatcher())));
     }

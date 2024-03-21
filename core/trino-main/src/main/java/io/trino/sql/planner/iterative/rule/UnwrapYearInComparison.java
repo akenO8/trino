@@ -21,24 +21,23 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.planner.ExpressionInterpreter;
+import io.trino.sql.ir.BetweenPredicate;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.ExpressionTreeRewriter;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.InPredicate;
+import io.trino.sql.ir.IsNotNullPredicate;
+import io.trino.sql.ir.IsNullPredicate;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.planner.IrExpressionInterpreter;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.LiteralEncoder;
 import io.trino.sql.planner.NoOpSymbolResolver;
-import io.trino.sql.planner.TypeAnalyzer;
 import io.trino.sql.planner.TypeProvider;
-import io.trino.sql.tree.BetweenPredicate;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.ExpressionTreeRewriter;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.InListExpression;
-import io.trino.sql.tree.InPredicate;
-import io.trino.sql.tree.IsNotNullPredicate;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.NotExpression;
-import io.trino.sql.tree.NullLiteral;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -50,13 +49,12 @@ import static io.trino.metadata.ResolvedFunction.extractFunctionName;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
-import static io.trino.sql.ExpressionUtils.or;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.IrUtils.or;
 import static io.trino.type.DateTimes.PICOSECONDS_PER_MICROSECOND;
 import static io.trino.type.DateTimes.scaleFactor;
 import static java.lang.Math.multiplyExact;
@@ -82,12 +80,12 @@ import static java.util.Objects.requireNonNull;
 public class UnwrapYearInComparison
         extends ExpressionRewriteRuleSet
 {
-    public UnwrapYearInComparison(PlannerContext plannerContext, TypeAnalyzer typeAnalyzer)
+    public UnwrapYearInComparison(PlannerContext plannerContext, IrTypeAnalyzer typeAnalyzer)
     {
         super(createRewrite(plannerContext, typeAnalyzer));
     }
 
-    private static ExpressionRewriter createRewrite(PlannerContext plannerContext, TypeAnalyzer typeAnalyzer)
+    private static ExpressionRewriter createRewrite(PlannerContext plannerContext, IrTypeAnalyzer typeAnalyzer)
     {
         requireNonNull(plannerContext, "plannerContext is null");
         requireNonNull(typeAnalyzer, "typeAnalyzer is null");
@@ -97,7 +95,7 @@ public class UnwrapYearInComparison
 
     private static Expression unwrapYear(Session session,
             PlannerContext plannerContext,
-            TypeAnalyzer typeAnalyzer,
+            IrTypeAnalyzer typeAnalyzer,
             TypeProvider types,
             Expression expression)
     {
@@ -105,15 +103,15 @@ public class UnwrapYearInComparison
     }
 
     private static class Visitor
-            extends io.trino.sql.tree.ExpressionRewriter<Void>
+            extends io.trino.sql.ir.ExpressionRewriter<Void>
     {
         private final PlannerContext plannerContext;
-        private final TypeAnalyzer typeAnalyzer;
+        private final IrTypeAnalyzer typeAnalyzer;
         private final Session session;
         private final TypeProvider types;
         private final LiteralEncoder literalEncoder;
 
-        public Visitor(PlannerContext plannerContext, TypeAnalyzer typeAnalyzer, Session session, TypeProvider types)
+        public Visitor(PlannerContext plannerContext, IrTypeAnalyzer typeAnalyzer, Session session, TypeProvider types)
         {
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
@@ -134,19 +132,17 @@ public class UnwrapYearInComparison
         {
             InPredicate inPredicate = treeRewriter.defaultRewrite(node, null);
             Expression value = inPredicate.getValue();
-            Expression valueList = inPredicate.getValueList();
 
             if (!(value instanceof FunctionCall call) ||
                     !extractFunctionName(call.getName()).equals(builtinFunctionName("year")) ||
-                    call.getArguments().size() != 1 ||
-                    !(valueList instanceof InListExpression inListExpression)) {
+                    call.getArguments().size() != 1) {
                 return inPredicate;
             }
 
             // Convert each value to a comparison expression and try to unwrap it.
             // unwrap the InPredicate only in case we manage to unwrap the entire value list
-            ImmutableList.Builder<Expression> comparisonExpressions = ImmutableList.builderWithExpectedSize(inListExpression.getValues().size());
-            for (Expression rightExpression : inListExpression.getValues()) {
+            ImmutableList.Builder<Expression> comparisonExpressions = ImmutableList.builderWithExpectedSize(node.getValueList().size());
+            for (Expression rightExpression : node.getValueList()) {
                 ComparisonExpression comparisonExpression = new ComparisonExpression(EQUAL, value, rightExpression);
                 Expression unwrappedExpression = unwrapYear(comparisonExpression);
                 if (unwrappedExpression == comparisonExpression) {
@@ -174,12 +170,12 @@ public class UnwrapYearInComparison
             Expression argument = getOnlyElement(call.getArguments());
             Type argumentType = expressionTypes.get(NodeRef.of(argument));
 
-            Object right = new ExpressionInterpreter(expression.getRight(), plannerContext, session, expressionTypes)
+            Object right = new IrExpressionInterpreter(expression.getRight(), plannerContext, session, expressionTypes)
                     .optimize(NoOpSymbolResolver.INSTANCE);
 
             if (right == null || right instanceof NullLiteral) {
                 return switch (expression.getOperator()) {
-                    case EQUAL, NOT_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL -> new Cast(new NullLiteral(), toSqlType(BOOLEAN));
+                    case EQUAL, NOT_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL -> new Cast(new NullLiteral(), BOOLEAN);
                     case IS_DISTINCT_FROM -> new IsNotNullPredicate(argument);
                 };
             }

@@ -50,7 +50,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.metadata.Catalog.failedCatalog;
 import static io.trino.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.CATALOG_NOT_AVAILABLE;
-import static io.trino.spi.StandardErrorCode.NOT_FOUND;
+import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
 import static io.trino.spi.connector.CatalogHandle.createRootCatalogHandle;
 import static io.trino.util.Executors.executeUntilFailure;
 import static java.lang.String.format;
@@ -137,7 +137,7 @@ public class CoordinatorDynamicCatalogManager
                                     CatalogConnector newCatalog = catalogFactory.createCatalog(catalog);
                                     activeCatalogs.put(catalog.getCatalogHandle().getCatalogName(), newCatalog.getCatalog());
                                     allCatalogs.put(catalog.getCatalogHandle(), newCatalog);
-                                    log.info("-- Added catalog %s using connector %s --", storedCatalog.getName(), catalog.getConnectorName());
+                                    log.debug("-- Added catalog %s using connector %s --", storedCatalog.getName(), catalog.getConnectorName());
                                 }
                                 catch (Throwable e) {
                                     CatalogHandle catalogHandle = catalog != null ? catalog.getCatalogHandle() : createRootCatalogHandle(storedCatalog.getName(), new CatalogVersion("failed"));
@@ -227,7 +227,7 @@ public class CoordinatorDynamicCatalogManager
 
         if (!removedCatalogs.isEmpty()) {
             List<String> sortedHandles = removedCatalogs.stream().map(connector -> connector.getCatalogHandle().toString()).sorted().toList();
-            log.info("Pruned catalogs: %s", sortedHandles);
+            log.debug("Pruned catalogs: %s", sortedHandles);
         }
     }
 
@@ -273,7 +273,7 @@ public class CoordinatorDynamicCatalogManager
             activeCatalogs.put(catalogName, catalog.getCatalog());
             catalogStore.addOrReplaceCatalog(catalogProperties);
 
-            log.info("Added catalog: %s", catalog.getCatalogHandle());
+            log.debug("Added catalog: %s", catalog.getCatalogHandle());
         }
         finally {
             catalogsUpdateLock.unlock();
@@ -319,7 +319,7 @@ public class CoordinatorDynamicCatalogManager
         }
 
         if (!removed && !exists) {
-            throw new TrinoException(NOT_FOUND, format("Catalog '%s' does not exist", catalogName));
+            throw new TrinoException(CATALOG_NOT_FOUND, format("Catalog '%s' not found", catalogName));
         }
         // Do not shut down the catalog, because there may still be running queries using this catalog.
         // Catalog shutdown logic will be added later.

@@ -134,10 +134,10 @@ import static io.trino.plugin.hive.util.HiveUtil.isIcebergTable;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_BAD_DATA;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_CATALOG_ERROR;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_INVALID_METADATA;
-import static io.trino.plugin.iceberg.IcebergMaterializedViewAdditionalProperties.STORAGE_SCHEMA;
 import static io.trino.plugin.iceberg.IcebergMaterializedViewDefinition.decodeMaterializedViewData;
 import static io.trino.plugin.iceberg.IcebergMaterializedViewDefinition.encodeMaterializedViewData;
 import static io.trino.plugin.iceberg.IcebergMaterializedViewDefinition.fromConnectorMaterializedViewDefinition;
+import static io.trino.plugin.iceberg.IcebergMaterializedViewProperties.STORAGE_SCHEMA;
 import static io.trino.plugin.iceberg.IcebergSchemaProperties.LOCATION_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableName.tableNameWithType;
 import static io.trino.plugin.iceberg.IcebergUtil.COLUMN_TRINO_NOT_NULL_PROPERTY;
@@ -1151,7 +1151,7 @@ public class TrinoGlueCatalog
             TableInput materializedViewTableInput = getMaterializedViewTableInput(
                     viewName.getTableName(),
                     encodeMaterializedViewData(fromConnectorMaterializedViewDefinition(definition)),
-                    session.getUser(),
+                    isUsingSystemSecurity ? null : session.getUser(),
                     createMaterializedViewProperties(session, storageMetadataLocation));
             if (existing.isPresent()) {
                 updateTable(viewName.getSchemaName(), materializedViewTableInput);

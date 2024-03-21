@@ -24,19 +24,18 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TestingColumnHandle;
 import io.trino.spi.expression.Constant;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.Row;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeAnalyzer;
 import io.trino.sql.planner.iterative.rule.test.RuleTester;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.TableUpdateNode;
 import io.trino.sql.planner.plan.TableWriterNode;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.Row;
-import io.trino.sql.tree.StringLiteral;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -47,6 +46,7 @@ import static io.trino.spi.connector.RowChangeParadigm.DELETE_ROW_AND_INSERT_ROW
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 
 public class TestPushMergeWriterUpdateIntoConnector
@@ -67,7 +67,7 @@ public class TestPushMergeWriterUpdateIntoConnector
                         Symbol rowId = p.symbol("row_id");
                         Symbol rowCount = p.symbol("row_count");
                         // set column name and constant update
-                        Expression updateMergeRowExpression = new Row(ImmutableList.of(p.symbol("column_1").toSymbolReference(), new LongLiteral("1"), new BooleanLiteral("true"), new LongLiteral("1"), new LongLiteral("1")));
+                        Expression updateMergeRowExpression = new Row(ImmutableList.of(p.symbol("column_1").toSymbolReference(), new LongLiteral(1), TRUE_LITERAL, new LongLiteral(1), new LongLiteral(1)));
 
                         return p.tableFinish(
                                 p.merge(
@@ -106,7 +106,7 @@ public class TestPushMergeWriterUpdateIntoConnector
                         Symbol rowCount = p.symbol("row_count");
                         // set arithmetic expression which we don't support yet
                         Expression updateMergeRowExpression = new Row(ImmutableList.of(p.symbol("column_1").toSymbolReference(),
-                                new ArithmeticBinaryExpression(ArithmeticBinaryExpression.Operator.MULTIPLY, p.symbol("col1").toSymbolReference(), new LongLiteral("5"))));
+                                new ArithmeticBinaryExpression(ArithmeticBinaryExpression.Operator.MULTIPLY, p.symbol("col1").toSymbolReference(), new LongLiteral(5))));
 
                         return p.tableFinish(
                                 p.merge(
@@ -175,7 +175,7 @@ public class TestPushMergeWriterUpdateIntoConnector
     private static PushMergeWriterUpdateIntoConnector createRule(RuleTester tester)
     {
         PlannerContext plannerContext = tester.getPlannerContext();
-        TypeAnalyzer typeAnalyzer = tester.getTypeAnalyzer();
+        IrTypeAnalyzer typeAnalyzer = tester.getTypeAnalyzer();
         return new PushMergeWriterUpdateIntoConnector(
                 plannerContext,
                 typeAnalyzer,

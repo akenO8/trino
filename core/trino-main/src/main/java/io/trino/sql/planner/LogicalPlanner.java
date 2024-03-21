@@ -26,6 +26,7 @@ import io.trino.cost.CachingStatsProvider;
 import io.trino.cost.CachingTableStatsProvider;
 import io.trino.cost.CostCalculator;
 import io.trino.cost.CostProvider;
+import io.trino.cost.RuntimeInfoProvider;
 import io.trino.cost.StatsAndCosts;
 import io.trino.cost.StatsCalculator;
 import io.trino.cost.StatsProvider;
@@ -59,6 +60,15 @@ import io.trino.sql.analyzer.Field;
 import io.trino.sql.analyzer.RelationId;
 import io.trino.sql.analyzer.RelationType;
 import io.trino.sql.analyzer.Scope;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.CoalesceExpression;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.IfExpression;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.Row;
 import io.trino.sql.planner.StatisticsAggregationPlanner.TableStatisticAggregation;
 import io.trino.sql.planner.iterative.IterativeOptimizer;
 import io.trino.sql.planner.optimizations.PlanOptimizer;
@@ -82,31 +92,21 @@ import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.planprinter.PlanPrinter;
 import io.trino.sql.planner.sanity.PlanSanityChecker;
 import io.trino.sql.tree.Analyze;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.CoalesceExpression;
-import io.trino.sql.tree.ComparisonExpression;
 import io.trino.sql.tree.CreateTableAsSelect;
 import io.trino.sql.tree.Delete;
 import io.trino.sql.tree.ExplainAnalyze;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.IfExpression;
 import io.trino.sql.tree.Insert;
 import io.trino.sql.tree.LambdaArgumentDeclaration;
 import io.trino.sql.tree.Merge;
 import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.NullLiteral;
 import io.trino.sql.tree.Query;
 import io.trino.sql.tree.RefreshMaterializedView;
-import io.trino.sql.tree.Row;
 import io.trino.sql.tree.Statement;
 import io.trino.sql.tree.Table;
 import io.trino.sql.tree.TableExecute;
 import io.trino.sql.tree.Update;
 import io.trino.tracing.ScopedSpan;
 import io.trino.tracing.TrinoAttributes;
-import io.trino.type.TypeCoercion;
 import io.trino.type.UnknownType;
 import jakarta.annotation.Nonnull;
 
@@ -145,7 +145,8 @@ import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
 import static io.trino.sql.planner.PlanBuilder.newPlanBuilder;
@@ -157,8 +158,6 @@ import static io.trino.sql.planner.plan.TableWriterNode.CreateReference;
 import static io.trino.sql.planner.plan.TableWriterNode.InsertReference;
 import static io.trino.sql.planner.plan.TableWriterNode.WriterTarget;
 import static io.trino.sql.planner.sanity.PlanSanityChecker.DISTRIBUTED_PLAN_SANITY_CHECKER;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
 import static io.trino.tracing.ScopedSpan.scopedSpan;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -180,26 +179,27 @@ public class LogicalPlanner
     private final SymbolAllocator symbolAllocator = new SymbolAllocator();
     private final Metadata metadata;
     private final PlannerContext plannerContext;
-    private final TypeCoercion typeCoercion;
-    private final TypeAnalyzer typeAnalyzer;
+    private final IrTypeAnalyzer typeAnalyzer;
     private final StatisticsAggregationPlanner statisticsAggregationPlanner;
     private final StatsCalculator statsCalculator;
     private final CostCalculator costCalculator;
     private final WarningCollector warningCollector;
     private final PlanOptimizersStatsCollector planOptimizersStatsCollector;
+    private final CachingTableStatsProvider tableStatsProvider;
 
     public LogicalPlanner(
             Session session,
             List<PlanOptimizer> planOptimizers,
             PlanNodeIdAllocator idAllocator,
             PlannerContext plannerContext,
-            TypeAnalyzer typeAnalyzer,
+            IrTypeAnalyzer typeAnalyzer,
             StatsCalculator statsCalculator,
             CostCalculator costCalculator,
             WarningCollector warningCollector,
-            PlanOptimizersStatsCollector planOptimizersStatsCollector)
+            PlanOptimizersStatsCollector planOptimizersStatsCollector,
+            CachingTableStatsProvider tableStatsProvider)
     {
-        this(session, planOptimizers, DISTRIBUTED_PLAN_SANITY_CHECKER, idAllocator, plannerContext, typeAnalyzer, statsCalculator, costCalculator, warningCollector, planOptimizersStatsCollector);
+        this(session, planOptimizers, DISTRIBUTED_PLAN_SANITY_CHECKER, idAllocator, plannerContext, typeAnalyzer, statsCalculator, costCalculator, warningCollector, planOptimizersStatsCollector, tableStatsProvider);
     }
 
     public LogicalPlanner(
@@ -208,11 +208,12 @@ public class LogicalPlanner
             PlanSanityChecker planSanityChecker,
             PlanNodeIdAllocator idAllocator,
             PlannerContext plannerContext,
-            TypeAnalyzer typeAnalyzer,
+            IrTypeAnalyzer typeAnalyzer,
             StatsCalculator statsCalculator,
             CostCalculator costCalculator,
             WarningCollector warningCollector,
-            PlanOptimizersStatsCollector planOptimizersStatsCollector)
+            PlanOptimizersStatsCollector planOptimizersStatsCollector,
+            CachingTableStatsProvider tableStatsProvider)
     {
         this.session = requireNonNull(session, "session is null");
         this.planOptimizers = requireNonNull(planOptimizers, "planOptimizers is null");
@@ -220,13 +221,13 @@ public class LogicalPlanner
         this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
         this.metadata = plannerContext.getMetadata();
-        this.typeCoercion = new TypeCoercion(plannerContext.getTypeManager()::getType);
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
         this.statisticsAggregationPlanner = new StatisticsAggregationPlanner(symbolAllocator, plannerContext, session);
         this.statsCalculator = requireNonNull(statsCalculator, "statsCalculator is null");
         this.costCalculator = requireNonNull(costCalculator, "costCalculator is null");
         this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
         this.planOptimizersStatsCollector = requireNonNull(planOptimizersStatsCollector, "planOptimizersStatsCollector is null");
+        this.tableStatsProvider = requireNonNull(tableStatsProvider, "tableStatsProvider is null");
     }
 
     public Plan plan(Analysis analysis)
@@ -261,8 +262,6 @@ public class LogicalPlanner
         try (var ignored = scopedSpan(plannerContext.getTracer(), "validate-intermediate")) {
             planSanityChecker.validateIntermediatePlan(root, session, plannerContext, typeAnalyzer, symbolAllocator.getTypes(), warningCollector);
         }
-
-        CachingTableStatsProvider tableStatsProvider = new CachingTableStatsProvider(metadata, session);
 
         if (stage.ordinal() >= OPTIMIZED.ordinal()) {
             try (var ignored = scopedSpan(plannerContext.getTracer(), "optimizer")) {
@@ -306,7 +305,7 @@ public class LogicalPlanner
     {
         PlanNode result;
         try (var ignored = optimizerSpan(optimizer)) {
-            result = optimizer.optimize(root, session, symbolAllocator.getTypes(), symbolAllocator, idAllocator, warningCollector, planOptimizersStatsCollector, tableStatsProvider);
+            result = optimizer.optimize(root, new PlanOptimizer.Context(session, symbolAllocator.getTypes(), symbolAllocator, idAllocator, warningCollector, planOptimizersStatsCollector, tableStatsProvider, RuntimeInfoProvider.noImplementation()));
         }
         if (result == null) {
             throw new NullPointerException(optimizer.getClass().getName() + " returned a null plan");
@@ -348,7 +347,7 @@ public class LogicalPlanner
         if ((statement instanceof CreateTableAsSelect && analysis.getCreate().orElseThrow().isCreateTableAsSelectNoOp()) ||
                 statement instanceof RefreshMaterializedView && analysis.isSkipMaterializedViewRefresh()) {
             Symbol symbol = symbolAllocator.newSymbol("rows", BIGINT);
-            PlanNode source = new ValuesNode(idAllocator.getNextId(), ImmutableList.of(symbol), ImmutableList.of(new Row(ImmutableList.of(new GenericLiteral("BIGINT", "0")))));
+            PlanNode source = new ValuesNode(idAllocator.getNextId(), ImmutableList.of(symbol), ImmutableList.of(new Row(ImmutableList.of(new GenericLiteral(BIGINT, "0")))));
             return new OutputNode(idAllocator.getNextId(), source, ImmutableList.of("rows"), ImmutableList.of(symbol));
         }
         return createOutputPlan(planStatementWithoutOutput(analysis, statement), analysis);
@@ -467,7 +466,7 @@ public class LogicalPlanner
 
         String catalogName = destination.getCatalogName();
         CatalogHandle catalogHandle = metadata.getCatalogHandle(session, catalogName)
-                .orElseThrow(() -> semanticException(CATALOG_NOT_FOUND, query, "Destination catalog '%s' does not exist", catalogName));
+                .orElseThrow(() -> semanticException(CATALOG_NOT_FOUND, query, "Destination catalog '%s' not found", catalogName));
 
         Assignments.Builder assignmentsBuilder = Assignments.builder();
         ImmutableList.Builder<ColumnMetadata> finalColumnsBuilder = ImmutableList.builder();
@@ -543,7 +542,7 @@ public class LogicalPlanner
                 if (supportsMissingColumnsOnInsert) {
                     continue;
                 }
-                expression = new Cast(new NullLiteral(), toSqlType(column.getType()));
+                expression = new Cast(new NullLiteral(), column.getType());
             }
             else {
                 Symbol input = visibleFieldMappings.get(index);
@@ -626,7 +625,7 @@ public class LogicalPlanner
 
     private Expression coerceOrCastToTableType(Symbol fieldMapping, Type tableType, Type queryType)
     {
-        if (queryType.equals(tableType) || typeCoercion.isTypeOnlyCoercion(queryType, tableType)) {
+        if (queryType.equals(tableType)) {
             return fieldMapping.toSymbolReference();
         }
         return noTruncationCast(fieldMapping.toSymbolReference(), queryType, tableType);
@@ -634,21 +633,21 @@ public class LogicalPlanner
 
     private Expression createNullNotAllowedFailExpression(String columnName, Type type)
     {
-        return new Cast(failFunction(metadata, CONSTRAINT_VIOLATION, "NULL value not allowed for NOT NULL column: " + columnName), toSqlType(type));
+        return new Cast(failFunction(metadata, CONSTRAINT_VIOLATION, "NULL value not allowed for NOT NULL column: " + columnName), type);
     }
 
     private static Function<Expression, Expression> failIfPredicateIsNotMet(Metadata metadata, ErrorCodeSupplier errorCode, String errorMessage)
     {
         FunctionCall fail = failFunction(metadata, errorCode, errorMessage);
-        return predicate -> new IfExpression(predicate, TRUE_LITERAL, new Cast(fail, toSqlType(BOOLEAN)));
+        return predicate -> new IfExpression(predicate, TRUE_LITERAL, new Cast(fail, BOOLEAN));
     }
 
     public static FunctionCall failFunction(Metadata metadata, ErrorCodeSupplier errorCode, String errorMessage)
     {
         return BuiltinFunctionCallBuilder.resolve(metadata)
                 .setName("fail")
-                .addArgument(INTEGER, new GenericLiteral("INTEGER", Integer.toString(errorCode.toErrorCode().getCode())))
-                .addArgument(VARCHAR, new GenericLiteral("VARCHAR", errorMessage))
+                .addArgument(INTEGER, new GenericLiteral(INTEGER, Integer.toString(errorCode.toErrorCode().getCode())))
+                .addArgument(VARCHAR, new GenericLiteral(VARCHAR, errorMessage))
                 .build();
     }
 
@@ -677,10 +676,14 @@ public class LogicalPlanner
         TableHandle tableHandle = viewAnalysis.getTarget();
         Query query = viewAnalysis.getQuery();
         Optional<TableLayout> newTableLayout = metadata.getInsertLayout(session, viewAnalysis.getTarget());
+        List<String> tableFunctions = analysis.getPolymorphicTableFunctions().stream()
+                .map(polymorphicTableFunction -> polymorphicTableFunction.getNode().getName().toString())
+                .collect(toImmutableList());
         TableWriterNode.RefreshMaterializedViewReference writerTarget = new TableWriterNode.RefreshMaterializedViewReference(
                 viewAnalysis.getTable().toString(),
                 tableHandle,
-                new ArrayList<>(analysis.getTables()));
+                ImmutableList.copyOf(analysis.getTables()),
+                tableFunctions);
         return getInsertPlan(analysis, viewAnalysis.getTable(), query, tableHandle, viewAnalysis.getColumns(), newTableLayout, Optional.of(writerTarget));
     }
 
@@ -798,12 +801,12 @@ public class LogicalPlanner
     private Expression noTruncationCast(Expression expression, Type fromType, Type toType)
     {
         if (fromType instanceof UnknownType || (!(toType instanceof VarcharType) && !(toType instanceof CharType))) {
-            return new Cast(expression, toSqlType(toType));
+            return new Cast(expression, toType);
         }
         int targetLength;
         if (toType instanceof VarcharType) {
             if (((VarcharType) toType).isUnbounded()) {
-                return new Cast(expression, toSqlType(toType));
+                return new Cast(expression, toType);
             }
             targetLength = ((VarcharType) toType).getBoundedLength();
         }
@@ -818,19 +821,19 @@ public class LogicalPlanner
                 // check if the trimmed value fits in the target type
                 new ComparisonExpression(
                         GREATER_THAN_OR_EQUAL,
-                        new GenericLiteral("BIGINT", Integer.toString(targetLength)),
+                        new GenericLiteral(BIGINT, Integer.toString(targetLength)),
                         new CoalesceExpression(
                                 new FunctionCall(
                                         spaceTrimmedLength.toQualifiedName(),
-                                        ImmutableList.of(new Cast(expression, toSqlType(VARCHAR)))),
-                                new GenericLiteral("BIGINT", "0"))),
-                new Cast(expression, toSqlType(toType)),
+                                        ImmutableList.of(new Cast(expression, VARCHAR))),
+                                new GenericLiteral(BIGINT, "0"))),
+                new Cast(expression, toType),
                 new Cast(
                         failFunction(metadata, INVALID_CAST_ARGUMENT, format(
                                 "Cannot truncate non-space characters when casting from %s to %s on INSERT",
                                 fromType.getDisplayName(),
                                 toType.getDisplayName())),
-                        toSqlType(toType)));
+                        toType));
     }
 
     private RelationPlan createDeletePlan(Analysis analysis, Delete node)
@@ -924,7 +927,7 @@ public class LogicalPlanner
         Map<Key, Symbol> allocations = new HashMap<>();
         Map<NodeRef<LambdaArgumentDeclaration>, Symbol> result = new LinkedHashMap<>();
 
-        for (Entry<NodeRef<Expression>, Type> entry : analysis.getTypes().entrySet()) {
+        for (Entry<NodeRef<io.trino.sql.tree.Expression>, Type> entry : analysis.getTypes().entrySet()) {
             if (!(entry.getKey().getNode() instanceof LambdaArgumentDeclaration argument)) {
                 continue;
             }
@@ -936,7 +939,7 @@ public class LogicalPlanner
             // get rewritten via TranslationMap
             Symbol symbol = allocations.get(key);
             if (symbol == null) {
-                symbol = symbolAllocator.newSymbol(argument, entry.getValue());
+                symbol = symbolAllocator.newSymbol(argument.getName().toString(), entry.getValue());
                 allocations.put(key, symbol);
             }
 
@@ -964,8 +967,8 @@ public class LogicalPlanner
         RelationPlan tableScanPlan = createRelationPlan(analysis, table);
         PlanBuilder sourcePlanBuilder = newPlanBuilder(tableScanPlan, analysis, ImmutableMap.of(), ImmutableMap.of(), session, plannerContext);
         if (statement.getWhere().isPresent()) {
-            SubqueryPlanner subqueryPlanner = new SubqueryPlanner(analysis, symbolAllocator, idAllocator, buildLambdaDeclarationToSymbolMap(analysis, symbolAllocator), plannerContext, typeCoercion, Optional.empty(), session, ImmutableMap.of());
-            Expression whereExpression = statement.getWhere().get();
+            SubqueryPlanner subqueryPlanner = new SubqueryPlanner(analysis, symbolAllocator, idAllocator, buildLambdaDeclarationToSymbolMap(analysis, symbolAllocator), plannerContext, Optional.empty(), session, ImmutableMap.of());
+            io.trino.sql.tree.Expression whereExpression = statement.getWhere().get();
             sourcePlanBuilder = subqueryPlanner.handleSubqueries(sourcePlanBuilder, whereExpression, analysis.getSubqueries(statement));
             sourcePlanBuilder = sourcePlanBuilder.withNewRoot(new FilterNode(idAllocator.getNextId(), sourcePlanBuilder.getRoot(), sourcePlanBuilder.rewrite(whereExpression)));
         }

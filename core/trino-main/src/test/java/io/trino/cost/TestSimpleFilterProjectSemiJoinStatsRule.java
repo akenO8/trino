@@ -13,6 +13,12 @@
  */
 package io.trino.cost;
 
+import com.google.common.collect.ImmutableList;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.PlanNodeId;
@@ -22,7 +28,8 @@ import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.LogicalExpression.Operator.AND;
 
 public class TestSimpleFilterProjectSemiJoinStatsRule
         extends BaseStatsCalculatorTest
@@ -119,7 +126,7 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
             Symbol c = pb.symbol("c", BIGINT);
             Symbol semiJoinOutput = pb.symbol("sjo", BOOLEAN);
             return pb.filter(
-                    expression("sjo"),
+                    new SymbolReference("sjo"),
                     pb.project(Assignments.identity(semiJoinOutput, a),
                             pb.semiJoin(
                                     pb.values(LEFT_SOURCE_ID, a, b),
@@ -158,7 +165,7 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
             Symbol c = pb.symbol("c", BIGINT);
             Symbol semiJoinOutput = pb.symbol("sjo", BOOLEAN);
             return pb.filter(
-                    expression("sjo AND a < 8"),
+                    new LogicalExpression(AND, ImmutableList.of(new SymbolReference("sjo"), new ComparisonExpression(LESS_THAN, new SymbolReference("a"), new LongLiteral(8)))),
                     pb.semiJoin(
                             pb.values(LEFT_SOURCE_ID, a, b),
                             pb.values(RIGHT_SOURCE_ID, c),
@@ -196,7 +203,7 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
             Symbol c = pb.symbol("c", BIGINT);
             Symbol semiJoinOutput = pb.symbol("sjo", BOOLEAN);
             return pb.filter(
-                    expression("NOT sjo"),
+                    new NotExpression(new SymbolReference("sjo")),
                     pb.semiJoin(
                             pb.values(LEFT_SOURCE_ID, a, b),
                             pb.values(RIGHT_SOURCE_ID, c),

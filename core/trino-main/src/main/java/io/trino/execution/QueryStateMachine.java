@@ -54,7 +54,6 @@ import io.trino.spi.security.SelectedRole;
 import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.Output;
 import io.trino.sql.planner.PlanFragment;
-import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.tracing.TrinoAttributes;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionInfo;
@@ -669,7 +668,7 @@ public class QueryStateMachine
             failedInternalNetworkInputPositions += stageStats.getFailedInternalNetworkInputPositions();
 
             PlanFragment plan = stageInfo.getPlan();
-            if (plan != null && plan.getPartitionedSourceNodes().stream().anyMatch(TableScanNode.class::isInstance)) {
+            if (plan != null && plan.containsTableScanNode()) {
                 rawInputDataSize += stageStats.getRawInputDataSize().toBytes();
                 failedRawInputDataSize += stageStats.getFailedRawInputDataSize().toBytes();
                 rawInputPositions += stageStats.getRawInputPositions();
@@ -1110,9 +1109,18 @@ public class QueryStateMachine
         queryState.setIf(FINISHED, currentState -> !currentState.isDone());
     }
 
+    public boolean transitionToCanceled()
+    {
+        return transitionToFailed(new TrinoException(USER_CANCELED, "Query was canceled"), false);
+    }
+
     public boolean transitionToFailed(Throwable throwable)
     {
-        cleanupQueryQuietly();
+        return transitionToFailed(throwable, true);
+    }
+
+    private boolean transitionToFailed(Throwable throwable, boolean log)
+    {
         queryStateTimer.endQuery();
 
         // NOTE: The failure cause must be set before triggering the state change, so
@@ -1121,14 +1129,20 @@ public class QueryStateMachine
         requireNonNull(throwable, "throwable is null");
         failureCause.compareAndSet(null, toFailure(throwable));
 
+        cleanupQueryQuietly();
+
         QueryState oldState = queryState.trySet(FAILED);
         if (oldState.isDone()) {
-            QUERY_STATE_LOG.debug(throwable, "Failure after query %s finished", queryId);
+            if (log) {
+                QUERY_STATE_LOG.debug(throwable, "Failure after query %s finished", queryId);
+            }
             return false;
         }
 
         try {
-            QUERY_STATE_LOG.debug(throwable, "Query %s failed", queryId);
+            if (log) {
+                QUERY_STATE_LOG.debug(throwable, "Query %s failed", queryId);
+            }
             session.getTransactionId().flatMap(transactionManager::getTransactionInfoIfExist).ifPresent(transaction -> {
                 try {
                     if (transaction.isAutoCommitContext()) {
@@ -1140,7 +1154,9 @@ public class QueryStateMachine
                 }
                 catch (RuntimeException e) {
                     // This shouldn't happen but be safe and just fail the transaction directly
-                    QUERY_STATE_LOG.error(e, "Error aborting transaction for failed query. Transaction will be failed directly");
+                    if (log) {
+                        QUERY_STATE_LOG.error(e, "Error aborting transaction for failed query. Transaction will be failed directly");
+                    }
                 }
             });
         }
@@ -1152,31 +1168,6 @@ public class QueryStateMachine
         }
 
         return true;
-    }
-
-    public boolean transitionToCanceled()
-    {
-        cleanupQueryQuietly();
-        queryStateTimer.endQuery();
-
-        // NOTE: The failure cause must be set before triggering the state change, so
-        // listeners can observe the exception. This is safe because the failure cause
-        // can only be observed if the transition to FAILED is successful.
-        failureCause.compareAndSet(null, toFailure(new TrinoException(USER_CANCELED, "Query was canceled")));
-
-        boolean canceled = queryState.setIf(FAILED, currentState -> !currentState.isDone());
-        if (canceled) {
-            session.getTransactionId().flatMap(transactionManager::getTransactionInfoIfExist).ifPresent(transaction -> {
-                if (transaction.isAutoCommitContext()) {
-                    transactionManager.asyncAbort(transaction.getTransactionId());
-                }
-                else {
-                    transactionManager.fail(transaction.getTransactionId());
-                }
-            });
-        }
-
-        return canceled;
     }
 
     private void cleanupQuery()
@@ -1369,9 +1360,9 @@ public class QueryStateMachine
                 queryStats.getPlanningCpuTime(),
                 queryStats.getFinishingTime(),
                 queryStats.getTotalTasks(),
-                queryStats.getFailedTasks(),
                 queryStats.getRunningTasks(),
                 queryStats.getCompletedTasks(),
+                queryStats.getFailedTasks(),
                 queryStats.getTotalDrivers(),
                 queryStats.getQueuedDrivers(),
                 queryStats.getRunningDrivers(),

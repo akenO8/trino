@@ -84,6 +84,8 @@ public class StatsCalculatorModule
             rules.add(new RowNumberStatsRule(normalizer));
             rules.add(new SampleStatsRule(normalizer));
             rules.add(new SortStatsRule());
+            rules.add(new DynamicFilterSourceStatsRule());
+            rules.add(new RemoteSourceStatsRule(normalizer));
 
             return rules.build();
         }

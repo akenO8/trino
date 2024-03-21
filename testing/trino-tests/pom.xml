@@ -5,11 +5,12 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>435</version>
+        <version>442</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-tests</artifactId>
+    <description>Trino - Tests</description>
 
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
@@ -306,6 +307,13 @@
         <dependency>
             <groupId>org.openjdk.jmh</groupId>
             <artifactId>jmh-generator-annprocess</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.1</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

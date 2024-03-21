@@ -21,6 +21,10 @@ import io.trino.cost.PlanNodeStatsEstimate;
 import io.trino.cost.SymbolStatsEstimate;
 import io.trino.cost.TaskCountEstimator;
 import io.trino.spi.type.VarcharType;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
@@ -30,7 +34,7 @@ import io.trino.sql.planner.iterative.rule.test.RuleTester;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.JoinNode.DistributionType;
-import io.trino.sql.planner.plan.JoinNode.Type;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.LimitNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.TableScanNode;
@@ -49,6 +53,9 @@ import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.JOIN_MAX_BROADCAST_TABLE_SIZE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.MULTIPLY;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.enforceSingleRow;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
@@ -56,15 +63,12 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 import static io.trino.sql.planner.iterative.Lookup.noLookup;
 import static io.trino.sql.planner.iterative.rule.DetermineJoinDistributionType.getFirstKnownOutputSizeInBytes;
 import static io.trino.sql.planner.iterative.rule.DetermineJoinDistributionType.getSourceTablesSizeInBytes;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expressions;
 import static io.trino.sql.planner.plan.JoinNode.DistributionType.PARTITIONED;
 import static io.trino.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
-import static io.trino.sql.planner.plan.JoinNode.Type.FULL;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
-import static io.trino.sql.planner.plan.JoinNode.Type.RIGHT;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.planner.plan.JoinType.FULL;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
+import static io.trino.sql.planner.plan.JoinType.RIGHT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
@@ -109,15 +113,15 @@ public class TestDetermineJoinDistributionType
         testDetermineDistributionType(JoinDistributionType.AUTOMATIC, LEFT, DistributionType.PARTITIONED);
     }
 
-    private void testDetermineDistributionType(JoinDistributionType sessionDistributedJoin, Type joinType, DistributionType expectedDistribution)
+    private void testDetermineDistributionType(JoinDistributionType sessionDistributedJoin, JoinType joinType, DistributionType expectedDistribution)
     {
         assertDetermineJoinDistributionType()
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
                 .on(p ->
                         p.join(
                                 joinType,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
@@ -141,15 +145,15 @@ public class TestDetermineJoinDistributionType
         testRepartitionRightOuter(JoinDistributionType.AUTOMATIC, RIGHT);
     }
 
-    private void testRepartitionRightOuter(JoinDistributionType sessionDistributedJoin, Type joinType)
+    private void testRepartitionRightOuter(JoinDistributionType sessionDistributedJoin, JoinType joinType)
     {
         assertDetermineJoinDistributionType()
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
                 .on(p ->
                         p.join(
                                 joinType,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
@@ -170,9 +174,9 @@ public class TestDetermineJoinDistributionType
                 .on(p ->
                         p.join(
                                 INNER,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
                                 p.enforceSingleRow(
-                                        p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11")))),
+                                        p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11))))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
@@ -192,22 +196,22 @@ public class TestDetermineJoinDistributionType
         testReplicateNoEquiCriteria(LEFT);
     }
 
-    private void testReplicateNoEquiCriteria(Type joinType)
+    private void testReplicateNoEquiCriteria(JoinType joinType)
     {
         assertDetermineJoinDistributionType()
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
                 .on(p ->
                         p.join(
                                 joinType,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
-                                Optional.of(expression("A1 * B1 > 100"))))
+                                Optional.of(new ComparisonExpression(GREATER_THAN, new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("A1"), new SymbolReference("B1")), new LongLiteral(100)))))
                 .matches(
                         join(joinType, builder -> builder
-                                .filter("A1 * B1 > 100")
+                                .filter(new ComparisonExpression(GREATER_THAN, new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("A1"), new SymbolReference("B1")), new LongLiteral(100)))
                                 .distributionType(REPLICATED)
                                 .left(values(ImmutableMap.of("A1", 0)))
                                 .right(values(ImmutableMap.of("B1", 0)))));
@@ -220,8 +224,8 @@ public class TestDetermineJoinDistributionType
                 .on(p ->
                         p.join(
                                 INNER,
-                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(expressions("10"), expressions("11"))),
-                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(expressions("50"), expressions("11"))),
+                                p.values(ImmutableList.of(p.symbol("A1")), ImmutableList.of(ImmutableList.of(new LongLiteral(10)), ImmutableList.of(new LongLiteral(11)))),
+                                p.values(ImmutableList.of(p.symbol("B1")), ImmutableList.of(ImmutableList.of(new LongLiteral(50)), ImmutableList.of(new LongLiteral(11)))),
                                 ImmutableList.of(new JoinNode.EquiJoinClause(p.symbol("A1", BIGINT), p.symbol("B1", BIGINT))),
                                 ImmutableList.of(p.symbol("A1", BIGINT)),
                                 ImmutableList.of(p.symbol("B1", BIGINT)),
@@ -696,7 +700,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(REPLICATED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // same but with join sides reversed
         assertDetermineJoinDistributionType()
@@ -725,7 +729,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(REPLICATED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // only probe side (with small tables) source stats are available, join sides should be flipped
         assertDetermineJoinDistributionType()
@@ -754,7 +758,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(PARTITIONED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
     }
 
     @Test
@@ -803,7 +807,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(PARTITIONED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // same but with join sides reversed
         assertDetermineJoinDistributionType()
@@ -832,7 +836,7 @@ public class TestDetermineJoinDistributionType
                                 .equiCriteria("A1", "B1")
                                 .distributionType(PARTITIONED)
                                 .left(values(ImmutableMap.of("A1", 0)))
-                                .right(filter("true", values(ImmutableMap.of("B1", 0))))));
+                                .right(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))));
 
         // Use REPLICATED join type for cross join
         assertDetermineJoinDistributionType()
@@ -859,7 +863,7 @@ public class TestDetermineJoinDistributionType
                 .matches(
                         join(INNER, builder -> builder
                                 .distributionType(REPLICATED)
-                                .left(filter("true", values(ImmutableMap.of("B1", 0))))
+                                .left(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))
                                 .right(values(ImmutableMap.of("A1", 0)))));
 
         // Don't flip sides when both are similar in size
@@ -892,7 +896,7 @@ public class TestDetermineJoinDistributionType
                         join(INNER, builder -> builder
                                 .equiCriteria("B1", "A1")
                                 .distributionType(PARTITIONED)
-                                .left(filter("true", values(ImmutableMap.of("B1", 0))))
+                                .left(filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0))))
                                 .right(values(ImmutableMap.of("A1", 0)))));
     }
 

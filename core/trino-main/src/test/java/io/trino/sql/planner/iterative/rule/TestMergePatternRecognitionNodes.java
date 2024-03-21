@@ -17,7 +17,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.metadata.ResolvedFunction;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OrderingScheme;
+import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.ExpressionMatcher;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.MergePatternRecognitionNodes.MergePatternRecognitionNodesWithProject;
@@ -25,9 +31,12 @@ import io.trino.sql.planner.iterative.rule.MergePatternRecognitionNodes.MergePat
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.WindowNode;
+import io.trino.sql.planner.rowpattern.AggregatedSetDescriptor;
+import io.trino.sql.planner.rowpattern.AggregationValuePointer;
+import io.trino.sql.planner.rowpattern.LogicalIndexPointer;
+import io.trino.sql.planner.rowpattern.MatchNumberValuePointer;
+import io.trino.sql.planner.rowpattern.ScalarValuePointer;
 import io.trino.sql.planner.rowpattern.ir.IrLabel;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.FunctionCall;
 import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
@@ -37,48 +46,60 @@ import static io.trino.metadata.MetadataManager.createTestMetadataManager;
 import static io.trino.spi.connector.SortOrder.ASC_NULLS_LAST;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.MULTIPLY;
+import static io.trino.sql.ir.BooleanLiteral.FALSE_LITERAL;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.patternRecognition;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.specification;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFrame;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFunction;
+import static io.trino.sql.planner.plan.FrameBoundType.CURRENT_ROW;
+import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_FOLLOWING;
+import static io.trino.sql.planner.plan.RowsPerMatch.ALL_SHOW_EMPTY;
+import static io.trino.sql.planner.plan.RowsPerMatch.ONE;
+import static io.trino.sql.planner.plan.RowsPerMatch.WINDOW;
+import static io.trino.sql.planner.plan.SkipToPosition.LAST;
+import static io.trino.sql.planner.plan.WindowFrameType.ROWS;
 import static io.trino.sql.planner.plan.WindowNode.Frame.DEFAULT_FRAME;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.tree.FrameBound.Type.CURRENT_ROW;
-import static io.trino.sql.tree.FrameBound.Type.UNBOUNDED_FOLLOWING;
-import static io.trino.sql.tree.PatternRecognitionRelation.RowsPerMatch.ALL_SHOW_EMPTY;
-import static io.trino.sql.tree.PatternRecognitionRelation.RowsPerMatch.ONE;
-import static io.trino.sql.tree.PatternRecognitionRelation.RowsPerMatch.WINDOW;
-import static io.trino.sql.tree.SkipTo.Position.LAST;
-import static io.trino.sql.tree.WindowFrame.Type.ROWS;
 
 public class TestMergePatternRecognitionNodes
         extends BaseRuleTest
 {
+    private static final WindowNode.Frame ROWS_CURRENT_TO_UNBOUNDED = new WindowNode.Frame(
+            ROWS,
+            CURRENT_ROW,
+            Optional.empty(),
+            Optional.empty(),
+            UNBOUNDED_FOLLOWING,
+            Optional.empty(),
+            Optional.empty());
+
     @Test
     public void testSpecificationsDoNotMatch()
     {
         tester().assertThat(new MergePatternRecognitionNodesWithoutProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), "false")
+                                .addVariableDefinition(new IrLabel("X"), FALSE_LITERAL)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
                                 Assignments.identity(p.symbol("a")),
                                 p.patternRecognition(childBuilder -> childBuilder
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "false")
+                                        .addVariableDefinition(new IrLabel("X"), FALSE_LITERAL)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
 
@@ -89,12 +110,12 @@ public class TestMergePatternRecognitionNodes
                         .pattern(new IrLabel("X"))
                         .addVariableDefinition(
                                 new IrLabel("X"),
-                                new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(expression("a"))), expression("5")))
+                                new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(new SymbolReference("a"))), new LongLiteral(5)))
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .pattern(new IrLabel("X"))
                                 .addVariableDefinition(
                                         new IrLabel("X"),
-                                        new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(expression("b"))), expression("5")))
+                                        new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(new SymbolReference("b"))), new LongLiteral(5)))
                                 .source(p.values(p.symbol("a"), p.symbol("b")))))))
                 .doesNotFire();
     }
@@ -107,32 +128,48 @@ public class TestMergePatternRecognitionNodes
         // parent node's measure depends on child node's measure output
         tester().assertThat(new MergePatternRecognitionNodesWithoutProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("dependent"), "LAST(X.measure)", BIGINT)
+                        .addMeasure(
+                                p.symbol("dependent"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("measure"))),
+                                BIGINT)
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.patternRecognition(childBuilder -> childBuilder
-                                .addMeasure(p.symbol("measure"), "MATCH_NUMBER()", BIGINT)
+                                .addMeasure(
+                                        p.symbol("measure"),
+                                        new SymbolReference("pointer"),
+                                        ImmutableMap.of("pointer", new MatchNumberValuePointer()),
+                                        BIGINT)
                                 .rowsPerMatch(ALL_SHOW_EMPTY)
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), "true")
+                                .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
         // parent node's measure depends on child node's window function output
         tester().assertThat(new MergePatternRecognitionNodesWithoutProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("dependent"), "LAST(X.function)", BIGINT)
+                        .addMeasure(
+                                p.symbol("dependent"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("function"))),
+                                BIGINT)
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .addWindowFunction(p.symbol("function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("a").toSymbolReference()), DEFAULT_FRAME, false))
                                 .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), "true")
+                                .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
@@ -141,15 +178,15 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addWindowFunction(p.symbol("dependent"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("function").toSymbolReference()), DEFAULT_FRAME, false))
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .addWindowFunction(p.symbol("function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("a").toSymbolReference()), DEFAULT_FRAME, false))
                                 .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), "true")
+                                .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
 
@@ -158,15 +195,19 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .addWindowFunction(p.symbol("dependent"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("measure").toSymbolReference()), DEFAULT_FRAME, false))
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.patternRecognition(childBuilder -> childBuilder
-                                .addMeasure(p.symbol("measure"), "MATCH_NUMBER()", BIGINT)
+                                .addMeasure(
+                                        p.symbol("measure"),
+                                        new SymbolReference("pointer"),
+                                        ImmutableMap.of("pointer", new MatchNumberValuePointer()),
+                                        BIGINT)
                                 .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
+                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), "true")
+                                .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                 .source(p.values(p.symbol("a")))))))
                 .doesNotFire();
     }
@@ -177,51 +218,81 @@ public class TestMergePatternRecognitionNodes
         // identity projection over created symbol
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("dependent"), "LAST(X.measure)", BIGINT)
+                        .addMeasure(
+                                p.symbol("dependent"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("measure"))),
+                                BIGINT)
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
                                 Assignments.identity(p.symbol("measure")),
                                 p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(p.symbol("measure"), "MATCH_NUMBER()", BIGINT)
+                                        .addMeasure(
+                                                p.symbol("measure"),
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()),
+                                                BIGINT)
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true")
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
 
         // renaming projection over created symbol
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("dependent"), "LAST(X.renamed)", BIGINT)
+                        .addMeasure(
+                                p.symbol("dependent"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("renamed"))),
+                                BIGINT)
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
-                                Assignments.of(p.symbol("renamed"), expression("measure")),
+                                Assignments.of(p.symbol("renamed"), new SymbolReference("measure")),
                                 p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(p.symbol("measure"), "MATCH_NUMBER()", BIGINT)
+                                        .addMeasure(
+                                                p.symbol("measure"),
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()),
+                                                BIGINT)
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true")
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
 
         // complex projection over created symbol
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("dependent"), "LAST(X.projected)", BIGINT)
+                        .addMeasure(
+                                p.symbol("dependent"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("projected"))),
+                                BIGINT)
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
-                                Assignments.of(p.symbol("projected"), expression("a * measure")),
+                                Assignments.of(p.symbol("projected"), new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("measure"))),
                                 p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(p.symbol("measure"), "MATCH_NUMBER()", BIGINT)
+                                        .addMeasure(
+                                                p.symbol("measure"),
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new MatchNumberValuePointer()),
+                                                BIGINT)
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true")
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                         .source(p.values(p.symbol("a"))))))))
                 .doesNotFire();
     }
@@ -235,42 +306,66 @@ public class TestMergePatternRecognitionNodes
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .partitionBy(ImmutableList.of(p.symbol("c")))
                         .orderBy(new OrderingScheme(ImmutableList.of(p.symbol("d")), ImmutableMap.of(p.symbol("d"), ASC_NULLS_LAST)))
-                        .addMeasure(p.symbol("parent_measure"), "LAST(X.b)", BIGINT)
+                        .addMeasure(
+                                p.symbol("parent_measure"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("b"))),
+                                BIGINT)
                         .addWindowFunction(p.symbol("parent_function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("a").toSymbolReference()), DEFAULT_FRAME, false))
                         .rowsPerMatch(WINDOW)
-                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
-                        .skipTo(LAST, new IrLabel("X"))
+                        .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
+                        .skipTo(LAST, ImmutableSet.of(new IrLabel("X")))
                         .seek()
                         .addSubset(new IrLabel("U"), ImmutableSet.of(new IrLabel("X")))
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .partitionBy(ImmutableList.of(p.symbol("c")))
                                 .orderBy(new OrderingScheme(ImmutableList.of(p.symbol("d")), ImmutableMap.of(p.symbol("d"), ASC_NULLS_LAST)))
-                                .addMeasure(p.symbol("child_measure"), "FIRST(X.a)", BIGINT)
+                                .addMeasure(
+                                        p.symbol("child_measure"),
+                                        new SymbolReference("pointer"),
+                                        ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                new Symbol("a"))),
+                                        BIGINT)
                                 .addWindowFunction(p.symbol("child_function"), new WindowNode.Function(lag, ImmutableList.of(p.symbol("b").toSymbolReference()), DEFAULT_FRAME, false))
                                 .rowsPerMatch(WINDOW)
-                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
-                                .skipTo(LAST, new IrLabel("X"))
+                                .frame(new WindowNode.Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
+                                .skipTo(LAST, ImmutableSet.of(new IrLabel("X")))
                                 .seek()
                                 .addSubset(new IrLabel("U"), ImmutableSet.of(new IrLabel("X")))
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), "true")
+                                .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                 .source(p.values(p.symbol("a"), p.symbol("b"), p.symbol("c"), p.symbol("d")))))))
                 .matches(
                         patternRecognition(builder -> builder
                                         .specification(specification(ImmutableList.of("c"), ImmutableList.of("d"), ImmutableMap.of("d", ASC_NULLS_LAST)))
-                                        .addMeasure("parent_measure", "LAST(X.b)", BIGINT)
-                                        .addMeasure("child_measure", "FIRST(X.a)", BIGINT)
-                                        .addFunction("parent_function", functionCall("lag", ImmutableList.of("a")))
-                                        .addFunction("child_function", functionCall("lag", ImmutableList.of("b")))
+                                        .addMeasure(
+                                                "parent_measure",
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                                        new Symbol("b"))),
+                                                BIGINT)
+                                        .addMeasure(
+                                                "child_measure",
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                        new Symbol("a"))),
+                                                BIGINT)
+                                        .addFunction("parent_function", windowFunction("lag", ImmutableList.of("a"), DEFAULT_FRAME))
+                                        .addFunction("child_function", windowFunction("lag", ImmutableList.of("b"), DEFAULT_FRAME))
                                         .rowsPerMatch(WINDOW)
-                                        .frame(windowFrame(ROWS, CURRENT_ROW, Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()))
+                                        .frame(ROWS_CURRENT_TO_UNBOUNDED)
                                         .skipTo(LAST, new IrLabel("X"))
                                         .seek()
                                         .addSubset(new IrLabel("U"), ImmutableSet.of(new IrLabel("X")))
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true"),
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL),
                                 values("a", "b", "c", "d")));
     }
 
@@ -282,29 +377,53 @@ public class TestMergePatternRecognitionNodes
         tester().assertThat(new MergePatternRecognitionNodesWithoutProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .partitionBy(ImmutableList.of(p.symbol("c")))
-                        .addMeasure(p.symbol("parent_measure"), "LAST(X.b)", BIGINT)
+                        .addMeasure(
+                                p.symbol("parent_measure"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("b"))),
+                                BIGINT)
                         .rowsPerMatch(ONE)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .partitionBy(ImmutableList.of(p.symbol("c")))
-                                .addMeasure(p.symbol("child_measure"), "FIRST(X.a)", BIGINT)
+                                .addMeasure(
+                                        p.symbol("child_measure"),
+                                        new SymbolReference("pointer"),
+                                        ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                new Symbol("a"))),
+                                        BIGINT)
                                 .rowsPerMatch(ONE)
                                 .pattern(new IrLabel("X"))
-                                .addVariableDefinition(new IrLabel("X"), "true")
+                                .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                 .source(p.values(p.symbol("a"), p.symbol("b"), p.symbol("c")))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "c", PlanMatchPattern.expression("c"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure")),
+                                        "c", expression(new SymbolReference("c")),
+                                        "parent_measure", expression(new SymbolReference("parent_measure"))),
                                 patternRecognition(builder -> builder
                                                 .specification(specification(ImmutableList.of("c"), ImmutableList.of(), ImmutableMap.of()))
-                                                .addMeasure("parent_measure", "LAST(X.b)", BIGINT)
-                                                .addMeasure("child_measure", "FIRST(X.a)", BIGINT)
+                                                .addMeasure(
+                                                        "parent_measure",
+                                                        new SymbolReference("pointer"),
+                                                        ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                                                new Symbol("b"))),
+                                                        BIGINT)
+                                                .addMeasure(
+                                                        "child_measure",
+                                                        new SymbolReference("pointer"),
+                                                        ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                                new Symbol("a"))),
+                                                        BIGINT)
                                                 .rowsPerMatch(ONE)
                                                 .pattern(new IrLabel("X"))
-                                                .addVariableDefinition(new IrLabel("X"), "true"),
+                                                .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL),
                                         values("a", "b", "c"))));
     }
 
@@ -315,78 +434,126 @@ public class TestMergePatternRecognitionNodes
         // it does not produce symbols necessary for parent node, so it is moved on top of merged node
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("parent_measure"), "LAST(X.a)", BIGINT)
+                        .addMeasure(
+                                p.symbol("parent_measure"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("a"))),
+                                BIGINT)
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
                                 Assignments.of(
-                                        p.symbol("a"), expression("a"),
-                                        p.symbol("expression"), expression("a * b")),
+                                        p.symbol("a"), new SymbolReference("a"),
+                                        p.symbol("expression"), new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("b"))),
                                 p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(p.symbol("child_measure"), "FIRST(X.b)", BIGINT)
+                                        .addMeasure(
+                                                p.symbol("child_measure"),
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                        new Symbol("b"))),
+                                                BIGINT)
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true")
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                         .source(p.values(p.symbol("a"), p.symbol("b"))))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                        "expression", PlanMatchPattern.expression("expression")),
+                                        "a", expression(new SymbolReference("a")),
+                                        "parent_measure", expression(new SymbolReference("parent_measure")),
+                                        "expression", expression(new SymbolReference("expression"))),
                                 project(
                                         ImmutableMap.of(
-                                                "a", PlanMatchPattern.expression("a"),
-                                                "b", PlanMatchPattern.expression("b"),
-                                                "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                                "child_measure", PlanMatchPattern.expression("child_measure"),
-                                                "expression", PlanMatchPattern.expression("a * b")),
+                                                "a", expression(new SymbolReference("a")),
+                                                "b", expression(new SymbolReference("b")),
+                                                "parent_measure", expression(new SymbolReference("parent_measure")),
+                                                "child_measure", expression(new SymbolReference("child_measure")),
+                                                "expression", expression(new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("b")))),
                                         patternRecognition(builder -> builder
-                                                        .addMeasure("parent_measure", "LAST(X.a)", BIGINT)
-                                                        .addMeasure("child_measure", "FIRST(X.b)", BIGINT)
+                                                        .addMeasure(
+                                                                "parent_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                                                        new Symbol("a"))),
+                                                                BIGINT)
+                                                        .addMeasure(
+                                                                "child_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                                        new Symbol("b"))),
+                                                                BIGINT)
                                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), "true"),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL),
                                                 values("a", "b")))));
 
         // project is based on symbols created by the child node
         // it does not produce symbols necessary for parent node, so it is moved on top of merged node
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("parent_measure"), "LAST(X.a)", BIGINT)
+                        .addMeasure(
+                                p.symbol("parent_measure"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("a"))),
+                                BIGINT)
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
                                 Assignments.of(
-                                        p.symbol("a"), expression("a"),
-                                        p.symbol("expression"), expression("a * b * child_measure")),
+                                        p.symbol("a"), new SymbolReference("a"),
+                                        p.symbol("expression"), new ArithmeticBinaryExpression(MULTIPLY, new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("b")), new SymbolReference("child_measure"))),
                                 p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(p.symbol("child_measure"), "FIRST(X.b)", BIGINT)
+                                        .addMeasure(
+                                                p.symbol("child_measure"),
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                        new Symbol("b"))),
+                                                BIGINT)
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true")
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                         .source(p.values(p.symbol("a"), p.symbol("b"))))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                        "expression", PlanMatchPattern.expression("expression")),
+                                        "a", expression(new SymbolReference("a")),
+                                        "parent_measure", expression(new SymbolReference("parent_measure")),
+                                        "expression", expression(new SymbolReference("expression"))),
                                 project(
                                         ImmutableMap.of(
-                                                "a", PlanMatchPattern.expression("a"),
-                                                "b", PlanMatchPattern.expression("b"),
-                                                "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                                "child_measure", PlanMatchPattern.expression("child_measure"),
-                                                "expression", PlanMatchPattern.expression("a * b * child_measure")),
+                                                "a", expression(new SymbolReference("a")),
+                                                "b", expression(new SymbolReference("b")),
+                                                "parent_measure", expression(new SymbolReference("parent_measure")),
+                                                "child_measure", expression(new SymbolReference("child_measure")),
+                                                "expression", expression(new ArithmeticBinaryExpression(MULTIPLY, new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("b")), new SymbolReference("child_measure")))),
                                         patternRecognition(builder -> builder
-                                                        .addMeasure("parent_measure", "LAST(X.a)", BIGINT)
-                                                        .addMeasure("child_measure", "FIRST(X.b)", BIGINT)
+                                                        .addMeasure(
+                                                                "parent_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                                                        new Symbol("a"))),
+                                                                BIGINT)
+                                                        .addMeasure(
+                                                                "child_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                                        new Symbol("b"))),
+                                                                BIGINT)
                                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), "true"),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL),
                                                 values("a", "b")))));
     }
 
@@ -398,49 +565,73 @@ public class TestMergePatternRecognitionNodes
         // and the remaining assignments are moved on top of merged node
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
-                        .addMeasure(p.symbol("parent_measure"), "LAST(X.expression_1)", BIGINT)
+                        .addMeasure(
+                                p.symbol("parent_measure"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("expression_1"))),
+                                BIGINT)
                         .rowsPerMatch(ALL_SHOW_EMPTY)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("a"), expression("a"))
-                                        .put(p.symbol("expression_1"), expression("a * b"))
-                                        .put(p.symbol("expression_2"), expression("a + b"))
+                                        .put(p.symbol("a"), new SymbolReference("a"))
+                                        .put(p.symbol("expression_1"), new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("b")))
+                                        .put(p.symbol("expression_2"), new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("b")))
                                         .build(),
                                 p.patternRecognition(childBuilder -> childBuilder
-                                        .addMeasure(p.symbol("child_measure"), "FIRST(X.b)", BIGINT)
+                                        .addMeasure(
+                                                p.symbol("child_measure"),
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                        new Symbol("b"))),
+                                                BIGINT)
                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true")
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                         .source(p.values(p.symbol("a"), p.symbol("b"))))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                        "expression_1", PlanMatchPattern.expression("expression_1"),
-                                        "expression_2", PlanMatchPattern.expression("expression_2")),
+                                        "a", expression(new SymbolReference("a")),
+                                        "parent_measure", expression(new SymbolReference("parent_measure")),
+                                        "expression_1", expression(new SymbolReference("expression_1")),
+                                        "expression_2", expression(new SymbolReference("expression_2"))),
                                 project(
                                         ImmutableMap.<String, ExpressionMatcher>builder()
-                                                .put("a", PlanMatchPattern.expression("a"))
-                                                .put("b", PlanMatchPattern.expression("b"))
-                                                .put("parent_measure", PlanMatchPattern.expression("parent_measure"))
-                                                .put("child_measure", PlanMatchPattern.expression("child_measure"))
-                                                .put("expression_1", PlanMatchPattern.expression("expression_1"))
-                                                .put("expression_2", PlanMatchPattern.expression("a + b"))
+                                                .put("a", expression(new SymbolReference("a")))
+                                                .put("b", expression(new SymbolReference("b")))
+                                                .put("parent_measure", expression(new SymbolReference("parent_measure")))
+                                                .put("child_measure", expression(new SymbolReference("child_measure")))
+                                                .put("expression_1", expression(new SymbolReference("expression_1")))
+                                                .put("expression_2", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("b"))))
                                                 .buildOrThrow(),
                                         patternRecognition(builder -> builder
-                                                        .addMeasure("parent_measure", "LAST(X.expression_1)", BIGINT)
-                                                        .addMeasure("child_measure", "FIRST(X.b)", BIGINT)
+                                                        .addMeasure(
+                                                                "parent_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                                                        new Symbol("expression_1"))),
+                                                                BIGINT)
+                                                        .addMeasure(
+                                                                "child_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                                        new Symbol("b"))),
+                                                                BIGINT)
                                                         .rowsPerMatch(ALL_SHOW_EMPTY)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), "true"),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL),
                                                 project(
                                                         ImmutableMap.of(
-                                                                "a", PlanMatchPattern.expression("a"),
-                                                                "b", PlanMatchPattern.expression("b"),
-                                                                "expression_1", PlanMatchPattern.expression("a * b")),
+                                                                "a", expression(new SymbolReference("a")),
+                                                                "b", expression(new SymbolReference("b")),
+                                                                "expression_1", expression(new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("b")))),
                                                         values("a", "b"))))));
     }
 
@@ -454,72 +645,114 @@ public class TestMergePatternRecognitionNodes
         tester().assertThat(new MergePatternRecognitionNodesWithProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .partitionBy(ImmutableList.of(p.symbol("a")))
-                        .addMeasure(p.symbol("parent_measure"), "LAST(X.expression_1)", BIGINT)
+                        .addMeasure(
+                                p.symbol("parent_measure"),
+                                new SymbolReference("pointer"),
+                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                        new Symbol("expression_1"))),
+                                BIGINT)
                         .rowsPerMatch(ONE)
                         .pattern(new IrLabel("X"))
-                        .addVariableDefinition(new IrLabel("X"), "true")
+                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                         .source(p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("a"), expression("a"))
-                                        .put(p.symbol("child_measure"), expression("child_measure"))
-                                        .put(p.symbol("expression_1"), expression("a * a"))
-                                        .put(p.symbol("expression_2"), expression("a + a"))
+                                        .put(p.symbol("a"), new SymbolReference("a"))
+                                        .put(p.symbol("child_measure"), new SymbolReference("child_measure"))
+                                        .put(p.symbol("expression_1"), new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("a")))
+                                        .put(p.symbol("expression_2"), new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("a")))
                                         .build(),
                                 p.patternRecognition(childBuilder -> childBuilder
                                         .partitionBy(ImmutableList.of(p.symbol("a")))
-                                        .addMeasure(p.symbol("child_measure"), "FIRST(X.b)", BIGINT)
+                                        .addMeasure(
+                                                p.symbol("child_measure"),
+                                                new SymbolReference("pointer"),
+                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                        new Symbol("b"))),
+                                                BIGINT)
                                         .rowsPerMatch(ONE)
                                         .pattern(new IrLabel("X"))
-                                        .addVariableDefinition(new IrLabel("X"), "true")
+                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL)
                                         .source(p.values(p.symbol("a"), p.symbol("b"))))))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", PlanMatchPattern.expression("a"),
-                                        "parent_measure", PlanMatchPattern.expression("parent_measure")),
+                                        "a", expression(new SymbolReference("a")),
+                                        "parent_measure", expression(new SymbolReference("parent_measure"))),
                                 project(
                                         ImmutableMap.of(
-                                                "a", PlanMatchPattern.expression("a"),
-                                                "parent_measure", PlanMatchPattern.expression("parent_measure"),
-                                                "child_measure", PlanMatchPattern.expression("child_measure"),
-                                                "expression_2", PlanMatchPattern.expression("a + a")),
+                                                "a", expression(new SymbolReference("a")),
+                                                "parent_measure", expression(new SymbolReference("parent_measure")),
+                                                "child_measure", expression(new SymbolReference("child_measure")),
+                                                "expression_2", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("a")))),
                                         patternRecognition(builder -> builder
                                                         .specification(specification(ImmutableList.of("a"), ImmutableList.of(), ImmutableMap.of()))
-                                                        .addMeasure("parent_measure", "LAST(X.expression_1)", BIGINT)
-                                                        .addMeasure("child_measure", "FIRST(X.b)", BIGINT)
+                                                        .addMeasure(
+                                                                "parent_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), true, true, 0, 0),
+                                                                        new Symbol("expression_1"))),
+                                                                BIGINT)
+                                                        .addMeasure(
+                                                                "child_measure",
+                                                                new SymbolReference("pointer"),
+                                                                ImmutableMap.of("pointer", new ScalarValuePointer(
+                                                                        new LogicalIndexPointer(ImmutableSet.of(new IrLabel("X")), false, true, 0, 0),
+                                                                        new Symbol("b"))),
+                                                                BIGINT)
                                                         .rowsPerMatch(ONE)
                                                         .pattern(new IrLabel("X"))
-                                                        .addVariableDefinition(new IrLabel("X"), "true"),
+                                                        .addVariableDefinition(new IrLabel("X"), TRUE_LITERAL),
                                                 project(
                                                         ImmutableMap.of(
-                                                                "a", PlanMatchPattern.expression("a"),
-                                                                "b", PlanMatchPattern.expression("b"),
-                                                                "expression_1", PlanMatchPattern.expression("a * a")),
+                                                                "a", expression(new SymbolReference("a")),
+                                                                "b", expression(new SymbolReference("b")),
+                                                                "expression_1", PlanMatchPattern.expression(new ArithmeticBinaryExpression(MULTIPLY, new SymbolReference("a"), new SymbolReference("a")))),
                                                         values("a", "b"))))));
     }
 
     @Test
     public void testMergeWithAggregation()
     {
-        QualifiedName count = tester().getMetadata().resolveBuiltinFunction("count", fromTypes(BIGINT)).toQualifiedName();
+        ResolvedFunction count = tester().getMetadata().resolveBuiltinFunction("count", fromTypes(BIGINT));
         tester().assertThat(new MergePatternRecognitionNodesWithoutProject())
                 .on(p -> p.patternRecognition(parentBuilder -> parentBuilder
                         .pattern(new IrLabel("X"))
                         .addVariableDefinition(
                                 new IrLabel("X"),
-                                new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(expression("a"))), expression("5")))
+                                new ComparisonExpression(GREATER_THAN, new SymbolReference("c"), new LongLiteral(5)),
+                                ImmutableMap.of("c", new AggregationValuePointer(
+                                        count,
+                                        new AggregatedSetDescriptor(ImmutableSet.of(), true),
+                                        ImmutableList.of(new SymbolReference("a")),
+                                        Optional.empty(),
+                                        Optional.empty())))
                         .source(p.patternRecognition(childBuilder -> childBuilder
                                 .pattern(new IrLabel("X"))
                                 .addVariableDefinition(
                                         new IrLabel("X"),
-                                        new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(expression("a"))), expression("5")))
+                                        new ComparisonExpression(GREATER_THAN, new SymbolReference("c"), new LongLiteral(5)),
+                                        ImmutableMap.of("c", new AggregationValuePointer(
+                                                count,
+                                                new AggregatedSetDescriptor(ImmutableSet.of(), true),
+                                                ImmutableList.of(new SymbolReference("a")),
+                                                Optional.empty(),
+                                                Optional.empty())))
                                 .source(p.values(p.symbol("a")))))))
                 .matches(
                         patternRecognition(builder -> builder
                                         .pattern(new IrLabel("X"))
                                         .addVariableDefinition(
                                                 new IrLabel("X"),
-                                                new ComparisonExpression(GREATER_THAN, new FunctionCall(count, ImmutableList.of(expression("a"))), expression("5"))),
+                                                new ComparisonExpression(GREATER_THAN, new SymbolReference("c"), new LongLiteral(5)),
+                                                ImmutableMap.of("c", new AggregationValuePointer(
+                                                        count,
+                                                        new AggregatedSetDescriptor(ImmutableSet.of(), true),
+                                                        ImmutableList.of(new SymbolReference("a")),
+                                                        Optional.empty(),
+                                                        Optional.empty()))),
                                 values("a")));
     }
 }

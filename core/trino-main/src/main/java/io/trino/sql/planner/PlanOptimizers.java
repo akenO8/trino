@@ -238,6 +238,8 @@ import io.trino.sql.planner.iterative.rule.UnwrapRowSubscript;
 import io.trino.sql.planner.iterative.rule.UnwrapSingleColumnRowInApply;
 import io.trino.sql.planner.iterative.rule.UnwrapYearInComparison;
 import io.trino.sql.planner.iterative.rule.UseNonPartitionedJoinLookupSource;
+import io.trino.sql.planner.optimizations.AdaptivePartitioning;
+import io.trino.sql.planner.optimizations.AdaptivePlanOptimizer;
 import io.trino.sql.planner.optimizations.AddExchanges;
 import io.trino.sql.planner.optimizations.AddLocalExchanges;
 import io.trino.sql.planner.optimizations.BeginTableWrite;
@@ -266,13 +268,14 @@ public class PlanOptimizers
         implements PlanOptimizersFactory
 {
     private final List<PlanOptimizer> optimizers;
+    private final List<AdaptivePlanOptimizer> adaptivePlanOptimizers;
     private final RuleStatsRecorder ruleStats;
     private final OptimizerStatsRecorder optimizerStats = new OptimizerStatsRecorder();
 
     @Inject
     public PlanOptimizers(
             PlannerContext plannerContext,
-            TypeAnalyzer typeAnalyzer,
+            IrTypeAnalyzer typeAnalyzer,
             TaskManagerConfig taskManagerConfig,
             SplitManager splitManager,
             PageSourceManager pageSourceManager,
@@ -303,7 +306,7 @@ public class PlanOptimizers
 
     public PlanOptimizers(
             PlannerContext plannerContext,
-            TypeAnalyzer typeAnalyzer,
+            IrTypeAnalyzer typeAnalyzer,
             TaskManagerConfig taskManagerConfig,
             boolean forceSingleNode,
             SplitManager splitManager,
@@ -1007,6 +1010,7 @@ public class PlanOptimizers
         // TODO: figure out how to improve the set flattening optimizer so that it can run at any point
 
         this.optimizers = builder.build();
+        this.adaptivePlanOptimizers = ImmutableList.of(new AdaptivePartitioning());
     }
 
     @VisibleForTesting
@@ -1067,9 +1071,15 @@ public class PlanOptimizers
     }
 
     @Override
-    public List<PlanOptimizer> get()
+    public List<PlanOptimizer> getPlanOptimizers()
     {
         return optimizers;
+    }
+
+    @Override
+    public List<AdaptivePlanOptimizer> getAdaptivePlanOptimizers()
+    {
+        return adaptivePlanOptimizers;
     }
 
     @Override

@@ -23,8 +23,8 @@ import io.trino.spi.QueryId;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.sql.tree.ExplainType;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedRow;
+import io.trino.testing.QueryRunner;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
@@ -102,7 +102,6 @@ public abstract class BaseIcebergMaterializedViewTest
     @Test
     public void testMaterializedViewsMetadata()
     {
-        String catalogName = getSession().getCatalog().orElseThrow();
         String schemaName = getSession().getSchema().orElseThrow();
         String materializedViewName = "test_materialized_view_" + randomNameSuffix();
 
@@ -543,10 +542,10 @@ public abstract class BaseIcebergMaterializedViewTest
     {
         String schema = getSession().getSchema().orElseThrow();
         assertUpdate("CREATE TABLE test_create_materialized_view_when_table_exists (a INT, b INT)");
-        assertThatThrownBy(() -> query("CREATE OR REPLACE MATERIALIZED VIEW test_create_materialized_view_when_table_exists AS SELECT sum(1) AS num_rows FROM base_table2"))
-                .hasMessage("Existing table is not a Materialized View: " + schema + ".test_create_materialized_view_when_table_exists");
-        assertThatThrownBy(() -> query("CREATE MATERIALIZED VIEW IF NOT EXISTS test_create_materialized_view_when_table_exists AS SELECT sum(1) AS num_rows FROM base_table2"))
-                .hasMessage("Existing table is not a Materialized View: " + schema + ".test_create_materialized_view_when_table_exists");
+        assertThat(query("CREATE OR REPLACE MATERIALIZED VIEW test_create_materialized_view_when_table_exists AS SELECT sum(1) AS num_rows FROM base_table2"))
+                .failure().hasMessage("Existing table is not a Materialized View: " + schema + ".test_create_materialized_view_when_table_exists");
+        assertThat(query("CREATE MATERIALIZED VIEW IF NOT EXISTS test_create_materialized_view_when_table_exists AS SELECT sum(1) AS num_rows FROM base_table2"))
+                .failure().hasMessage("Existing table is not a Materialized View: " + schema + ".test_create_materialized_view_when_table_exists");
         assertUpdate("DROP TABLE test_create_materialized_view_when_table_exists");
     }
 
@@ -555,8 +554,8 @@ public abstract class BaseIcebergMaterializedViewTest
     {
         String schema = getSession().getSchema().orElseThrow();
         assertUpdate("CREATE TABLE test_drop_materialized_view_cannot_drop_table (a INT, b INT)");
-        assertThatThrownBy(() -> query("DROP MATERIALIZED VIEW test_drop_materialized_view_cannot_drop_table"))
-                .hasMessageContaining("Materialized view 'iceberg." + schema + ".test_drop_materialized_view_cannot_drop_table' does not exist, but a table with that name exists");
+        assertThat(query("DROP MATERIALIZED VIEW test_drop_materialized_view_cannot_drop_table"))
+                .failure().hasMessageContaining("Materialized view 'iceberg." + schema + ".test_drop_materialized_view_cannot_drop_table' does not exist, but a table with that name exists");
         assertUpdate("DROP TABLE test_drop_materialized_view_cannot_drop_table");
     }
 
@@ -565,8 +564,8 @@ public abstract class BaseIcebergMaterializedViewTest
     {
         String schema = getSession().getSchema().orElseThrow();
         assertUpdate("CREATE TABLE test_rename_materialized_view_cannot_rename_table (a INT, b INT)");
-        assertThatThrownBy(() -> query("ALTER MATERIALIZED VIEW test_rename_materialized_view_cannot_rename_table RENAME TO new_materialized_view_name"))
-                .hasMessageContaining("Materialized View 'iceberg." + schema + ".test_rename_materialized_view_cannot_rename_table' does not exist, but a table with that name exists");
+        assertThat(query("ALTER MATERIALIZED VIEW test_rename_materialized_view_cannot_rename_table RENAME TO new_materialized_view_name"))
+                .failure().hasMessageContaining("Materialized View 'iceberg." + schema + ".test_rename_materialized_view_cannot_rename_table' does not exist, but a table with that name exists");
         assertUpdate("DROP TABLE test_rename_materialized_view_cannot_rename_table");
     }
 
@@ -721,16 +720,14 @@ public abstract class BaseIcebergMaterializedViewTest
         String materializedViewName = "test_materialized_view_snapshot_query_ids" + randomNameSuffix();
         String sourceTableName = "test_source_table_for_mat_view" + randomNameSuffix();
         assertUpdate(format("CREATE TABLE %s (a bigint, b bigint)", sourceTableName));
-        QueryId matViewCreateQueryId = getDistributedQueryRunner()
-                .executeWithQueryId(getSession(), format("CREATE MATERIALIZED VIEW %s WITH (partitioning = ARRAY['a']) AS SELECT * FROM %s", materializedViewName, sourceTableName))
-                .getQueryId();
+        assertUpdate(format("CREATE MATERIALIZED VIEW %s WITH (partitioning = ARRAY['a']) AS SELECT * FROM %s", materializedViewName, sourceTableName));
 
         try {
             assertUpdate(format("INSERT INTO %s VALUES (1, 1), (1, 4), (2, 2)", sourceTableName), 3);
 
             QueryId refreshQueryId = getDistributedQueryRunner()
-                    .executeWithQueryId(getSession(), format("REFRESH MATERIALIZED VIEW %s", materializedViewName))
-                    .getQueryId();
+                    .executeWithPlan(getSession(), format("REFRESH MATERIALIZED VIEW %s", materializedViewName))
+                    .queryId();
             String savedQueryId = getStorageTableMetadata(materializedViewName).currentSnapshot().summary().get("trino_query_id");
             assertThat(savedQueryId).isEqualTo(refreshQueryId.getId());
         }
@@ -740,6 +737,43 @@ public abstract class BaseIcebergMaterializedViewTest
         }
     }
 
+    @Test
+    public void testMaterializedViewStorageTypeCoercions()
+    {
+        String materializedViewName = "test_materialized_view_storage_type_coercion" + randomNameSuffix();
+        String sourceTableName = "test_materialized_view_storage" + randomNameSuffix();
+
+        assertUpdate(format("""
+                CREATE TABLE %s (
+                    t_3 time(3),
+                    t_9 time(9),
+                    ts_3 timestamp(3),
+                    ts_9 timestamp(9),
+                    tswtz_3 timestamp(3) with time zone,
+                    tswtz_9 timestamp(9) with time zone
+                )
+                """, sourceTableName));
+        assertUpdate(format("INSERT INTO %s VALUES (localtime, localtime, localtimestamp, localtimestamp, current_timestamp, current_timestamp)", sourceTableName), 1);
+
+        assertUpdate(format("CREATE MATERIALIZED VIEW %s AS SELECT * FROM %s", materializedViewName, sourceTableName));
+
+        assertThat(query(format("SELECT * FROM %s WHERE t_3 < localtime", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE t_9 < localtime", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE ts_3 < localtimestamp", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE ts_9 < localtimestamp", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE tswtz_3 < current_timestamp", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE tswtz_9 < current_timestamp", materializedViewName))).succeeds();
+
+        assertUpdate(format("REFRESH MATERIALIZED VIEW %s", materializedViewName), 1);
+
+        assertThat(query(format("SELECT * FROM %s WHERE t_3 < localtime", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE t_9 < localtime", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE ts_3 < localtimestamp", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE ts_9 < localtimestamp", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE tswtz_3 < current_timestamp", materializedViewName))).succeeds();
+        assertThat(query(format("SELECT * FROM %s WHERE tswtz_9 < current_timestamp", materializedViewName))).succeeds();
+    }
+
     protected String getColumnComment(String tableName, String columnName)
     {
         return (String) computeScalar("SELECT comment FROM information_schema.columns WHERE table_schema = '" + getSession().getSchema().orElseThrow() + "' AND table_name = '" + tableName + "' AND column_name = '" + columnName + "'");
@@ -747,7 +781,7 @@ public abstract class BaseIcebergMaterializedViewTest
 
     private TableMetadata getStorageTableMetadata(String materializedViewName)
     {
-        DistributedQueryRunner queryRunner = (DistributedQueryRunner) getQueryRunner();
+        QueryRunner queryRunner = getQueryRunner();
         TrinoFileSystem fileSystemFactory = ((IcebergConnector) queryRunner.getCoordinator().getConnector("iceberg")).getInjector()
                 .getInstance(TrinoFileSystemFactory.class)
                 .create(ConnectorIdentity.ofUser("test"));

@@ -16,20 +16,12 @@ package io.trino.sql.planner;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.PeekingIterator;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.Session;
-import io.trino.connector.CatalogServiceProvider;
-import io.trino.metadata.AnalyzePropertyManager;
 import io.trino.metadata.OperatorNotFoundException;
 import io.trino.metadata.ResolvedFunction;
-import io.trino.metadata.TableFunctionRegistry;
-import io.trino.metadata.TableProceduresPropertyManager;
-import io.trino.metadata.TableProceduresRegistry;
-import io.trino.metadata.TablePropertyManager;
-import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.ErrorCode;
 import io.trino.spi.TrinoException;
 import io.trino.spi.function.CatalogSchemaFunctionName;
@@ -47,27 +39,22 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.InterpretedFunctionInvoker;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.analyzer.SessionTimeProvider;
-import io.trino.sql.analyzer.StatementAnalyzerFactory;
-import io.trino.sql.parser.SqlParser;
-import io.trino.sql.tree.AstVisitor;
-import io.trino.sql.tree.BetweenPredicate;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.InListExpression;
-import io.trino.sql.tree.InPredicate;
-import io.trino.sql.tree.IsNotNullPredicate;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.LogicalExpression;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.NotExpression;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.StringLiteral;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.transaction.NoOpTransactionManager;
+import io.trino.sql.ir.BetweenPredicate;
+import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.InPredicate;
+import io.trino.sql.ir.IrVisitor;
+import io.trino.sql.ir.IsNotNullPredicate;
+import io.trino.sql.ir.IsNullPredicate;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.type.LikeFunctions;
 import io.trino.type.LikePattern;
 import io.trino.type.LikePatternType;
@@ -103,20 +90,20 @@ import static io.trino.spi.function.OperatorType.SATURATED_FLOOR_CAST;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.TypeUtils.isFloatingPointNaN;
-import static io.trino.sql.ExpressionUtils.and;
-import static io.trino.sql.ExpressionUtils.combineConjuncts;
-import static io.trino.sql.ExpressionUtils.combineDisjunctsWithDefault;
-import static io.trino.sql.ExpressionUtils.or;
-import static io.trino.sql.planner.ExpressionInterpreter.evaluateConstantExpression;
-import static io.trino.sql.tree.BooleanLiteral.FALSE_LITERAL;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.IS_DISTINCT_FROM;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.NOT_EQUAL;
+import static io.trino.sql.ir.BooleanLiteral.FALSE_LITERAL;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.IS_DISTINCT_FROM;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.NOT_EQUAL;
+import static io.trino.sql.ir.IrUtils.and;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
+import static io.trino.sql.ir.IrUtils.combineDisjunctsWithDefault;
+import static io.trino.sql.ir.IrUtils.or;
+import static io.trino.sql.planner.IrExpressionInterpreter.evaluateConstantExpression;
 import static io.trino.type.LikeFunctions.LIKE_FUNCTION_NAME;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.collectingAndThen;
@@ -210,7 +197,7 @@ public final class DomainTranslator
             return processRange(type, range, reference);
         }
 
-        Expression excludedPointsExpression = new NotExpression(new InPredicate(reference, new InListExpression(excludedPoints)));
+        Expression excludedPointsExpression = new NotExpression(new InPredicate(reference, excludedPoints));
         if (excludedPoints.size() == 1) {
             excludedPointsExpression = new ComparisonExpression(NOT_EQUAL, reference, getOnlyElement(excludedPoints));
         }
@@ -275,7 +262,7 @@ public final class DomainTranslator
             disjuncts.add(new ComparisonExpression(EQUAL, reference, getOnlyElement(singleValues)));
         }
         else if (singleValues.size() > 1) {
-            disjuncts.add(new InPredicate(reference, new InListExpression(singleValues)));
+            disjuncts.add(new InPredicate(reference, singleValues));
         }
         return disjuncts;
     }
@@ -294,7 +281,7 @@ public final class DomainTranslator
             predicate = new ComparisonExpression(EQUAL, reference, getOnlyElement(values));
         }
         else {
-            predicate = new InPredicate(reference, new InListExpression(values));
+            predicate = new InPredicate(reference, values);
         }
 
         if (!discreteValues.isInclusive()) {
@@ -318,35 +305,22 @@ public final class DomainTranslator
     public static ExtractionResult getExtractionResult(PlannerContext plannerContext, Session session, Expression predicate, TypeProvider types)
     {
         // This is a limited type analyzer for the simple expressions used in this method
-        TypeAnalyzer typeAnalyzer = new TypeAnalyzer(
-                plannerContext,
-                new StatementAnalyzerFactory(
-                        plannerContext,
-                        new SqlParser(),
-                        SessionTimeProvider.DEFAULT,
-                        new AllowAllAccessControl(),
-                        new NoOpTransactionManager(),
-                        user -> ImmutableSet.of(),
-                        new TableProceduresRegistry(CatalogServiceProvider.fail("procedures are not supported in domain translator")),
-                        new TableFunctionRegistry(CatalogServiceProvider.fail("table functions are not supported in domain translator")),
-                        new TablePropertyManager(CatalogServiceProvider.fail("table properties not supported in domain translator")),
-                        new AnalyzePropertyManager(CatalogServiceProvider.fail("analyze properties not supported in domain translator")),
-                        new TableProceduresPropertyManager(CatalogServiceProvider.fail("procedures are not supported in domain translator"))));
+        IrTypeAnalyzer typeAnalyzer = new IrTypeAnalyzer(plannerContext);
         return new Visitor(plannerContext, session, types, typeAnalyzer).process(predicate, false);
     }
 
     private static class Visitor
-            extends AstVisitor<ExtractionResult, Boolean>
+            extends IrVisitor<ExtractionResult, Boolean>
     {
         private final PlannerContext plannerContext;
         private final LiteralEncoder literalEncoder;
         private final Session session;
         private final TypeProvider types;
         private final InterpretedFunctionInvoker functionInvoker;
-        private final TypeAnalyzer typeAnalyzer;
+        private final IrTypeAnalyzer typeAnalyzer;
         private final TypeCoercion typeCoercion;
 
-        private Visitor(PlannerContext plannerContext, Session session, TypeProvider types, TypeAnalyzer typeAnalyzer)
+        private Visitor(PlannerContext plannerContext, Session session, TypeProvider types, IrTypeAnalyzer typeAnalyzer)
         {
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.literalEncoder = new LiteralEncoder(plannerContext);
@@ -574,8 +548,8 @@ public final class DomainTranslator
          */
         private Optional<NormalizedSimpleComparison> toNormalizedSimpleComparison(Map<NodeRef<Expression>, Type> expressionTypes, ComparisonExpression comparison)
         {
-            Object left = new ExpressionInterpreter(comparison.getLeft(), plannerContext, session, expressionTypes).optimize(NoOpSymbolResolver.INSTANCE);
-            Object right = new ExpressionInterpreter(comparison.getRight(), plannerContext, session, expressionTypes).optimize(NoOpSymbolResolver.INSTANCE);
+            Object left = new IrExpressionInterpreter(comparison.getLeft(), plannerContext, session, expressionTypes).optimize(NoOpSymbolResolver.INSTANCE);
+            Object right = new IrExpressionInterpreter(comparison.getRight(), plannerContext, session, expressionTypes).optimize(NoOpSymbolResolver.INSTANCE);
 
             Type leftType = expressionTypes.get(NodeRef.of(comparison.getLeft()));
             Type rightType = expressionTypes.get(NodeRef.of(comparison.getRight()));
@@ -957,11 +931,7 @@ public final class DomainTranslator
         @Override
         protected ExtractionResult visitInPredicate(InPredicate node, Boolean complement)
         {
-            if (!(node.getValueList() instanceof InListExpression valueList)) {
-                return super.visitInPredicate(node, complement);
-            }
-
-            checkState(!valueList.getValues().isEmpty(), "InListExpression should never be empty");
+            checkState(!node.getValueList().isEmpty(), "InListExpression should never be empty");
 
             Optional<ExtractionResult> directExtractionResult = processSimpleInPredicate(node, complement);
             if (directExtractionResult.isPresent()) {
@@ -969,7 +939,7 @@ public final class DomainTranslator
             }
 
             ImmutableList.Builder<Expression> disjuncts = ImmutableList.builder();
-            for (Expression expression : valueList.getValues()) {
+            for (Expression expression : node.getValueList()) {
                 disjuncts.add(new ComparisonExpression(EQUAL, node.getValue(), expression));
             }
             ExtractionResult extractionResult = process(or(disjuncts.build()), complement);
@@ -993,12 +963,11 @@ public final class DomainTranslator
             Symbol symbol = Symbol.from(node.getValue());
             Map<NodeRef<Expression>, Type> expressionTypes = analyzeExpression(node);
             Type type = expressionTypes.get(NodeRef.of(node.getValue()));
-            InListExpression valueList = (InListExpression) node.getValueList();
-            List<Object> inValues = new ArrayList<>(valueList.getValues().size());
+            List<Object> inValues = new ArrayList<>(node.getValueList().size());
             List<Expression> excludedExpressions = new ArrayList<>();
 
-            for (Expression expression : valueList.getValues()) {
-                Object value = new ExpressionInterpreter(expression, plannerContext, session, expressionTypes)
+            for (Expression expression : node.getValueList()) {
+                Object value = new IrExpressionInterpreter(expression, plannerContext, session, expressionTypes)
                         .optimize(NoOpSymbolResolver.INSTANCE);
                 if (value == null || value instanceof NullLiteral) {
                     if (!complement) {
@@ -1047,7 +1016,7 @@ public final class DomainTranslator
                 remainingExpression = new NotExpression(new ComparisonExpression(EQUAL, node.getValue(), getOnlyElement(excludedExpressions)));
             }
             else {
-                remainingExpression = new NotExpression(new InPredicate(node.getValue(), new InListExpression(excludedExpressions)));
+                remainingExpression = new NotExpression(new InPredicate(node.getValue(), excludedExpressions));
             }
 
             return Optional.of(new ExtractionResult(tupleDomain, remainingExpression));
@@ -1086,13 +1055,7 @@ public final class DomainTranslator
                 return Optional.empty();
             }
 
-            LikePattern matcher = (LikePattern) evaluateConstantExpression(
-                    patternArgument,
-                    typeAnalyzer.getType(session, types, patternArgument),
-                    plannerContext,
-                    session,
-                    new AllowAllAccessControl(),
-                    ImmutableMap.of());
+            LikePattern matcher = (LikePattern) evaluateConstantExpression(patternArgument, plannerContext, session);
 
             Slice pattern = utf8Slice(matcher.getPattern());
             Optional<Slice> escape = matcher.getEscape()

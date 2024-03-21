@@ -14,7 +14,6 @@
 package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.Session;
 import io.trino.matching.Capture;
@@ -28,24 +27,25 @@ import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.planner.ExpressionInterpreter;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.IfExpression;
+import io.trino.sql.ir.Literal;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.SearchedCaseExpression;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.WhenClause;
+import io.trino.sql.planner.IrExpressionInterpreter;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolsExtractor;
-import io.trino.sql.planner.TypeAnalyzer;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.SearchedCaseExpression;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.sql.tree.WhenClause;
 
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -54,6 +54,7 @@ import java.util.Set;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.ImmutableSetMultimap.toImmutableSetMultimap;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.SystemSessionProperties.isPreAggregateCaseAggregationsEnabled;
 import static io.trino.matching.Capture.newCapture;
@@ -64,7 +65,7 @@ import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.IrUtils.or;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.sql.planner.plan.Patterns.aggregation;
@@ -119,9 +120,9 @@ public class PreAggregateCaseAggregations
                     .with(source().matching(not(AggregationNode.class::isInstance)))));
 
     private final PlannerContext plannerContext;
-    private final TypeAnalyzer typeAnalyzer;
+    private final IrTypeAnalyzer typeAnalyzer;
 
-    public PreAggregateCaseAggregations(PlannerContext plannerContext, TypeAnalyzer typeAnalyzer)
+    public PreAggregateCaseAggregations(PlannerContext plannerContext, IrTypeAnalyzer typeAnalyzer)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
@@ -282,30 +283,36 @@ public class PreAggregateCaseAggregations
 
     private Map<PreAggregationKey, PreAggregation> getPreAggregations(List<CaseAggregation> aggregations, Context context)
     {
-        Set<PreAggregationKey> keys = new HashSet<>();
-        ImmutableMap.Builder<PreAggregationKey, PreAggregation> preAggregations = ImmutableMap.builder();
-        for (CaseAggregation aggregation : aggregations) {
-            PreAggregationKey preAggregationKey = new PreAggregationKey(aggregation);
-            if (keys.contains(preAggregationKey)) {
-                continue;
-            }
+        return aggregations.stream()
+                .collect(toImmutableSetMultimap(PreAggregationKey::new, identity()))
+                .asMap().entrySet().stream().collect(toImmutableMap(
+                        Map.Entry::getKey,
+                        entry -> {
+                            PreAggregationKey key = entry.getKey();
+                            Set<CaseAggregation> caseAggregations = (Set<CaseAggregation>) entry.getValue();
+                            Expression preProjection = key.projection;
 
-            // Cast pre-projection if needed to match aggregation input type.
-            // This is because entire "CASE WHEN" expression could be wrapped in CAST.
-            Expression preProjection = aggregation.getResult();
-            Type preProjectionType = getType(context, preProjection);
-            Type aggregationInputType = getOnlyElement(aggregation.getFunction().getSignature().getArgumentTypes());
-            if (!preProjectionType.equals(aggregationInputType)) {
-                preProjection = new Cast(preProjection, toSqlType(aggregationInputType));
-                preProjectionType = aggregationInputType;
-            }
+                            // Cast pre-projection if needed to match aggregation input type.
+                            // This is because entire "CASE WHEN" expression could be wrapped in CAST.
+                            Type preProjectionType = getType(context, preProjection);
+                            Type aggregationInputType = getOnlyElement(key.getFunction().getSignature().getArgumentTypes());
+                            if (!preProjectionType.equals(aggregationInputType)) {
+                                preProjection = new Cast(preProjection, aggregationInputType);
+                                preProjectionType = aggregationInputType;
+                            }
 
-            Symbol preProjectionSymbol = context.getSymbolAllocator().newSymbol(preProjection, preProjectionType);
-            Symbol preAggregationSymbol = context.getSymbolAllocator().newSymbol(aggregation.getAggregationSymbol());
-            preAggregations.put(preAggregationKey, new PreAggregation(preAggregationSymbol, preProjection, preProjectionSymbol));
-            keys.add(preAggregationKey);
-        }
-        return ImmutableMap.copyOf(preAggregations.buildOrThrow());
+                            // Wrap the preProjection with IF to retain the conditional nature on the CASE aggregation(s) during pre-aggregation
+                            if (!(preProjection instanceof SymbolReference || preProjection instanceof Literal)) {
+                                Expression unionConditions = or(caseAggregations.stream()
+                                        .map(CaseAggregation::getOperand)
+                                        .collect(toImmutableSet()));
+                                preProjection = new IfExpression(unionConditions, preProjection, Optional.empty());
+                            }
+
+                            Symbol preProjectionSymbol = context.getSymbolAllocator().newSymbol(preProjection, preProjectionType);
+                            Symbol preAggregationSymbol = context.getSymbolAllocator().newSymbol(caseAggregations.iterator().next().getAggregationSymbol());
+                            return new PreAggregation(preAggregationSymbol, preProjection, preProjectionSymbol);
+                        }));
     }
 
     private Optional<List<CaseAggregation>> extractCaseAggregations(AggregationNode aggregationNode, ProjectNode projectNode, Context context)
@@ -405,9 +412,7 @@ public class PreAggregateCaseAggregations
             }
 
             // cumulative aggregation default value need to be CAST to cumulative aggregation input type
-            cumulativeAggregationDefaultValue = Optional.of(new Cast(
-                    caseExpression.getDefaultValue().get(),
-                    toSqlType(aggregationType)));
+            cumulativeAggregationDefaultValue = Optional.of(new Cast(caseExpression.getDefaultValue().get(), aggregationType));
         }
 
         return Optional.of(new CaseAggregation(
@@ -428,7 +433,7 @@ public class PreAggregateCaseAggregations
     private Object optimizeExpression(Expression expression, Context context)
     {
         Map<NodeRef<Expression>, Type> expressionTypes = typeAnalyzer.getTypes(context.getSession(), context.getSymbolAllocator().getTypes(), expression);
-        ExpressionInterpreter expressionInterpreter = new ExpressionInterpreter(expression, plannerContext, context.getSession(), expressionTypes);
+        IrExpressionInterpreter expressionInterpreter = new IrExpressionInterpreter(expression, plannerContext, context.getSession(), expressionTypes);
         return expressionInterpreter.optimize(Symbol::toSymbolReference);
     }
 

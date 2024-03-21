@@ -15,6 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -44,8 +45,8 @@ public class TestPruneSemiJoinFilteringSourceColumns
                                 values("leftKey"),
                                 strictProject(
                                         ImmutableMap.of(
-                                                "rightKey", expression("rightKey"),
-                                                "rightKeyHash", expression("rightKeyHash")),
+                                                "rightKey", expression(new SymbolReference("rightKey")),
+                                                "rightKeyHash", expression(new SymbolReference("rightKeyHash"))),
                                         values("rightKey", "rightKeyHash", "rightValue"))));
     }
 

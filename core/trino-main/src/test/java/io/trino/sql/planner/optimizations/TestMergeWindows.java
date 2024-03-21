@@ -17,6 +17,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.spi.connector.SortOrder;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.IsNotNullPredicate;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.RuleStatsRecorder;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.ExpectedValueProvider;
@@ -26,26 +31,30 @@ import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.iterative.rule.GatherAndMergeWindows;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantIdentityProjections;
 import io.trino.sql.planner.plan.DataOrganizationSpecification;
-import io.trino.sql.tree.FrameBound;
-import io.trino.sql.tree.WindowFrame;
+import io.trino.sql.planner.plan.FrameBoundType;
+import io.trino.sql.planner.plan.WindowFrameType;
+import io.trino.sql.planner.plan.WindowNode;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
 
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
 import static io.trino.sql.planner.PlanOptimizers.columnPruningRules;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.specification;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.window;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFunction;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.WindowNode.Frame.DEFAULT_FRAME;
 
 public class TestMergeWindows
         extends BasePlanTest
@@ -80,18 +89,14 @@ public class TestMergeWindows
                     DISCOUNT_ALIAS, "discount",
                     EXTENDEDPRICE_ALIAS, "extendedprice"));
 
-    private static final Optional<WindowFrame> COMMON_FRAME = Optional.of(new WindowFrame(
-            WindowFrame.Type.ROWS,
-            new FrameBound(FrameBound.Type.UNBOUNDED_PRECEDING),
-            Optional.of(new FrameBound(FrameBound.Type.CURRENT_ROW)),
-            ImmutableList.of(),
+    private static final WindowNode.Frame COMMON_FRAME = new WindowNode.Frame(
+            WindowFrameType.ROWS,
+            FrameBoundType.UNBOUNDED_PRECEDING,
             Optional.empty(),
             Optional.empty(),
+            FrameBoundType.CURRENT_ROW,
             Optional.empty(),
-            ImmutableList.of(),
-            ImmutableList.of()));
-
-    private static final Optional<WindowFrame> UNSPECIFIED_FRAME = Optional.empty();
+            Optional.empty());
 
     private final ExpectedValueProvider<DataOrganizationSpecification> specificationA;
     private final ExpectedValueProvider<DataOrganizationSpecification> specificationB;
@@ -150,12 +155,12 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS)))
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                 anyTree(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationB)
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                                 LINEITEM_TABLESCAN_DOQSS))));  // should be anyTree(LINEITEM_TABLESCAN_DOQSS) but anyTree does not handle zero nodes case correctly
 
         assertPlan(sql, pattern);
@@ -174,12 +179,12 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS)))
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationB)
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                                 LINEITEM_TABLESCAN_DOQSS)))));
     }
 
@@ -196,16 +201,16 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS)))
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationB)
-                                                        .addFunction(functionCall("nth_value", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS, "ONE"))),
+                                                        .addFunction(windowFunction("nth_value", ImmutableList.of(QUANTITY_ALIAS, "ONE"), COMMON_FRAME)),
                                                 project(
-                                                        ImmutableMap.of("ONE", expression("CAST(expr AS bigint)")),
+                                                        ImmutableMap.of("ONE", expression(new Cast(new SymbolReference("expr"), BIGINT))),
                                                         project(
-                                                                ImmutableMap.of("expr", expression("1")),
+                                                                ImmutableMap.of("expr", expression(new LongLiteral(1))),
                                                                 LINEITEM_TABLESCAN_DOQSS)))))));
     }
 
@@ -230,16 +235,16 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationB)
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
-                                                filter(SHIPDATE_ALIAS + " IS NOT NULL",
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
+                                                filter(new IsNotNullPredicate(new SymbolReference(SHIPDATE_ALIAS)),
                                                         project(
                                                                 window(windowMatcherBuilder -> windowMatcherBuilder
                                                                                 .specification(specificationA)
-                                                                                .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                                                                .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                                                         LINEITEM_TABLESCAN_DOQSS))))))));
     }
 
@@ -256,11 +261,11 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS)))
-                                        .addFunction(functionCall("nth_value", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS, "ONE")))
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
-                                project(ImmutableMap.of("ONE", expression("CAST(expr AS bigint)")),
-                                        project(ImmutableMap.of("expr", expression("1")),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME))
+                                        .addFunction(windowFunction("nth_value", ImmutableList.of(QUANTITY_ALIAS, "ONE"), COMMON_FRAME))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
+                                project(ImmutableMap.of("ONE", expression(new Cast(new SymbolReference("expr"), BIGINT))),
+                                        project(ImmutableMap.of("expr", expression(new LongLiteral(1))),
                                                 LINEITEM_TABLESCAN_DOQS)))));
     }
 
@@ -283,14 +288,14 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS)))
-                                        .addFunction(functionCall("avg", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME))
+                                        .addFunction(windowFunction("avg", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                 project(
-                                        filter(SHIPDATE_ALIAS + " IS NOT NULL",
+                                        filter(new IsNotNullPredicate(new SymbolReference(SHIPDATE_ALIAS)),
                                                 project(
                                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                                         .specification(specificationA)
-                                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                                                 LINEITEM_TABLESCAN_DOQSS)))))));
     }
 
@@ -317,44 +322,40 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationC)
-                                        .addFunction(functionCall("sum", UNSPECIFIED_FRAME, ImmutableList.of(QUANTITY_ALIAS)))
-                                        .addFunction(functionCall("sum", UNSPECIFIED_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), DEFAULT_FRAME))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), DEFAULT_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationD)
-                                                        .addFunction(functionCall("sum", UNSPECIFIED_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), DEFAULT_FRAME)),
                                                 LINEITEM_TABLESCAN_DOQSS)))));
     }
 
     @Test
     public void testMergeDifferentFrames()
     {
-        Optional<WindowFrame> frameC = Optional.of(new WindowFrame(
-                WindowFrame.Type.ROWS,
-                new FrameBound(FrameBound.Type.UNBOUNDED_PRECEDING),
-                Optional.of(new FrameBound(FrameBound.Type.CURRENT_ROW)),
-                ImmutableList.of(),
+        WindowNode.Frame frameC = new WindowNode.Frame(
+                WindowFrameType.ROWS,
+                FrameBoundType.UNBOUNDED_PRECEDING,
                 Optional.empty(),
                 Optional.empty(),
+                FrameBoundType.CURRENT_ROW,
                 Optional.empty(),
-                ImmutableList.of(),
-                ImmutableList.of()));
+                Optional.empty());
 
         ExpectedValueProvider<DataOrganizationSpecification> specificationC = specification(
                 ImmutableList.of(SUPPKEY_ALIAS),
                 ImmutableList.of(ORDERKEY_ALIAS),
                 ImmutableMap.of(ORDERKEY_ALIAS, SortOrder.ASC_NULLS_LAST));
 
-        Optional<WindowFrame> frameD = Optional.of(new WindowFrame(
-                WindowFrame.Type.ROWS,
-                new FrameBound(FrameBound.Type.CURRENT_ROW),
-                Optional.of(new FrameBound(FrameBound.Type.UNBOUNDED_FOLLOWING)),
-                ImmutableList.of(),
+        WindowNode.Frame frameD = new WindowNode.Frame(
+                WindowFrameType.ROWS,
+                FrameBoundType.CURRENT_ROW,
                 Optional.empty(),
                 Optional.empty(),
+                FrameBoundType.UNBOUNDED_FOLLOWING,
                 Optional.empty(),
-                ImmutableList.of(),
-                ImmutableList.of()));
+                Optional.empty());
 
         @Language("SQL") String sql = "SELECT " +
                 "SUM(quantity) OVER (PARTITION BY suppkey ORDER BY orderkey ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) sum_quantity_C, " +
@@ -366,25 +367,23 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationC)
-                                        .addFunction(functionCall("avg", frameD, ImmutableList.of(QUANTITY_ALIAS)))
-                                        .addFunction(functionCall("sum", frameC, ImmutableList.of(DISCOUNT_ALIAS)))
-                                        .addFunction(functionCall("sum", frameC, ImmutableList.of(QUANTITY_ALIAS))),
+                                        .addFunction(windowFunction("avg", ImmutableList.of(QUANTITY_ALIAS), frameD))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), frameC))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), frameC)),
                                 LINEITEM_TABLESCAN_DOQS)));
     }
 
     @Test
     public void testMergeDifferentFramesWithDefault()
     {
-        Optional<WindowFrame> frameD = Optional.of(new WindowFrame(
-                WindowFrame.Type.ROWS,
-                new FrameBound(FrameBound.Type.CURRENT_ROW),
-                Optional.of(new FrameBound(FrameBound.Type.UNBOUNDED_FOLLOWING)),
-                ImmutableList.of(),
+        WindowNode.Frame frameD = new WindowNode.Frame(
+                WindowFrameType.ROWS,
+                FrameBoundType.CURRENT_ROW,
                 Optional.empty(),
                 Optional.empty(),
+                FrameBoundType.UNBOUNDED_FOLLOWING,
                 Optional.empty(),
-                ImmutableList.of(),
-                ImmutableList.of()));
+                Optional.empty());
 
         ExpectedValueProvider<DataOrganizationSpecification> specificationD = specification(
                 ImmutableList.of(SUPPKEY_ALIAS),
@@ -401,9 +400,9 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationD)
-                                        .addFunction(functionCall("avg", frameD, ImmutableList.of(QUANTITY_ALIAS)))
-                                        .addFunction(functionCall("sum", UNSPECIFIED_FRAME, ImmutableList.of(DISCOUNT_ALIAS)))
-                                        .addFunction(functionCall("sum", UNSPECIFIED_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                        .addFunction(windowFunction("avg", ImmutableList.of(QUANTITY_ALIAS), frameD))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), DEFAULT_FRAME))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), DEFAULT_FRAME)),
                                 LINEITEM_TABLESCAN_DOQS)));
     }
 
@@ -460,19 +459,19 @@ public class TestMergeWindows
 
         assertUnitPlan(sql,
                 anyTree(
-                        filter("SUM = AVG",
+                        filter(new ComparisonExpression(EQUAL, new SymbolReference("SUM"), new SymbolReference("AVG")),
                                 join(INNER, builder -> builder
                                         .left(
                                                 any(
                                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                                         .specification(leftSpecification)
-                                                                        .addFunction("SUM", functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                                                        .addFunction("SUM", windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                                                 any(leftTableScan))))
                                         .right(
                                                 any(
                                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                                         .specification(rightSpecification)
-                                                                        .addFunction("AVG", functionCall("avg", COMMON_FRAME, ImmutableList.of(rQuantityAlias))),
+                                                                        .addFunction("AVG", windowFunction("avg", ImmutableList.of(rQuantityAlias), COMMON_FRAME)),
                                                                 any(rightTableScan))))))));
     }
 
@@ -493,11 +492,11 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationC)
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                                 LINEITEM_TABLESCAN_DOQS)))));
     }
 
@@ -518,11 +517,11 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationC)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationA)
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                                 LINEITEM_TABLESCAN_DOQS)))));
     }
 
@@ -544,12 +543,12 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationC)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationA)
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(EXTENDEDPRICE_ALIAS)))
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(EXTENDEDPRICE_ALIAS), COMMON_FRAME))
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                                 LINEITEM_TABLESCAN_DEOQS)))));
     }
 
@@ -571,28 +570,28 @@ public class TestMergeWindows
                 anyTree(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationA)
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(EXTENDEDPRICE_ALIAS)))
-                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(DISCOUNT_ALIAS))),
+                                        .addFunction(windowFunction("sum", ImmutableList.of(EXTENDEDPRICE_ALIAS), COMMON_FRAME))
+                                        .addFunction(windowFunction("sum", ImmutableList.of(DISCOUNT_ALIAS), COMMON_FRAME)),
                                 project(
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationC)
-                                                        .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
+                                                        .addFunction(windowFunction("sum", ImmutableList.of(QUANTITY_ALIAS), COMMON_FRAME)),
                                                 LINEITEM_TABLESCAN_DEOQS)))));
     }
 
     private void assertUnitPlan(@Language("SQL") String sql, PlanMatchPattern pattern)
     {
         List<PlanOptimizer> optimizers = ImmutableList.of(
-                new UnaliasSymbolReferences(getQueryRunner().getMetadata()),
+                new UnaliasSymbolReferences(getPlanTester().getPlannerContext().getMetadata()),
                 new IterativeOptimizer(
-                        getQueryRunner().getPlannerContext(),
+                        getPlanTester().getPlannerContext(),
                         new RuleStatsRecorder(),
-                        getQueryRunner().getStatsCalculator(),
-                        getQueryRunner().getEstimatedExchangesCostCalculator(),
+                        getPlanTester().getStatsCalculator(),
+                        getPlanTester().getEstimatedExchangesCostCalculator(),
                         ImmutableSet.<Rule<?>>builder()
                                 .add(new RemoveRedundantIdentityProjections())
                                 .addAll(GatherAndMergeWindows.rules())
-                                .addAll(columnPruningRules(getQueryRunner().getMetadata()))
+                                .addAll(columnPruningRules(getPlanTester().getPlannerContext().getMetadata()))
                                 .build()));
         assertPlan(sql, pattern, optimizers);
     }

@@ -21,25 +21,23 @@ import com.google.common.collect.Iterables;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.operator.scalar.TryFunction;
-import io.trino.sql.ExpressionUtils;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.Array;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.IfExpression;
-import io.trino.sql.tree.InListExpression;
-import io.trino.sql.tree.InPredicate;
-import io.trino.sql.tree.IsNotNullPredicate;
-import io.trino.sql.tree.LambdaExpression;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.NullIfExpression;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.SearchedCaseExpression;
-import io.trino.sql.tree.SimpleCaseExpression;
-import io.trino.sql.tree.SubscriptExpression;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.sql.tree.WhenClause;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Array;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.IfExpression;
+import io.trino.sql.ir.InPredicate;
+import io.trino.sql.ir.IsNotNullPredicate;
+import io.trino.sql.ir.LambdaExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NullIfExpression;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.SearchedCaseExpression;
+import io.trino.sql.ir.SimpleCaseExpression;
+import io.trino.sql.ir.SubscriptExpression;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.WhenClause;
 import io.trino.type.FunctionType;
 import org.junit.jupiter.api.Test;
 
@@ -54,16 +52,39 @@ import static com.google.common.base.Predicates.not;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.planner.EqualityInference.isInferenceCandidate;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestEqualityInference
 {
     private final TestingFunctionResolution functionResolution = new TestingFunctionResolution();
     private final Metadata metadata = functionResolution.getMetadata();
+
+    @Test
+    public void testDoesNotInferRedundantStraddlingPredicates()
+    {
+        EqualityInference inference = new EqualityInference(
+                metadata,
+                equals("a1", "b1"),
+                equals(add(nameReference("a1"), number(1)), number(0)),
+                equals(nameReference("a2"), add(nameReference("a1"), number(2))),
+                equals(nameReference("a1"), add("a3", "b3")),
+                equals(nameReference("b2"), add("a4", "b4")));
+        EqualityInference.EqualityPartition partition = inference.generateEqualitiesPartitionedBy(symbols("a1", "a2", "a3", "a4"));
+        assertThat(partition.getScopeEqualities()).containsExactly(
+                equals(number(0), add(nameReference("a1"), number(1))),
+                equals(nameReference("a2"), add(nameReference("a1"), number(2))));
+        assertThat(partition.getScopeComplementEqualities()).containsExactly(
+                equals(number(0), add(nameReference("b1"), number(1))));
+        // there shouldn't be equality a2 = b1 + 1 as it can be derived from a2 = a1 + 1, a1 = b1
+        assertThat(partition.getScopeStraddlingEqualities()).containsExactly(
+                equals("a1", "b1"),
+                equals(nameReference("a1"), add("a3", "b3")),
+                equals(nameReference("b2"), add("a4", "b4")));
+    }
 
     @Test
     public void testTransitivity()
@@ -132,7 +153,7 @@ public class TestEqualityInference
     {
         EqualityInference inference = new EqualityInference(
                 metadata,
-                ExpressionUtils.and(equals("a1", "b1"), equals("b1", "c1"), someExpression("c1", "d1")));
+                and(equals("a1", "b1"), equals("b1", "c1"), someExpression("c1", "d1")));
 
         // Able to rewrite to c1 due to equalities
         assertThat(nameReference("c1")).isEqualTo(inference.rewrite(nameReference("a1"), symbols("c1")));
@@ -298,14 +319,14 @@ public class TestEqualityInference
     public void testExpressionsThatMayReturnNullOnNonNullInput()
     {
         List<Expression> candidates = ImmutableList.of(
-                new Cast(nameReference("b"), toSqlType(BIGINT), true), // try_cast
+                new Cast(nameReference("b"), BIGINT, true), // try_cast
                 functionResolution
                         .functionCallBuilder(TryFunction.NAME)
                         .addArgument(new FunctionType(ImmutableList.of(), VARCHAR), new LambdaExpression(ImmutableList.of(), nameReference("b")))
                         .build(),
                 new NullIfExpression(nameReference("b"), number(1)),
                 new IfExpression(nameReference("b"), number(1), new NullLiteral()),
-                new InPredicate(nameReference("b"), new InListExpression(ImmutableList.of(new NullLiteral()))),
+                new InPredicate(nameReference("b"), ImmutableList.of(new NullLiteral())),
                 new SearchedCaseExpression(ImmutableList.of(new WhenClause(new IsNotNullPredicate(nameReference("b")), new NullLiteral())), Optional.empty()),
                 new SimpleCaseExpression(nameReference("b"), ImmutableList.of(new WhenClause(number(1), new NullLiteral())), Optional.empty()),
                 new SubscriptExpression(new Array(ImmutableList.of(new NullLiteral())), nameReference("b")));
@@ -382,7 +403,7 @@ public class TestEqualityInference
 
     private static LongLiteral number(long number)
     {
-        return new LongLiteral(String.valueOf(number));
+        return new LongLiteral(number);
     }
 
     private static Set<Symbol> symbols(String... symbols)

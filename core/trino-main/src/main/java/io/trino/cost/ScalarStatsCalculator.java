@@ -13,11 +13,8 @@
  */
 package io.trino.cost;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
 import io.trino.Session;
-import io.trino.execution.warnings.WarningCollector;
-import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.IntegerType;
@@ -25,34 +22,29 @@ import io.trino.spi.type.SmallintType;
 import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.analyzer.ExpressionAnalyzer;
-import io.trino.sql.analyzer.Scope;
-import io.trino.sql.planner.ExpressionInterpreter;
-import io.trino.sql.planner.LiteralInterpreter;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ArithmeticUnaryExpression;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.CoalesceExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.IrVisitor;
+import io.trino.sql.ir.Literal;
+import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.planner.IrExpressionInterpreter;
+import io.trino.sql.planner.IrLiteralInterpreter;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.NoOpSymbolResolver;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeAnalyzer;
 import io.trino.sql.planner.TypeProvider;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.ArithmeticUnaryExpression;
-import io.trino.sql.tree.AstVisitor;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.CoalesceExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.Literal;
-import io.trino.sql.tree.Node;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.Map;
 import java.util.OptionalDouble;
 
 import static io.trino.spi.statistics.StatsUtil.toStatsRepresentation;
-import static io.trino.sql.ExpressionUtils.getExpressionTypes;
-import static io.trino.sql.ExpressionUtils.isEffectivelyLiteral;
-import static io.trino.sql.analyzer.ExpressionAnalyzer.createConstantAnalyzer;
+import static io.trino.sql.ir.IrUtils.isEffectivelyLiteral;
 import static io.trino.util.MoreMath.max;
 import static io.trino.util.MoreMath.min;
 import static java.lang.Double.NaN;
@@ -64,10 +56,10 @@ import static java.util.Objects.requireNonNull;
 public class ScalarStatsCalculator
 {
     private final PlannerContext plannerContext;
-    private final TypeAnalyzer typeAnalyzer;
+    private final IrTypeAnalyzer typeAnalyzer;
 
     @Inject
-    public ScalarStatsCalculator(PlannerContext plannerContext, TypeAnalyzer typeAnalyzer)
+    public ScalarStatsCalculator(PlannerContext plannerContext, IrTypeAnalyzer typeAnalyzer)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext cannot be null");
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
@@ -79,23 +71,23 @@ public class ScalarStatsCalculator
     }
 
     private class Visitor
-            extends AstVisitor<SymbolStatsEstimate, Void>
+            extends IrVisitor<SymbolStatsEstimate, Void>
     {
         private final PlanNodeStatsEstimate input;
         private final Session session;
-        private final LiteralInterpreter literalInterpreter;
+        private final IrLiteralInterpreter literalInterpreter;
         private final TypeProvider types;
 
         Visitor(PlanNodeStatsEstimate input, Session session, TypeProvider types)
         {
             this.input = input;
             this.session = session;
-            this.literalInterpreter = new LiteralInterpreter(plannerContext, session);
+            this.literalInterpreter = new IrLiteralInterpreter(plannerContext, session);
             this.types = types;
         }
 
         @Override
-        protected SymbolStatsEstimate visitNode(Node node, Void context)
+        protected SymbolStatsEstimate visitExpression(Expression node, Void context)
         {
             return SymbolStatsEstimate.unknown();
         }
@@ -115,8 +107,7 @@ public class ScalarStatsCalculator
         @Override
         protected SymbolStatsEstimate visitLiteral(Literal node, Void context)
         {
-            ExpressionAnalyzer analyzer = createConstantAnalyzer(plannerContext, new AllowAllAccessControl(), session, ImmutableMap.of(), WarningCollector.NOOP);
-            Type type = analyzer.analyze(node, Scope.create());
+            Type type = typeAnalyzer.getType(session, TypeProvider.empty(), node);
             Object value = literalInterpreter.evaluate(node, type);
 
             OptionalDouble doubleValue = toStatsRepresentation(type, value);
@@ -134,8 +125,8 @@ public class ScalarStatsCalculator
         @Override
         protected SymbolStatsEstimate visitFunctionCall(FunctionCall node, Void context)
         {
-            Map<NodeRef<Expression>, Type> expressionTypes = getExpressionTypes(plannerContext, session, node, types);
-            ExpressionInterpreter interpreter = new ExpressionInterpreter(node, plannerContext, session, expressionTypes);
+            Map<NodeRef<Expression>, Type> expressionTypes = typeAnalyzer.getTypes(session, types, node);
+            IrExpressionInterpreter interpreter = new IrExpressionInterpreter(node, plannerContext, session, expressionTypes);
             Object value = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
 
             if (value == null || value instanceof NullLiteral) {

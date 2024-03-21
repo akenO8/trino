@@ -40,11 +40,9 @@ To use Iceberg, you need:
   <iceberg-jdbc-catalog>`, a {ref}`REST catalog <iceberg-rest-catalog>`, or a
   {ref}`Nessie server <iceberg-nessie-catalog>`.
 
-- Data files stored in a supported file format. These can be configured using
-  file format configuration properties per catalog:
-
-  - {ref}`ORC <hive-orc-configuration>`
-  - {ref}`Parquet <hive-parquet-configuration>` (default)
+- Data files stored in the file formats {ref}`ORC <hive-orc-configuration>` or
+  {ref}`Parquet <hive-parquet-configuration>` (default) on a [supported file
+  system](iceberg-file-system-configuration).
 
 ## General configuration
 
@@ -173,6 +171,21 @@ implementation is used:
   - `false`
 :::
 
+(iceberg-file-system-configuration)=
+## File system access configuration
+
+The connector supports native, high-performance file system access to object
+storage systems:
+
+* [](/object-storage)
+* [](/object-storage/file-system-azure)
+* [](/object-storage/file-system-gcs)
+* [](/object-storage/file-system-s3)
+
+You must enable and configure the specific native file system access. If none is
+activated, the [legacy support](file-system-legacy) is used and must be
+configured.
+
 ## Type mapping
 
 The connector reads and writes data into the supported data file formats Avro,
@@ -289,12 +302,17 @@ No other types are supported.
 
 ## Security
 
-The Iceberg connector allows you to choose one of several means of providing
-authorization at the catalog level.
+### Kerberos authentication
+
+The Iceberg connector supports Kerberos authentication for the Hive metastore
+and HDFS and is configured using the same parameters as the Hive connector. Find
+more information in the [](/connector/hive-security) section.
 
 (iceberg-authorization)=
+### Authorization
 
-### Authorization checks
+The Iceberg connector allows you to choose one of several means of providing
+authorization at the catalog level.
 
 You can enable authorization checks for the connector by setting the
 `iceberg.security` property in the catalog properties file. This property must
@@ -322,7 +340,6 @@ be one of the following values:
 :::
 
 (iceberg-sql-support)=
-
 ## SQL support
 
 This connector provides read access and write access to data and metadata in
@@ -1144,7 +1161,7 @@ Retrieve all records that belong to a specific file using
 ```
 SELECT *
 FROM example.web.page_views
-WHERE "$file_modified_time" = CAST('2022-07-01 01:02:03.456 UTC' AS TIMESTAMP WIOTH TIMEZONE)
+WHERE "$file_modified_time" = CAST('2022-07-01 01:02:03.456 UTC' AS TIMESTAMP WITH TIME ZONE)
 ```
 
 #### DROP TABLE
@@ -1423,7 +1440,7 @@ You can use the {ref}`iceberg-table-properties` to control the created storage
 table and therefore the layout and performance. For example, you can use the
 following clause with {doc}`/sql/create-materialized-view` to use the ORC format
 for the data files and partition the storage per day using the column
-`_date`:
+`event_date`:
 
 ```
 WITH ( format = 'ORC', partitioning = ARRAY['event_date'] )
@@ -1446,13 +1463,12 @@ it is being refreshed. Refreshing a materialized view also stores the
 snapshot-ids of all Iceberg tables that are part of the materialized view's
 query in the materialized view metadata. When the materialized view is queried,
 the snapshot-ids are used to check if the data in the storage table is up to
-date. If the data is outdated, the materialized view behaves like a normal view,
-and the data is queried directly from the base tables. Detecting outdated data
-is possible only when the materialized view uses Iceberg tables only, or when it
-uses a mix of Iceberg and non-Iceberg tables but some Iceberg tables are outdated.
-When the materialized view is based on non-Iceberg tables, querying it can
-return outdated data, since the connector has no information whether the
-underlying non-Iceberg tables have changed.
+date.
+
+Materialized views that use non-Iceberg tables in the query show the [default
+behavior around grace periods](mv-grace-period). If all tables are Iceberg
+tables, the connector can determine if the data has not changed and continue to
+use the data from the storage tables, even after the grace period expired.
 
 Dropping a materialized view with {doc}`/sql/drop-materialized-view` removes
 the definition and the storage table.
@@ -1514,3 +1530,8 @@ before re-analyzing.
 
 The connector supports redirection from Iceberg tables to Hive tables with the
 `iceberg.hive-catalog-name` catalog configuration property.
+
+### File system cache
+
+The connector supports configuring and using [file system
+caching](/object-storage/file-system-cache).

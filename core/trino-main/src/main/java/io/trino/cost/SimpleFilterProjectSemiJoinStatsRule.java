@@ -15,18 +15,18 @@ package io.trino.cost;
 
 import com.google.common.collect.Iterables;
 import io.trino.Session;
+import io.trino.cost.StatsCalculator.Context;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.TypeProvider;
-import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.SemiJoinNode;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.NotExpression;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.List;
 import java.util.Optional;
@@ -35,8 +35,8 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.cost.FilterStatsCalculator.UNKNOWN_FILTER_COEFFICIENT;
 import static io.trino.cost.SemiJoinStatsCalculator.computeAntiJoin;
 import static io.trino.cost.SemiJoinStatsCalculator.computeSemiJoin;
-import static io.trino.sql.ExpressionUtils.combineConjuncts;
-import static io.trino.sql.ExpressionUtils.extractConjuncts;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
+import static io.trino.sql.ir.IrUtils.extractConjuncts;
 import static io.trino.sql.planner.plan.Patterns.filter;
 import static java.util.Objects.requireNonNull;
 
@@ -66,15 +66,15 @@ public class SimpleFilterProjectSemiJoinStatsRule
     }
 
     @Override
-    protected Optional<PlanNodeStatsEstimate> doCalculate(FilterNode node, StatsProvider sourceStats, Lookup lookup, Session session, TypeProvider types, TableStatsProvider tableStatsProvider)
+    protected Optional<PlanNodeStatsEstimate> doCalculate(FilterNode node, Context context)
     {
-        PlanNode nodeSource = lookup.resolve(node.getSource());
+        PlanNode nodeSource = context.lookup().resolve(node.getSource());
         SemiJoinNode semiJoinNode;
         if (nodeSource instanceof ProjectNode projectNode) {
             if (!projectNode.isIdentity()) {
                 return Optional.empty();
             }
-            PlanNode projectNodeSource = lookup.resolve(projectNode.getSource());
+            PlanNode projectNodeSource = context.lookup().resolve(projectNode.getSource());
             if (!(projectNodeSource instanceof SemiJoinNode)) {
                 return Optional.empty();
             }
@@ -87,7 +87,7 @@ public class SimpleFilterProjectSemiJoinStatsRule
             return Optional.empty();
         }
 
-        return calculate(node, semiJoinNode, sourceStats, session, types);
+        return calculate(node, semiJoinNode, context.statsProvider(), context.session(), context.types());
     }
 
     private Optional<PlanNodeStatsEstimate> calculate(FilterNode filterNode, SemiJoinNode semiJoinNode, StatsProvider statsProvider, Session session, TypeProvider types)

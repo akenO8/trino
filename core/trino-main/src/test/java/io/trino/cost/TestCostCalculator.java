@@ -20,6 +20,7 @@ import com.google.common.collect.ImmutableSet;
 import io.trino.Session;
 import io.trino.execution.QueryManagerConfig;
 import io.trino.execution.warnings.WarningCollector;
+import io.trino.metadata.Metadata;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.plugin.tpch.TpchColumnHandle;
 import io.trino.plugin.tpch.TpchConnectorFactory;
@@ -27,6 +28,11 @@ import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
+import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.IsNullPredicate;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Plan;
 import io.trino.sql.planner.PlanFragmenter;
 import io.trino.sql.planner.SubPlan;
@@ -38,17 +44,14 @@ import io.trino.sql.planner.plan.EnforceSingleRowNode;
 import io.trino.sql.planner.plan.ExchangeNode;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.JoinNode;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.LimitNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.UnionNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.PlanTester;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -67,7 +70,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.LOCAL;
@@ -96,7 +98,7 @@ public class TestCostCalculator
     private CostCalculator costCalculatorWithEstimatedExchanges;
     private PlanFragmenter planFragmenter;
     private Session session;
-    private LocalQueryRunner localQueryRunner;
+    private PlanTester planTester;
 
     @BeforeAll
     public void setUp()
@@ -107,16 +109,17 @@ public class TestCostCalculator
 
         session = testSessionBuilder().setCatalog(TEST_CATALOG_NAME).build();
 
-        localQueryRunner = LocalQueryRunner.create(session);
-        localQueryRunner.getLanguageFunctionManager().registerQuery(session);
-        localQueryRunner.createCatalog(TEST_CATALOG_NAME, new TpchConnectorFactory(), ImmutableMap.of());
+        planTester = PlanTester.create(session);
+        PlannerContext plannerContext = planTester.getPlannerContext();
+        plannerContext.getLanguageFunctionManager().registerQuery(session);
+        planTester.createCatalog(TEST_CATALOG_NAME, new TpchConnectorFactory(), ImmutableMap.of());
 
         planFragmenter = new PlanFragmenter(
-                localQueryRunner.getMetadata(),
-                localQueryRunner.getFunctionManager(),
-                localQueryRunner.getTransactionManager(),
-                localQueryRunner.getCatalogManager(),
-                localQueryRunner.getLanguageFunctionManager(),
+                plannerContext.getMetadata(),
+                plannerContext.getFunctionManager(),
+                planTester.getTransactionManager(),
+                planTester.getCatalogManager(),
+                plannerContext.getLanguageFunctionManager(),
                 new QueryManagerConfig());
     }
 
@@ -127,8 +130,8 @@ public class TestCostCalculator
         costCalculatorWithEstimatedExchanges = null;
         planFragmenter = null;
         session = null;
-        localQueryRunner.close();
-        localQueryRunner = null;
+        planTester.close();
+        planTester = null;
     }
 
     @Test
@@ -159,7 +162,7 @@ public class TestCostCalculator
     public void testProject()
     {
         TableScanNode tableScan = tableScan("ts", "orderkey");
-        PlanNode project = project("project", tableScan, "string", new Cast(new SymbolReference("orderkey"), toSqlType(VARCHAR)));
+        PlanNode project = project("project", tableScan, "string", new Cast(new SymbolReference("orderkey"), VARCHAR));
         Map<String, PlanCostEstimate> costs = ImmutableMap.of("ts", cpuCost(1000));
         Map<String, PlanNodeStatsEstimate> stats = ImmutableMap.of(
                 "project", statsEstimate(project, 4000),
@@ -588,7 +591,7 @@ public class TestCostCalculator
     {
         TypeProvider typeProvider = TypeProvider.copyOf(types.entrySet().stream()
                 .collect(toImmutableMap(entry -> new Symbol(entry.getKey()), Map.Entry::getValue)));
-        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator(stats), session, typeProvider, new CachingTableStatsProvider(localQueryRunner.getMetadata(), session));
+        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator(stats), session, typeProvider, new CachingTableStatsProvider(planTester.getPlannerContext().getMetadata(), session));
         CostProvider costProvider = new TestingCostProvider(costs, costCalculatorUsingExchanges, statsProvider, session, typeProvider);
         SubPlan subPlan = fragment(new Plan(node, typeProvider, StatsAndCosts.create(node, statsProvider, costProvider)));
         return new CostAssertionBuilder(subPlan.getFragment().getStatsAndCosts().getCosts().getOrDefault(node.getId(), PlanCostEstimate.unknown()));
@@ -687,8 +690,7 @@ public class TestCostCalculator
 
     private StatsCalculator statsCalculator(Map<String, PlanNodeStatsEstimate> stats)
     {
-        return (node, sourceStats, lookup, session, types, tableStatsProvider) ->
-                requireNonNull(stats.get(node.getId().toString()), "no stats for node");
+        return (node, context) -> requireNonNull(stats.get(node.getId().toString()), "no stats for node");
     }
 
     private PlanCostEstimate calculateCost(
@@ -711,7 +713,7 @@ public class TestCostCalculator
     {
         TypeProvider typeProvider = TypeProvider.copyOf(types.entrySet().stream()
                 .collect(toImmutableMap(entry -> new Symbol(entry.getKey()), Map.Entry::getValue)));
-        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, typeProvider, new CachingTableStatsProvider(localQueryRunner.getMetadata(), session));
+        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, typeProvider, new CachingTableStatsProvider(planTester.getPlannerContext().getMetadata(), session));
         CostProvider costProvider = new CachingCostProvider(costCalculator, statsProvider, Optional.empty(), session, typeProvider);
         return costProvider.getCost(node);
     }
@@ -720,7 +722,7 @@ public class TestCostCalculator
     {
         TypeProvider typeProvider = TypeProvider.copyOf(types.entrySet().stream()
                 .collect(toImmutableMap(entry -> new Symbol(entry.getKey()), Map.Entry::getValue)));
-        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, typeProvider, new CachingTableStatsProvider(localQueryRunner.getMetadata(), session));
+        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, typeProvider, new CachingTableStatsProvider(planTester.getPlannerContext().getMetadata(), session));
         CostProvider costProvider = new CachingCostProvider(costCalculatorUsingExchanges, statsProvider, Optional.empty(), session, typeProvider);
         SubPlan subPlan = fragment(new Plan(node, typeProvider, StatsAndCosts.create(node, statsProvider, costProvider)));
         return subPlan.getFragment().getStatsAndCosts().getCosts().getOrDefault(node.getId(), PlanCostEstimate.unknown());
@@ -802,7 +804,7 @@ public class TestCostCalculator
 
         return new TableScanNode(
                 new PlanNodeId(id),
-                localQueryRunner.getTableHandle(TEST_CATALOG_NAME, "sf1", "orders"),
+                planTester.getTableHandle(TEST_CATALOG_NAME, "sf1", "orders"),
                 symbolsList,
                 assignments.buildOrThrow(),
                 TupleDomain.all(),
@@ -822,7 +824,7 @@ public class TestCostCalculator
     private AggregationNode aggregation(String id, PlanNode source)
     {
         AggregationNode.Aggregation aggregation = new AggregationNode.Aggregation(
-                new TestingFunctionResolution(localQueryRunner).resolveFunction("count", ImmutableList.of()),
+                new TestingFunctionResolution(planTester.getTransactionManager(), planTester.getPlannerContext()).resolveFunction("count", ImmutableList.of()),
                 ImmutableList.of(),
                 false,
                 Optional.empty(),
@@ -851,7 +853,7 @@ public class TestCostCalculator
 
         return new JoinNode(
                 new PlanNodeId(planNodeId),
-                JoinNode.Type.INNER,
+                JoinType.INNER,
                 left,
                 right,
                 criteria.build(),
@@ -874,11 +876,12 @@ public class TestCostCalculator
 
     private <T> T inTransaction(Function<Session, T> transactionSessionConsumer)
     {
-        return transaction(localQueryRunner.getTransactionManager(), localQueryRunner.getMetadata(), new AllowAllAccessControl())
+        Metadata metadata = planTester.getPlannerContext().getMetadata();
+        return transaction(planTester.getTransactionManager(), metadata, new AllowAllAccessControl())
                 .singleStatement()
                 .execute(session, session -> {
                     // metadata.getCatalogHandle() registers the catalog for the transaction
-                    session.getCatalog().ifPresent(catalog -> localQueryRunner.getMetadata().getCatalogHandle(session, catalog));
+                    session.getCatalog().ifPresent(catalog -> metadata.getCatalogHandle(session, catalog));
                     return transactionSessionConsumer.apply(session);
                 });
     }

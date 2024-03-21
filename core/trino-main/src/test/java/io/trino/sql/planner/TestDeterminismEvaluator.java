@@ -18,14 +18,13 @@ import io.trino.metadata.Metadata;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.Type;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.Identifier;
-import io.trino.sql.tree.LambdaArgumentDeclaration;
-import io.trino.sql.tree.LambdaExpression;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.NullLiteral;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.LambdaExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.type.FunctionType;
 import org.junit.jupiter.api.Test;
 
@@ -35,7 +34,7 @@ import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestDeterminismEvaluator
@@ -63,13 +62,13 @@ public class TestDeterminismEvaluator
                 function(
                         "filter",
                         ImmutableList.of(new ArrayType(INTEGER), new FunctionType(ImmutableList.of(INTEGER), BOOLEAN)),
-                        ImmutableList.of(lambda("a", comparison(GREATER_THAN, input("a"), new LongLiteral("0"))))),
+                        ImmutableList.of(lambda("a", comparison(GREATER_THAN, input("a"), new LongLiteral(0))))),
                 metadata)).isTrue();
         assertThat(DeterminismEvaluator.isDeterministic(
                 function(
                         "filter",
                         ImmutableList.of(new ArrayType(INTEGER), new FunctionType(ImmutableList.of(INTEGER), BOOLEAN)),
-                        ImmutableList.of(lambda("a", comparison(GREATER_THAN, function("rand", ImmutableList.of(INTEGER), ImmutableList.of(input("a"))), new LongLiteral("0"))))),
+                        ImmutableList.of(lambda("a", comparison(GREATER_THAN, function("rand", ImmutableList.of(INTEGER), ImmutableList.of(input("a"))), new LongLiteral(0))))),
                 metadata)).isFalse();
     }
 
@@ -86,9 +85,9 @@ public class TestDeterminismEvaluator
                 .build();
     }
 
-    private static Identifier input(String symbol)
+    private static SymbolReference input(String symbol)
     {
-        return new Identifier(symbol);
+        return new SymbolReference(symbol);
     }
 
     private static ComparisonExpression comparison(ComparisonExpression.Operator operator, Expression left, Expression right)
@@ -98,6 +97,6 @@ public class TestDeterminismEvaluator
 
     private static LambdaExpression lambda(String symbol, Expression body)
     {
-        return new LambdaExpression(ImmutableList.of(new LambdaArgumentDeclaration(input(symbol))), body);
+        return new LambdaExpression(ImmutableList.of(symbol), body);
     }
 }

@@ -16,38 +16,44 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.SortOrder;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ArithmeticUnaryExpression;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.DoubleLiteral;
+import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.plan.FilterNode;
-import io.trino.sql.tree.FunctionCall;
+import io.trino.sql.planner.plan.WindowNode;
 import io.trino.sql.tree.QualifiedName;
-import io.trino.sql.tree.SymbolReference;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static io.trino.metadata.MetadataManager.createTestMetadataManager;
-import static io.trino.spi.type.IntegerType.INTEGER;
-import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.ArithmeticUnaryExpression.Sign.MINUS;
 import static io.trino.sql.planner.LogicalPlanner.Stage.CREATED;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.sort;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.specification;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.window;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFrame;
-import static io.trino.sql.tree.FrameBound.Type.CURRENT_ROW;
-import static io.trino.sql.tree.FrameBound.Type.FOLLOWING;
-import static io.trino.sql.tree.FrameBound.Type.PRECEDING;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.windowFunction;
+import static io.trino.sql.planner.plan.FrameBoundType.CURRENT_ROW;
+import static io.trino.sql.planner.plan.FrameBoundType.FOLLOWING;
+import static io.trino.sql.planner.plan.FrameBoundType.PRECEDING;
+import static io.trino.sql.planner.plan.WindowFrameType.RANGE;
+import static io.trino.sql.planner.plan.WindowNode.Frame.DEFAULT_FRAME;
 import static io.trino.sql.tree.SortItem.NullOrdering.LAST;
 import static io.trino.sql.tree.SortItem.Ordering.ASCENDING;
-import static io.trino.sql.tree.WindowFrame.Type.RANGE;
 
 public class TestWindowClause
         extends BasePlanTest
@@ -66,9 +72,9 @@ public class TestWindowClause
                                                 ImmutableMap.of()))
                                         .addFunction(
                                                 "max_result",
-                                                functionCall("max", ImmutableList.of("b"))),
+                                                windowFunction("max", ImmutableList.of("b"), DEFAULT_FRAME)),
                                 anyTree(project(
-                                        ImmutableMap.of("expr", expression("a + 1")),
+                                        ImmutableMap.of("expr", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new LongLiteral(1)))),
                                         anyTree(values("a", "b"))))));
 
         assertPlan(sql, CREATED, pattern);
@@ -88,20 +94,24 @@ public class TestWindowClause
                                                 ImmutableMap.of("expr_b", SortOrder.ASC_NULLS_LAST)))
                                         .addFunction(
                                                 "max_result",
-                                                functionCall("max", ImmutableList.of("b")),
-                                                createTestMetadataManager().resolveBuiltinFunction("max", fromTypes(INTEGER)),
-                                                windowFrame(
-                                                        RANGE,
-                                                        PRECEDING,
-                                                        Optional.of("frame_start"),
-                                                        Optional.of("expr_b"),
-                                                        CURRENT_ROW,
-                                                        Optional.empty(),
-                                                        Optional.empty())),
+                                                windowFunction(
+                                                        "max",
+                                                        ImmutableList.of("b"),
+                                                        new WindowNode.Frame(
+                                                                RANGE,
+                                                                PRECEDING,
+                                                                Optional.of(new Symbol("frame_start")),
+                                                                Optional.of(new Symbol("expr_b")),
+                                                                CURRENT_ROW,
+                                                                Optional.empty(),
+                                                                Optional.empty()))),
                                 project(
                                         ImmutableMap.of("frame_start", expression(new FunctionCall(QualifiedName.of("$operator$subtract"), ImmutableList.of(new SymbolReference("expr_b"), new SymbolReference("expr_c"))))),
                                         anyTree(project(
-                                                ImmutableMap.of("expr_a", expression("a + 1"), "expr_b", expression("b + 2"), "expr_c", expression("c + 3")),
+                                                ImmutableMap.of(
+                                                        "expr_a", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new LongLiteral(1))),
+                                                        "expr_b", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("b"), new LongLiteral(2))),
+                                                        "expr_c", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("c"), new LongLiteral(3)))),
                                                 anyTree(values("a", "b", "c")))))));
 
         assertPlan(sql, CREATED, pattern);
@@ -122,11 +132,11 @@ public class TestWindowClause
                                                 ImmutableMap.of("order_by_window_sortkey", SortOrder.ASC_NULLS_LAST)))
                                         .addFunction(
                                                 "max_result",
-                                                functionCall("max", ImmutableList.of("minus_a"))),
+                                                windowFunction("max", ImmutableList.of("minus_a"), DEFAULT_FRAME)),
                                 any(project(
-                                        ImmutableMap.of("order_by_window_sortkey", expression("minus_a + 1")),
+                                        ImmutableMap.of("order_by_window_sortkey", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("minus_a"), new LongLiteral(1)))),
                                         project(
-                                                ImmutableMap.of("minus_a", expression("-a")),
+                                                ImmutableMap.of("minus_a", expression(new ArithmeticUnaryExpression(MINUS, new SymbolReference("a")))),
                                                 window(
                                                         windowMatcherBuilder -> windowMatcherBuilder
                                                                 .specification(specification(
@@ -135,9 +145,9 @@ public class TestWindowClause
                                                                         ImmutableMap.of("select_window_sortkey", SortOrder.ASC_NULLS_LAST)))
                                                                 .addFunction(
                                                                         "array_agg_result",
-                                                                        functionCall("array_agg", ImmutableList.of("a"))),
+                                                                        windowFunction("array_agg", ImmutableList.of("a"), DEFAULT_FRAME)),
                                                         anyTree(project(
-                                                                ImmutableMap.of("select_window_sortkey", expression("a + 1")),
+                                                                ImmutableMap.of("select_window_sortkey", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new LongLiteral(1)))),
                                                                 anyTree(values("a"))))))))))));
 
         assertPlan(sql, CREATED, pattern);
@@ -158,29 +168,30 @@ public class TestWindowClause
                                                 ImmutableMap.of("sortkey", SortOrder.ASC_NULLS_LAST)))
                                         .addFunction(
                                                 "count_result",
-                                                functionCall("count", ImmutableList.of()),
-                                                createTestMetadataManager().resolveBuiltinFunction("count", fromTypes()),
-                                                windowFrame(
-                                                        RANGE,
-                                                        CURRENT_ROW,
-                                                        Optional.empty(),
-                                                        Optional.empty(),
-                                                        FOLLOWING,
-                                                        Optional.of("frame_bound"),
-                                                        Optional.of("coerced_sortkey"))),
+                                                windowFunction(
+                                                        "count",
+                                                        ImmutableList.of(),
+                                                        new WindowNode.Frame(
+                                                                RANGE,
+                                                                CURRENT_ROW,
+                                                                Optional.empty(),
+                                                                Optional.empty(),
+                                                                FOLLOWING,
+                                                                Optional.of(new Symbol("frame_bound")),
+                                                                Optional.of(new Symbol("coerced_sortkey"))))),
                                 project(// frame bound value computation
                                         ImmutableMap.of("frame_bound", expression(new FunctionCall(QualifiedName.of("$operator$add"), ImmutableList.of(new SymbolReference("coerced_sortkey"), new SymbolReference("frame_offset"))))),
                                         project(// sort key coercion to frame bound type
-                                                ImmutableMap.of("coerced_sortkey", expression("CAST(sortkey AS double)")),
+                                                ImmutableMap.of("coerced_sortkey", expression(new Cast(new SymbolReference("sortkey"), DOUBLE))),
                                                 node(FilterNode.class,
                                                         project(project(
                                                                 ImmutableMap.of(
                                                                         // sort key based on "a" in source scope
-                                                                        "sortkey", expression("a + 1"),
+                                                                        "sortkey", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new LongLiteral(1))),
                                                                         // frame offset based on "a" in output scope
-                                                                        "frame_offset", expression("new_a + 1E0")),
+                                                                        "frame_offset", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("new_a"), new DoubleLiteral(1.0)))),
                                                                 project(// output expression
-                                                                        ImmutableMap.of("new_a", expression("2E0")),
+                                                                        ImmutableMap.of("new_a", expression(new DoubleLiteral(2E0))),
                                                                         project(project(values("a")))))))))))));
 
         assertPlan(sql, CREATED, pattern);

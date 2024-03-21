@@ -20,31 +20,31 @@ import com.google.common.collect.Sets;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.spi.type.Type;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.IfExpression;
+import io.trino.sql.ir.NullLiteral;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.CorrelatedJoinNode;
 import io.trino.sql.planner.plan.JoinNode;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.IfExpression;
-import io.trino.sql.tree.NullLiteral;
 
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.matching.Pattern.empty;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.extractCardinality;
-import static io.trino.sql.planner.plan.CorrelatedJoinNode.Type.FULL;
-import static io.trino.sql.planner.plan.CorrelatedJoinNode.Type.INNER;
-import static io.trino.sql.planner.plan.CorrelatedJoinNode.Type.LEFT;
-import static io.trino.sql.planner.plan.CorrelatedJoinNode.Type.RIGHT;
+import static io.trino.sql.planner.plan.JoinType.FULL;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
+import static io.trino.sql.planner.plan.JoinType.RIGHT;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.correlation;
 import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 
 public class TransformUncorrelatedSubqueryToJoin
         implements Rule<CorrelatedJoinNode>
@@ -65,7 +65,7 @@ public class TransformUncorrelatedSubqueryToJoin
         if (correlatedJoinNode.getType() == INNER || correlatedJoinNode.getType() == LEFT) {
             return Result.ofPlanNode(rewriteToJoin(
                     correlatedJoinNode,
-                    correlatedJoinNode.getType().toJoinNodeType(),
+                    correlatedJoinNode.getType(),
                     correlatedJoinNode.getFilter(),
                     context.getLookup()));
         }
@@ -75,12 +75,12 @@ public class TransformUncorrelatedSubqueryToJoin
                 "unexpected CorrelatedJoin type: " + correlatedJoinNode.getType());
 
         // handle RIGHT and FULL correlated join ON TRUE
-        JoinNode.Type type;
+        JoinType type;
         if (correlatedJoinNode.getType() == RIGHT) {
-            type = JoinNode.Type.INNER;
+            type = JoinType.INNER;
         }
         else {
-            type = JoinNode.Type.LEFT;
+            type = JoinType.LEFT;
         }
         JoinNode joinNode = rewriteToJoin(correlatedJoinNode, type, TRUE_LITERAL, context.getLookup());
 
@@ -98,7 +98,7 @@ public class TransformUncorrelatedSubqueryToJoin
                     ImmutableSet.copyOf(correlatedJoinNode.getInput().getOutputSymbols()),
                     ImmutableSet.copyOf(correlatedJoinNode.getOutputSymbols()))) {
                 Type inputType = context.getSymbolAllocator().getTypes().get(inputSymbol);
-                assignments.put(inputSymbol, new IfExpression(correlatedJoinNode.getFilter(), inputSymbol.toSymbolReference(), new Cast(new NullLiteral(), toSqlType(inputType))));
+                assignments.put(inputSymbol, new IfExpression(correlatedJoinNode.getFilter(), inputSymbol.toSymbolReference(), new Cast(new NullLiteral(), inputType)));
             }
             ProjectNode projectNode = new ProjectNode(
                     context.getIdAllocator().getNextId(),
@@ -112,11 +112,11 @@ public class TransformUncorrelatedSubqueryToJoin
         return Result.empty();
     }
 
-    private JoinNode rewriteToJoin(CorrelatedJoinNode parent, JoinNode.Type type, Expression filter, Lookup lookup)
+    private JoinNode rewriteToJoin(CorrelatedJoinNode parent, JoinType type, Expression filter, Lookup lookup)
     {
-        if (type == JoinNode.Type.LEFT && extractCardinality(parent.getSubquery(), lookup).isAtLeastScalar() && filter.equals(TRUE_LITERAL)) {
+        if (type == JoinType.LEFT && extractCardinality(parent.getSubquery(), lookup).isAtLeastScalar() && filter.equals(TRUE_LITERAL)) {
             // input rows will always be matched against subquery rows
-            type = JoinNode.Type.INNER;
+            type = JoinType.INNER;
         }
         return new JoinNode(
                 parent.getId(),

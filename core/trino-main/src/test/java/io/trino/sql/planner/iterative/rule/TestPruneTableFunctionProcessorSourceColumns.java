@@ -15,6 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
@@ -80,12 +81,12 @@ public class TestPruneTableFunctionProcessorSourceColumns
                                 .hashSymbol("hash"),
                         project(
                                 ImmutableMap.of(
-                                        "a", expression("a"),
-                                        "b", expression("b"),
-                                        "c", expression("c"),
-                                        "d", expression("d"),
-                                        "hash", expression("hash"),
-                                        "marker", expression("marker")),
+                                        "a", expression(new SymbolReference("a")),
+                                        "b", expression(new SymbolReference("b")),
+                                        "c", expression(new SymbolReference("c")),
+                                        "d", expression(new SymbolReference("d")),
+                                        "hash", expression(new SymbolReference("hash")),
+                                        "marker", expression(new SymbolReference("marker"))),
                                 values("a", "b", "c", "d", "unreferenced", "hash", "marker"))));
     }
 
@@ -166,15 +167,15 @@ public class TestPruneTableFunctionProcessorSourceColumns
                                         "f", "marker3")),
                         project(
                                 ImmutableMap.of(
-                                        "a", expression("a"),
-                                        "b", expression("b"),
-                                        "c", expression("c"),
-                                        "d", expression("d"),
-                                        "e", expression("e"),
-                                        "f", expression("f"),
-                                        "marker1", expression("marker1"),
-                                        "marker2", expression("marker2"),
-                                        "marker3", expression("marker3")),
+                                        "a", expression(new SymbolReference("a")),
+                                        "b", expression(new SymbolReference("b")),
+                                        "c", expression(new SymbolReference("c")),
+                                        "d", expression(new SymbolReference("d")),
+                                        "e", expression(new SymbolReference("e")),
+                                        "f", expression(new SymbolReference("f")),
+                                        "marker1", expression(new SymbolReference("marker1")),
+                                        "marker2", expression(new SymbolReference("marker2")),
+                                        "marker3", expression(new SymbolReference("marker3"))),
                                 values("a", "b", "c", "d", "e", "f", "marker1", "marker2", "marker3", "unreferenced"))));
     }
 

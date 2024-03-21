@@ -21,9 +21,8 @@ To connect to Databricks Delta Lake, you need:
   or a Glue metastore.
 - Network access to the HMS from the coordinator and workers. Port 9083 is the
   default port for the Thrift protocol used by the HMS.
-- Data files stored in the Parquet file format. These can be configured using
-  {ref}`file format configuration properties <hive-parquet-configuration>` per
-  catalog.
+- Data files stored in the [Parquet file format](hive-parquet-configuration) on
+  a [supported file system](delta-lake-file-system-configuration).
 
 ## General configuration
 
@@ -53,12 +52,20 @@ The connector recognizes Delta Lake tables created in the metastore by the Datab
 runtime. If non-Delta Lake tables are present in the metastore as well, they are not
 visible to the connector.
 
-To configure access to S3 and S3-compatible storage, Azure storage, and others,
-consult the appropriate section of the Hive documentation:
+(delta-lake-file-system-configuration)=
+## File system access configuration
 
-- {doc}`Amazon S3 </connector/hive-s3>`
-- {doc}`Azure storage documentation </connector/hive-azure>`
-- {ref}`GCS <hive-google-cloud-storage-configuration>`
+The connector supports native, high-performance file system access to object
+storage systems:
+
+* [](/object-storage)
+* [](/object-storage/file-system-azure)
+* [](/object-storage/file-system-gcs)
+* [](/object-storage/file-system-s3)
+
+You must enable and configure the specific native file system access. If none is
+activated, the [legacy support](file-system-legacy) is used and must be
+configured.
 
 ### Delta Lake general configuration properties
 
@@ -129,7 +136,7 @@ values. Typical usage does not require you to configure them.
     columns which are irrelevant for the query when reading Delta Lake
     checkpoint files.
     The equivalent catalog session property is ``checkpoint_filtering_enabled``.
-  - ``false``
+  - ``true``
 * - `delta.dynamic-filtering.wait-timeout`
   - Duration to wait for completion of [dynamic
     filtering](/admin/dynamic-filtering) during split generation. The equivalent
@@ -199,6 +206,9 @@ The following table describes {ref}`catalog session properties
 * - `parquet_writer_page_size`
   - The maximum page size created by the Parquet writer.
   - `1MB`
+* - `parquet_writer_page_value_count`
+  - The maximum value count of pages created by the Parquet writer.
+  - `60000`
 * - `parquet_writer_batch_size`
   - Maximum number of rows processed by the Parquet writer in a batch.
   - `10000`
@@ -315,6 +325,35 @@ this table:
 :::
 
 No other types are supported.
+
+## Delta Lake table features
+
+The connector supports the following [Delta Lake table 
+features](https://github.com/delta-io/delta/blob/master/PROTOCOL.md#table-features):
+
+:::{list-table} Table features
+:widths: 70, 30
+:header-rows: 1
+
+* - Feature
+  - Description
+* - Append-only tables
+  - Writers only
+* - Column invariants
+  - Writers only
+* - CHECK constraints
+  - Writers only
+* - Change data feed
+  - Writers only
+* - Column mapping
+  - Readers and writers
+* - Deletion vectors
+  - Readers only
+* - Timestamp without time zone
+  - Readers and writers
+:::
+
+No other features are supported.
 
 ## Security
 
@@ -468,7 +507,7 @@ Write operations are supported for tables stored on the following systems:
 
 - S3 and S3-compatible storage
 
-  Writes to {doc}`Amazon S3 <hive-s3>` and S3-compatible storage must be enabled
+  Writes to {doc}`Amazon S3 </object-storage/legacy-s3>` and S3-compatible storage must be enabled
   with the `delta.enable-non-concurrent-writes` property. Writes to S3 can
   safely be made from multiple Trino clusters; however, write collisions are not
   detected when writing concurrently from other Delta Lake engines. You must
@@ -543,6 +582,7 @@ TABLE AS </sql/create-table-as>` syntax.
 
 The connector supports the following [](/sql/alter-table) statements.
 
+(delta-lake-alter-table-execute)=
 #### ALTER TABLE EXECUTE
 
 The connector supports the following commands for use with {ref}`ALTER TABLE
@@ -1076,3 +1116,8 @@ keep a backup of the original values if you change them.
     catalog specific use.
   - `false`
 :::
+
+### File system cache
+
+The connector supports configuring and using [file system
+caching](/object-storage/file-system-cache).

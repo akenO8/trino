@@ -58,6 +58,8 @@ import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.JoinApplicationResult;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
@@ -110,6 +112,7 @@ import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
 
 import static io.trino.tracing.ScopedSpan.scopedSpan;
 import static java.util.Objects.requireNonNull;
@@ -516,6 +519,15 @@ public class TracingMetadata
     }
 
     @Override
+    public void dropNotNullConstraint(Session session, TableHandle tableHandle, ColumnHandle column)
+    {
+        Span span = startSpan("dropNotNullConstraint", tableHandle);
+        try (var ignored = scopedSpan(span)) {
+            delegate.dropNotNullConstraint(session, tableHandle, column);
+        }
+    }
+
+    @Override
     public void setTableAuthorization(Session session, CatalogSchemaTableName table, TrinoPrincipal principal)
     {
         Span span = startSpan("setTableAuthorization", table);
@@ -684,14 +696,14 @@ public class TracingMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         Span span = startSpan("finishInsert", tableHandle.getCatalogHandle().getCatalogName());
         if (span.isRecording()) {
             span.setAttribute(TrinoAttributes.TABLE, tableHandle.getConnectorHandle().toString());
         }
         try (var ignored = scopedSpan(span)) {
-            return delegate.finishInsert(session, tableHandle, fragments, computedStatistics);
+            return delegate.finishInsert(session, tableHandle, sourceTableHandles, fragments, computedStatistics);
         }
     }
 
@@ -723,11 +735,25 @@ public class TracingMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishRefreshMaterializedView(Session session, TableHandle tableHandle, InsertTableHandle insertTableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics, List<TableHandle> sourceTableHandles)
+    public Optional<ConnectorOutputMetadata> finishRefreshMaterializedView(
+            Session session,
+            TableHandle tableHandle,
+            InsertTableHandle insertTableHandle,
+            Collection<Slice> fragments,
+            Collection<ComputedStatistics> computedStatistics,
+            List<TableHandle> sourceTableHandles,
+            List<String> sourceTableFunctions)
     {
         Span span = startSpan("finishRefreshMaterializedView", tableHandle);
         try (var ignored = scopedSpan(span)) {
-            return delegate.finishRefreshMaterializedView(session, tableHandle, insertTableHandle, fragments, computedStatistics, sourceTableHandles);
+            return delegate.finishRefreshMaterializedView(
+                    session,
+                    tableHandle,
+                    insertTableHandle,
+                    fragments,
+                    computedStatistics,
+                    sourceTableHandles,
+                    sourceTableFunctions);
         }
     }
 
@@ -1181,6 +1207,39 @@ public class TracingMetadata
     }
 
     @Override
+    public Set<EntityPrivilege> getAllEntityKindPrivileges(String entityKind)
+    {
+        return delegate.getAllEntityKindPrivileges(entityKind);
+    }
+
+    @Override
+    public void grantEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan("grantEntityPrivileges", entity, privileges, grantee, grantOption);
+        try (var ignored = scopedSpan(span)) {
+            delegate.grantEntityPrivileges(session, entity, privileges, grantee, grantOption);
+        }
+    }
+
+    @Override
+    public void denyEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee)
+    {
+        Span span = startSpan("denyEntityPrivileges", entity, privileges, grantee, false);
+        try (var ignored = scopedSpan(span)) {
+            delegate.denyEntityPrivileges(session, entity, privileges, grantee);
+        }
+    }
+
+    @Override
+    public void revokeEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan("revokeEntityPrivileges", entity, privileges, grantee, grantOption);
+        try (var ignored = scopedSpan(span)) {
+            delegate.revokeEntityPrivileges(session, entity, privileges, grantee, grantOption);
+        }
+    }
+
+    @Override
     public Collection<FunctionMetadata> listGlobalFunctions(Session session)
     {
         Span span = startSpan("listGlobalFunctions");
@@ -1551,5 +1610,30 @@ public class TracingMetadata
                 .setAttribute(TrinoAttributes.CATALOG, table.getCatalogName())
                 .setAttribute(TrinoAttributes.SCHEMA, table.getSchemaName())
                 .setAttribute(TrinoAttributes.FUNCTION, table.getFunctionName());
+    }
+
+    private Span startSpan(String methodName, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan(methodName);
+        if (span.isRecording()) {
+            String grant = String.format("%s-%s-%s-%s-%s%s",
+                    entity.entityKind(),
+                    entity.name(),
+                    grantee.getType(),
+                    grantee.getName(),
+                    privileges.stream().map(EntityPrivilege::name).collect(Collectors.joining("-")),
+                    grantOption ? "-grantOption" : "");
+            span.setAttribute(TrinoAttributes.PRIVILEGE_GRANT, grant);
+        }
+        return span;
+    }
+
+    private Span startSpan(String methodName, EntityKindAndName entity)
+    {
+        Span span = startSpan(methodName);
+        if (span.isRecording()) {
+            span.setAttribute(TrinoAttributes.ENTITY, String.format("%s-%s", entity.entityKind(), entity.name()));
+        }
+        return span;
     }
 }

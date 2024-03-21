@@ -24,6 +24,7 @@ import io.trino.metadata.ResolvedFunction;
 import io.trino.operator.scalar.VarbinaryFunctions;
 import io.trino.operator.scalar.timestamp.TimestampToVarcharCast;
 import io.trino.operator.scalar.timestamptz.TimestampWithTimeZoneToVarcharCast;
+import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
@@ -37,17 +38,16 @@ import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.tree.ArithmeticUnaryExpression;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.DecimalLiteral;
-import io.trino.sql.tree.DoubleLiteral;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.StringLiteral;
-import io.trino.sql.tree.TimestampLiteral;
+import io.trino.sql.ir.ArithmeticUnaryExpression;
+import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.DecimalLiteral;
+import io.trino.sql.ir.DoubleLiteral;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.StringLiteral;
 import jakarta.annotation.Nullable;
 
 import java.util.List;
@@ -56,6 +56,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.metadata.LiteralFunction.LITERAL_FUNCTION_NAME;
 import static io.trino.metadata.LiteralFunction.typeForMagicLiteral;
+import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.trino.spi.predicate.Utils.nativeValueToBlock;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -66,7 +67,6 @@ import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
 import static io.trino.type.DateTimes.parseTimestampWithTimeZone;
 import static io.trino.type.UnknownType.UNKNOWN;
 import static java.lang.Float.intBitsToFloat;
@@ -110,29 +110,29 @@ public final class LiteralEncoder
             if (type.equals(UNKNOWN)) {
                 return new NullLiteral();
             }
-            return new Cast(new NullLiteral(), toSqlType(type), false, true);
+            return new Cast(new NullLiteral(), type, false);
         }
 
         checkArgument(Primitives.wrap(type.getJavaType()).isInstance(object), "object.getClass (%s) and type.getJavaType (%s) do not agree", object.getClass(), type.getJavaType());
 
         if (type.equals(TINYINT)) {
-            return new GenericLiteral("TINYINT", object.toString());
+            return new GenericLiteral(TINYINT, object.toString());
         }
 
         if (type.equals(SMALLINT)) {
-            return new GenericLiteral("SMALLINT", object.toString());
+            return new GenericLiteral(SMALLINT, object.toString());
         }
 
         if (type.equals(INTEGER)) {
-            return new LongLiteral(object.toString());
+            return new LongLiteral((Long) object);
         }
 
         if (type.equals(BIGINT)) {
-            LongLiteral expression = new LongLiteral(object.toString());
-            if (expression.getParsedValue() >= Integer.MIN_VALUE && expression.getParsedValue() <= Integer.MAX_VALUE) {
-                return new GenericLiteral("BIGINT", object.toString());
+            LongLiteral expression = new LongLiteral((Long) object);
+            if (expression.getValue() >= Integer.MIN_VALUE && expression.getValue() <= Integer.MAX_VALUE) {
+                return new GenericLiteral(BIGINT, object.toString());
             }
-            return new LongLiteral(object.toString());
+            return expression;
         }
 
         if (type.equals(DOUBLE)) {
@@ -152,7 +152,7 @@ public final class LiteralEncoder
                         .setName("infinity")
                         .build();
             }
-            return new DoubleLiteral(object.toString());
+            return new DoubleLiteral(value);
         }
 
         if (type.equals(REAL)) {
@@ -162,23 +162,23 @@ public final class LiteralEncoder
                         BuiltinFunctionCallBuilder.resolve(plannerContext.getMetadata())
                                 .setName("nan")
                                 .build(),
-                        toSqlType(REAL));
+                        REAL);
             }
             if (value.equals(Float.NEGATIVE_INFINITY)) {
                 return ArithmeticUnaryExpression.negative(new Cast(
                         BuiltinFunctionCallBuilder.resolve(plannerContext.getMetadata())
                                 .setName("infinity")
                                 .build(),
-                        toSqlType(REAL)));
+                        REAL));
             }
             if (value.equals(Float.POSITIVE_INFINITY)) {
                 return new Cast(
                         BuiltinFunctionCallBuilder.resolve(plannerContext.getMetadata())
                                 .setName("infinity")
                                 .build(),
-                        toSqlType(REAL));
+                        REAL);
             }
-            return new GenericLiteral("REAL", value.toString());
+            return new GenericLiteral(REAL, value.toString());
         }
 
         if (type instanceof DecimalType decimalType) {
@@ -189,13 +189,13 @@ public final class LiteralEncoder
             else {
                 string = Decimals.toString((Int128) object, decimalType.getScale());
             }
-            return new Cast(new DecimalLiteral(string), toSqlType(type));
+            return new Cast(new DecimalLiteral(string), type);
         }
 
         if (type instanceof VarcharType varcharType) {
             Slice value = (Slice) object;
             if (varcharType.isUnbounded()) {
-                return new GenericLiteral("VARCHAR", value.toStringUtf8());
+                return new GenericLiteral(VARCHAR, value.toStringUtf8());
             }
             StringLiteral stringLiteral = new StringLiteral(value.toStringUtf8());
             int boundedLength = varcharType.getBoundedLength();
@@ -204,22 +204,22 @@ public final class LiteralEncoder
                 return stringLiteral;
             }
             if (boundedLength > valueLength) {
-                return new Cast(stringLiteral, toSqlType(type), false, true);
+                return new Cast(stringLiteral, type, false);
             }
-            throw new IllegalArgumentException(format("Value [%s] does not fit in type %s", value.toStringUtf8(), varcharType));
+            throw new TrinoException(INVALID_CAST_ARGUMENT, format("Value [%s] does not fit in type %s", value.toStringUtf8(), varcharType));
         }
 
         if (type instanceof CharType) {
             StringLiteral stringLiteral = new StringLiteral(((Slice) object).toStringUtf8());
-            return new Cast(stringLiteral, toSqlType(type), false, true);
+            return new Cast(stringLiteral, type, false);
         }
 
         if (type.equals(BOOLEAN)) {
-            return new BooleanLiteral(object.toString());
+            return new BooleanLiteral((Boolean) object);
         }
 
         if (type.equals(DATE)) {
-            return new GenericLiteral("DATE", new SqlDate(toIntExact((Long) object)).toString());
+            return new GenericLiteral(DATE, new SqlDate(toIntExact((Long) object)).toString());
         }
 
         if (type instanceof TimestampType timestampType) {
@@ -230,7 +230,7 @@ public final class LiteralEncoder
             else {
                 representation = TimestampToVarcharCast.cast(timestampType.getPrecision(), (LongTimestamp) object).toStringUtf8();
             }
-            return new TimestampLiteral(representation);
+            return new GenericLiteral(timestampType, representation);
         }
 
         if (type instanceof TimestampWithTimeZoneType timestampWithTimeZoneType) {
@@ -248,7 +248,7 @@ public final class LiteralEncoder
                 // TODO (https://github.com/trinodb/trino/issues/5781) consider treating such values as illegal
             }
             else {
-                return new TimestampLiteral(representation);
+                return new GenericLiteral(timestampWithTimeZoneType, representation);
             }
         }
 

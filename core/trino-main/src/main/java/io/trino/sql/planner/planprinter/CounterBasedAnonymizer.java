@@ -22,25 +22,22 @@ import io.trino.metadata.TableHandle;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorPartitioningHandle;
 import io.trino.spi.type.Type;
-import io.trino.sql.ExpressionFormatter;
+import io.trino.sql.ir.BinaryLiteral;
+import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.DecimalLiteral;
+import io.trino.sql.ir.DoubleLiteral;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.ExpressionFormatter;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.IntervalLiteral;
+import io.trino.sql.ir.Literal;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SystemPartitioningHandle;
-import io.trino.sql.tree.BinaryLiteral;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.CharLiteral;
-import io.trino.sql.tree.DecimalLiteral;
-import io.trino.sql.tree.DoubleLiteral;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.IntervalLiteral;
-import io.trino.sql.tree.Literal;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.StringLiteral;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.sql.tree.TimeLiteral;
-import io.trino.sql.tree.TimestampLiteral;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -122,10 +119,7 @@ public class CounterBasedAnonymizer
             return anonymizeLiteral("string", literal.getValue());
         }
         if (node instanceof GenericLiteral literal) {
-            return anonymizeLiteral(literal.getType(), literal.getValue());
-        }
-        if (node instanceof CharLiteral literal) {
-            return anonymizeLiteral("char", literal.getValue());
+            return anonymizeLiteral(literal.getType().getDisplayName(), literal.getValue());
         }
         if (node instanceof BinaryLiteral literal) {
             return anonymizeLiteral("binary", new String(literal.getValue(), UTF_8));
@@ -137,13 +131,7 @@ public class CounterBasedAnonymizer
             return anonymizeLiteral("double", literal.getValue());
         }
         if (node instanceof LongLiteral literal) {
-            return anonymizeLiteral("long", literal.getParsedValue());
-        }
-        if (node instanceof TimestampLiteral literal) {
-            return anonymizeLiteral("timestamp", literal.getValue());
-        }
-        if (node instanceof TimeLiteral literal) {
-            return anonymizeLiteral("time", literal.getValue());
+            return anonymizeLiteral("long", literal.getValue());
         }
         if (node instanceof IntervalLiteral literal) {
             return anonymizeLiteral("interval", literal.getValue());

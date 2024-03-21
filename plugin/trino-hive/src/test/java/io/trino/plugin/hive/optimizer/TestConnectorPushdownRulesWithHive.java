@@ -33,20 +33,20 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.ArithmeticUnaryExpression;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SubscriptExpression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.PruneTableScanColumns;
 import io.trino.sql.planner.iterative.rule.PushPredicateIntoTableScan;
 import io.trino.sql.planner.iterative.rule.PushProjectionIntoTableScan;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
-import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.Assignments;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.ArithmeticUnaryExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.SubscriptExpression;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.PlanTester;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
@@ -67,13 +67,14 @@ import static io.trino.plugin.hive.TestingHiveUtils.getConnectorService;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.ArithmeticUnaryExpression.Sign.MINUS;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictProject;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
-import static io.trino.sql.tree.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.tree.ArithmeticUnaryExpression.Sign.MINUS;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
@@ -95,7 +96,7 @@ public class TestConnectorPushdownRulesWithHive
             .build();
 
     @Override
-    protected Optional<LocalQueryRunner> createLocalQueryRunner()
+    protected Optional<PlanTester> createPlanTester()
     {
         try {
             baseDir = Files.createTempDirectory(null).toFile();
@@ -104,11 +105,11 @@ public class TestConnectorPushdownRulesWithHive
             throw new UncheckedIOException(e);
         }
 
-        LocalQueryRunner queryRunner = LocalQueryRunner.create(HIVE_SESSION);
-        queryRunner.createCatalog(HIVE_CATALOG, new TestingHiveConnectorFactory(baseDir.toPath()), ImmutableMap.of());
-        catalogHandle = queryRunner.getCatalogHandle(HIVE_CATALOG);
+        PlanTester planTester = PlanTester.create(HIVE_SESSION);
+        planTester.createCatalog(HIVE_CATALOG, new TestingHiveConnectorFactory(baseDir.toPath()), ImmutableMap.of());
+        catalogHandle = planTester.getCatalogHandle(HIVE_CATALOG);
 
-        metastore = getConnectorService(queryRunner, HiveMetastoreFactory.class)
+        metastore = getConnectorService(planTester, HiveMetastoreFactory.class)
                 .createMetastore(Optional.empty());
 
         metastore.createDatabase(Database.builder()
@@ -117,7 +118,7 @@ public class TestConnectorPushdownRulesWithHive
                 .setOwnerType(Optional.of(PrincipalType.ROLE))
                 .build());
 
-        return Optional.of(queryRunner);
+        return Optional.of(planTester);
     }
 
     @Test
@@ -129,7 +130,7 @@ public class TestConnectorPushdownRulesWithHive
                 tester().getTypeAnalyzer(),
                 new ScalarStatsCalculator(tester().getPlannerContext(), tester().getTypeAnalyzer()));
 
-        tester().getQueryRunner().execute(format(
+        tester().getPlanTester().executeStatement(format(
                 "CREATE TABLE  %s (struct_of_int) AS " +
                         "SELECT cast(row(5, 6) as row(a bigint, b bigint)) as struct_of_int where false",
                 tableName));
@@ -165,7 +166,7 @@ public class TestConnectorPushdownRulesWithHive
                                         ImmutableMap.of(p.symbol("struct_of_int", baseType), fullColumn))))
                 .matches(
                         project(
-                                ImmutableMap.of("expr", expression("col")),
+                                ImmutableMap.of("expr", expression(new SymbolReference("col"))),
                                 tableScan(
                                         hiveTable.withProjectedColumns(ImmutableSet.of(fullColumn))::equals,
                                         TupleDomain.all(),
@@ -190,7 +191,7 @@ public class TestConnectorPushdownRulesWithHive
                 .on(p ->
                         p.project(
                                 Assignments.of(
-                                        p.symbol("expr_deref", BIGINT), new SubscriptExpression(p.symbol("struct_of_int", baseType).toSymbolReference(), new LongLiteral("1"))),
+                                        p.symbol("expr_deref", BIGINT), new SubscriptExpression(p.symbol("struct_of_int", baseType).toSymbolReference(), new LongLiteral(1))),
                                 p.tableScan(
                                         table,
                                         ImmutableList.of(p.symbol("struct_of_int", baseType)),
@@ -209,7 +210,7 @@ public class TestConnectorPushdownRulesWithHive
     public void testPredicatePushdown()
     {
         String tableName = "predicate_test";
-        tester().getQueryRunner().execute(format("CREATE TABLE %s (a, b) AS SELECT 5, 6", tableName));
+        tester().getPlanTester().executeStatement(format("CREATE TABLE %s (a, b) AS SELECT 5, 6", tableName));
 
         PushPredicateIntoTableScan pushPredicateIntoTableScan = new PushPredicateIntoTableScan(tester().getPlannerContext(), tester().getTypeAnalyzer(), false);
 
@@ -221,13 +222,13 @@ public class TestConnectorPushdownRulesWithHive
         tester().assertThat(pushPredicateIntoTableScan)
                 .on(p ->
                         p.filter(
-                                PlanBuilder.expression("a = 5"),
+                                new ComparisonExpression(EQUAL, new SymbolReference("a"), new LongLiteral(5)),
                                 p.tableScan(
                                         table,
                                         ImmutableList.of(p.symbol("a", INTEGER)),
                                         ImmutableMap.of(p.symbol("a", INTEGER), column))))
                 .matches(filter(
-                        "a = 5",
+                        new ComparisonExpression(EQUAL, new SymbolReference("a"), new LongLiteral(5)),
                         tableScan(
                                 tableHandle -> ((HiveTableHandle) tableHandle).getCompactEffectivePredicate().getDomains().get()
                                         .equals(ImmutableMap.of(column, Domain.singleValue(INTEGER, 5L))),
@@ -241,7 +242,7 @@ public class TestConnectorPushdownRulesWithHive
     public void testColumnPruningProjectionPushdown()
     {
         String tableName = "column_pruning_projection_test";
-        tester().getQueryRunner().execute(format("CREATE TABLE %s (a, b) AS SELECT 5, 6", tableName));
+        tester().getPlanTester().executeStatement(format("CREATE TABLE %s (a, b) AS SELECT 5, 6", tableName));
 
         PruneTableScanColumns pruneTableScanColumns = new PruneTableScanColumns(tester().getMetadata());
 
@@ -266,7 +267,7 @@ public class TestConnectorPushdownRulesWithHive
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("expr", expression("COLA")),
+                                ImmutableMap.of("expr", expression(new SymbolReference("COLA"))),
                                 tableScan(
                                         hiveTable.withProjectedColumns(ImmutableSet.of(columnA))::equals,
                                         TupleDomain.all(),
@@ -279,7 +280,7 @@ public class TestConnectorPushdownRulesWithHive
     public void testPushdownWithDuplicateExpressions()
     {
         String tableName = "duplicate_expressions";
-        tester().getQueryRunner().execute(format(
+        tester().getPlanTester().executeStatement(format(
                 "CREATE TABLE  %s (struct_of_bigint, just_bigint) AS SELECT cast(row(5, 6) AS row(a bigint, b bigint)) AS struct_of_int, 5 AS just_bigint WHERE false",
                 tableName));
 
@@ -322,8 +323,8 @@ public class TestConnectorPushdownRulesWithHive
                 })
                 .matches(project(
                         ImmutableMap.of(
-                                "column_ref", expression("just_bigint_0"),
-                                "negated_column_ref", expression("- just_bigint_0")),
+                                "column_ref", expression(new SymbolReference("just_bigint_0")),
+                                "negated_column_ref", expression(new ArithmeticUnaryExpression(MINUS, new SymbolReference("just_bigint_0")))),
                         tableScan(
                                 hiveTable.withProjectedColumns(ImmutableSet.of(bigintColumn))::equals,
                                 TupleDomain.all(),
@@ -332,8 +333,8 @@ public class TestConnectorPushdownRulesWithHive
         // Test Dereference pushdown
         tester().assertThat(pushProjectionIntoTableScan)
                 .on(p -> {
-                    SubscriptExpression subscript = new SubscriptExpression(p.symbol("struct_of_bigint", ROW_TYPE).toSymbolReference(), new LongLiteral("1"));
-                    Expression sum = new ArithmeticBinaryExpression(ADD, subscript, new LongLiteral("2"));
+                    SubscriptExpression subscript = new SubscriptExpression(p.symbol("struct_of_bigint", ROW_TYPE).toSymbolReference(), new LongLiteral(1));
+                    Expression sum = new ArithmeticBinaryExpression(ADD, subscript, new LongLiteral(2));
                     return p.project(
                             Assignments.of(
                                     // The subscript expression instance is part of both the assignments
@@ -347,7 +348,7 @@ public class TestConnectorPushdownRulesWithHive
                 .matches(project(
                         ImmutableMap.of(
                                 "expr_deref", expression(new SymbolReference("struct_of_bigint#a")),
-                                "expr_deref_2", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("struct_of_bigint#a"), new LongLiteral("2")))),
+                                "expr_deref_2", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("struct_of_bigint#a"), new LongLiteral(2)))),
                         tableScan(
                                 hiveTable.withProjectedColumns(ImmutableSet.of(partialColumn))::equals,
                                 TupleDomain.all(),

@@ -21,6 +21,10 @@ import io.trino.Session;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.spi.type.Type;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -32,10 +36,6 @@ import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.SetOperationNode;
 import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.List;
 import java.util.Map;
@@ -47,13 +47,12 @@ import static com.google.common.collect.Iterables.concat;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.tree.FrameBound.Type.UNBOUNDED_FOLLOWING;
-import static io.trino.sql.tree.FrameBound.Type.UNBOUNDED_PRECEDING;
-import static io.trino.sql.tree.WindowFrame.Type.ROWS;
+import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_FOLLOWING;
+import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_PRECEDING;
+import static io.trino.sql.planner.plan.WindowFrameType.ROWS;
 import static java.util.Objects.requireNonNull;
 
 public class SetOperationNodeTranslator
@@ -63,15 +62,6 @@ public class SetOperationNodeTranslator
     private final PlanNodeIdAllocator idAllocator;
     private final ResolvedFunction countFunction;
     private final ResolvedFunction rowNumberFunction;
-
-    public SetOperationNodeTranslator(Session session, Metadata metadata, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
-    {
-        this.symbolAllocator = requireNonNull(symbolAllocator, "SymbolAllocator is null");
-        this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
-        requireNonNull(metadata, "metadata is null");
-        this.countFunction = metadata.resolveBuiltinFunction("count", fromTypes(BOOLEAN));
-        this.rowNumberFunction = metadata.resolveBuiltinFunction("row_number", ImmutableList.of());
-    }
 
     public TranslationResult makeSetContainmentPlanForDistinct(SetOperationNode node)
     {
@@ -90,6 +80,15 @@ public class SetOperationNodeTranslator
         AggregationNode aggregation = computeCounts(union, outputs, markers, aggregationOutputs);
 
         return new TranslationResult(aggregation, aggregationOutputs);
+    }
+
+    public SetOperationNodeTranslator(Session session, Metadata metadata, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
+    {
+        this.symbolAllocator = requireNonNull(symbolAllocator, "SymbolAllocator is null");
+        this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
+        requireNonNull(metadata, "metadata is null");
+        this.countFunction = metadata.resolveBuiltinFunction("count", fromTypes(BOOLEAN));
+        this.rowNumberFunction = metadata.resolveBuiltinFunction("row_number", ImmutableList.of());
     }
 
     public TranslationResult makeSetContainmentPlanForAll(SetOperationNode node)
@@ -146,7 +145,7 @@ public class SetOperationNodeTranslator
 
         // add extra marker fields to the projection
         for (int i = 0; i < markers.size(); ++i) {
-            Expression expression = (i == markerIndex) ? TRUE_LITERAL : new Cast(new NullLiteral(), toSqlType(BOOLEAN));
+            Expression expression = (i == markerIndex) ? TRUE_LITERAL : new Cast(new NullLiteral(), BOOLEAN);
             assignments.put(symbolAllocator.newSymbol(markers.get(i).getName(), BOOLEAN), expression);
         }
 
@@ -189,7 +188,7 @@ public class SetOperationNodeTranslator
     private WindowNode appendCounts(UnionNode sourceNode, List<Symbol> originalColumns, List<Symbol> markers, List<Symbol> countOutputs, Symbol rowNumberSymbol)
     {
         ImmutableMap.Builder<Symbol, WindowNode.Function> functions = ImmutableMap.builder();
-        WindowNode.Frame defaultFrame = new WindowNode.Frame(ROWS, UNBOUNDED_PRECEDING, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+        WindowNode.Frame defaultFrame = new WindowNode.Frame(ROWS, UNBOUNDED_PRECEDING, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty());
 
         for (int i = 0; i < markers.size(); i++) {
             Symbol output = countOutputs.get(i);

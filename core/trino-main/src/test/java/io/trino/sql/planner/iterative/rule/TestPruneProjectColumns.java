@@ -14,6 +14,7 @@
 package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -41,9 +42,9 @@ public class TestPruneProjectColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("b", expression("b")),
+                                ImmutableMap.of("b", expression(new SymbolReference("b"))),
                                 strictProject(
-                                        ImmutableMap.of("b", expression("b")),
+                                        ImmutableMap.of("b", expression(new SymbolReference("b"))),
                                         values("a", "b"))));
     }
 

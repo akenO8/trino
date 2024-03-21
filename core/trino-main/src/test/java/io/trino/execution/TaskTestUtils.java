@@ -16,6 +16,8 @@ package io.trino.execution;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.json.ObjectMapperProvider;
+import io.airlift.tracing.Tracing;
+import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.trino.client.NodeVersion;
 import io.trino.connector.CatalogServiceProvider;
@@ -44,6 +46,7 @@ import io.trino.sql.gen.JoinFilterFunctionCompiler;
 import io.trino.sql.gen.OrderingCompiler;
 import io.trino.sql.gen.PageFunctionCompiler;
 import io.trino.sql.planner.CompilerConfig;
+import io.trino.sql.planner.IrTypeAnalyzer;
 import io.trino.sql.planner.LocalExecutionPlanner;
 import io.trino.sql.planner.NodePartitioningManager;
 import io.trino.sql.planner.Partitioning;
@@ -69,7 +72,6 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
-import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
 import static io.trino.testing.TestingHandles.TEST_TABLE_HANDLE;
 
 public final class TaskTestUtils
@@ -151,7 +153,7 @@ public final class TaskTestUtils
         PageFunctionCompiler pageFunctionCompiler = new PageFunctionCompiler(PLANNER_CONTEXT.getFunctionManager(), 0);
         return new LocalExecutionPlanner(
                 PLANNER_CONTEXT,
-                createTestingTypeAnalyzer(PLANNER_CONTEXT),
+                new IrTypeAnalyzer(PLANNER_CONTEXT),
                 Optional.empty(),
                 pageSourceManager,
                 new IndexManager(CatalogServiceProvider.fail()),
@@ -179,7 +181,7 @@ public final class TaskTestUtils
                 blockTypeOperators,
                 PLANNER_CONTEXT.getTypeOperators(),
                 new TableExecuteContextManager(),
-                new ExchangeManagerRegistry(),
+                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer()),
                 new NodeVersion("test"),
                 new CompilerConfig());
     }

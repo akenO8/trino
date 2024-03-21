@@ -21,6 +21,13 @@ import io.trino.cost.StatsProvider;
 import io.trino.metadata.Metadata;
 import io.trino.operator.RetryPolicy;
 import io.trino.sql.DynamicFilters;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.BetweenPredicate;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.LogicalExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy;
 import io.trino.sql.planner.assertions.BasePlanTest;
@@ -41,6 +48,14 @@ import static io.trino.SystemSessionProperties.FILTERING_SEMI_JOIN_TO_INNER;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
 import static io.trino.SystemSessionProperties.RETRY_POLICY;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.MODULUS;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.SUBTRACT;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.LogicalExpression.Operator.AND;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.PARTITIONED;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.DynamicFilterPattern;
@@ -57,10 +72,7 @@ import static io.trino.sql.planner.plan.ExchangeNode.Scope.LOCAL;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.REMOTE;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPLICATE;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.planner.plan.JoinType.INNER;
 
 public class TestAddDynamicFilterSource
         extends BasePlanTest
@@ -139,7 +151,8 @@ public class TestAddDynamicFilterSource
                     "SELECT * FROM orders WHERE orderkey IN (SELECT orderkey FROM lineitem WHERE linenumber % 4 = 0)",
                     noSemiJoinRewrite(joinDistributionType),
                     anyTree(
-                            filter("S",
+                            filter(
+                                    new SymbolReference("S"),
                                     semiJoin("X", "Y", "S", Optional.of(semiJoinDistributionType), Optional.of(true),
                                             node(
                                                     FilterNode.class,
@@ -154,7 +167,7 @@ public class TestAddDynamicFilterSource
                                                                     DynamicFilterSourceNode.class,
                                                                     project(
                                                                             filter(
-                                                                                    "Z % 4 = 0",
+                                                                                    new ComparisonExpression(EQUAL, new ArithmeticBinaryExpression(MODULUS, new SymbolReference("Z"), new LongLiteral(4)), new LongLiteral(0)),
                                                                                     tableScan("lineitem", ImmutableMap.of("Y", "orderkey", "Z", "linenumber")))))))))));
         }
     }
@@ -222,29 +235,31 @@ public class TestAddDynamicFilterSource
         assertDistributedPlan(
                 "SELECT o.orderkey FROM orders o, lineitem l WHERE o.orderkey BETWEEN l.orderkey AND l.partkey",
                 anyTree(
-                        filter("O_ORDERKEY BETWEEN L_ORDERKEY AND L_PARTKEY",
+                        filter(
+                                new BetweenPredicate(new SymbolReference("O_ORDERKEY"), new SymbolReference("L_ORDERKEY"), new SymbolReference("L_PARTKEY")),
                                 join(INNER, builder -> builder
                                         .dynamicFilter(ImmutableList.of(
-                                                new DynamicFilterPattern("O_ORDERKEY", GREATER_THAN_OR_EQUAL, "L_ORDERKEY"),
-                                                new DynamicFilterPattern("O_ORDERKEY", LESS_THAN_OR_EQUAL, "L_PARTKEY")))
+                                                new DynamicFilterPattern(new SymbolReference("L_ORDERKEY"), LESS_THAN_OR_EQUAL, "O_ORDERKEY"),
+                                                new DynamicFilterPattern(new SymbolReference("L_PARTKEY"), GREATER_THAN_OR_EQUAL, "O_ORDERKEY")))
                                         .left(
                                                 filter(
                                                         TRUE_LITERAL,
-                                                        tableScan("orders", ImmutableMap.of("O_ORDERKEY", "orderkey"))))
+                                                        tableScan("lineitem", ImmutableMap.of("L_ORDERKEY", "orderkey", "L_PARTKEY", "partkey"))))
                                         .right(
                                                 exchange(
                                                         LOCAL,
                                                         exchange(
                                                                 REMOTE,
-                                                                node(
-                                                                        DynamicFilterSourceNode.class,
-                                                                        tableScan("lineitem", ImmutableMap.of("L_ORDERKEY", "orderkey", "L_PARTKEY", "partkey"))))))))));
+                                                                node(DynamicFilterSourceNode.class,
+                                                                        tableScan("orders", ImmutableMap.of("O_ORDERKEY", "orderkey"))))))))));
 
         // TODO: Add support for dynamic filters in the below case
         assertDistributedPlan(
                 "SELECT o.orderkey FROM orders o, lineitem l WHERE o.orderkey >= l.orderkey AND o.orderkey <= l.partkey - 1",
+                withJoinDistributionType(PARTITIONED),
                 anyTree(
-                        filter("O_ORDERKEY >= L_ORDERKEY AND O_ORDERKEY <= expr",
+                        filter(
+                                new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(GREATER_THAN_OR_EQUAL, new SymbolReference("O_ORDERKEY"), new SymbolReference("L_ORDERKEY")), new ComparisonExpression(LESS_THAN_OR_EQUAL, new SymbolReference("O_ORDERKEY"), new SymbolReference("expr")))),
                                 join(INNER, builder -> builder
                                         .left(
                                                 tableScan("orders", ImmutableMap.of("O_ORDERKEY", "orderkey")))
@@ -252,7 +267,7 @@ public class TestAddDynamicFilterSource
                                                 exchange(
                                                         LOCAL,
                                                         project(
-                                                                ImmutableMap.of("expr", expression("L_PARTKEY - BIGINT '1'")),
+                                                                ImmutableMap.of("expr", expression(new ArithmeticBinaryExpression(SUBTRACT, new SymbolReference("L_PARTKEY"), new GenericLiteral(BIGINT, "1")))),
                                                                 exchange(
                                                                         REMOTE,
                                                                         tableScan("lineitem", ImmutableMap.of("L_ORDERKEY", "orderkey", "L_PARTKEY", "partkey"))))))))));
@@ -299,7 +314,7 @@ public class TestAddDynamicFilterSource
 
     private Session noSemiJoinRewrite(JoinDistributionType distributionType)
     {
-        return Session.builder(getQueryRunner().getDefaultSession())
+        return Session.builder(getPlanTester().getDefaultSession())
                 .setSystemProperty(FILTERING_SEMI_JOIN_TO_INNER, "false")
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, distributionType.name())
                 .build();
@@ -307,7 +322,7 @@ public class TestAddDynamicFilterSource
 
     private Session withJoinDistributionType(JoinDistributionType distributionType)
     {
-        return Session.builder(getQueryRunner().getDefaultSession())
+        return Session.builder(getPlanTester().getDefaultSession())
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, JoinReorderingStrategy.NONE.name())
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, distributionType.name())
                 .build();

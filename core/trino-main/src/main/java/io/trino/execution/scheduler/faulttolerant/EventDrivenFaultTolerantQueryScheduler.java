@@ -37,8 +37,14 @@ import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.trino.Session;
+import io.trino.cost.RuntimeInfoProvider;
+import io.trino.cost.StaticRuntimeInfoProvider;
+import io.trino.exchange.ExchangeContextInstance;
 import io.trino.exchange.SpoolingExchangeInput;
 import io.trino.execution.BasicStageStats;
 import io.trino.execution.ExecutionFailureInfo;
@@ -65,8 +71,7 @@ import io.trino.execution.scheduler.QueryScheduler;
 import io.trino.execution.scheduler.SplitSchedulerStats;
 import io.trino.execution.scheduler.TaskExecutionStats;
 import io.trino.execution.scheduler.faulttolerant.NodeAllocator.NodeLease;
-import io.trino.execution.scheduler.faulttolerant.OutputDataSizeEstimator.OutputDataSizeEstimateResult;
-import io.trino.execution.scheduler.faulttolerant.OutputDataSizeEstimator.OutputDataSizeEstimateStatus;
+import io.trino.execution.scheduler.faulttolerant.OutputStatsEstimator.OutputStatsEstimateResult;
 import io.trino.execution.scheduler.faulttolerant.PartitionMemoryEstimator.MemoryRequirements;
 import io.trino.execution.scheduler.faulttolerant.SplitAssigner.AssignmentResult;
 import io.trino.execution.scheduler.faulttolerant.SplitAssigner.Partition;
@@ -88,10 +93,9 @@ import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSourceHandle;
 import io.trino.spi.exchange.ExchangeSourceOutputSelector;
 import io.trino.split.RemoteSplit;
+import io.trino.sql.planner.AdaptivePlanner;
 import io.trino.sql.planner.NodePartitioningManager;
 import io.trino.sql.planner.PlanFragment;
-import io.trino.sql.planner.PlanFragmentIdAllocator;
-import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.SubPlan;
 import io.trino.sql.planner.optimizations.PlanNodeSearcher;
 import io.trino.sql.planner.plan.AggregationNode;
@@ -100,6 +104,7 @@ import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.RemoteSourceNode;
+import io.trino.tracing.TrinoAttributes;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
@@ -110,14 +115,16 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.ref.SoftReference;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -137,8 +144,6 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionMaxPartitionCount;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionRuntimeAdaptivePartitioningMaxTaskSize;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionRuntimeAdaptivePartitioningPartitionCount;
@@ -149,6 +154,7 @@ import static io.trino.SystemSessionProperties.getRetryInitialDelay;
 import static io.trino.SystemSessionProperties.getRetryMaxDelay;
 import static io.trino.SystemSessionProperties.getRetryPolicy;
 import static io.trino.SystemSessionProperties.getTaskRetryAttemptsPerTask;
+import static io.trino.SystemSessionProperties.isFaultTolerantExecutionAdaptiveQueryPlanningEnabled;
 import static io.trino.SystemSessionProperties.isFaultTolerantExecutionRuntimeAdaptivePartitioningEnabled;
 import static io.trino.SystemSessionProperties.isFaultTolerantExecutionStageEstimationForEagerParentEnabled;
 import static io.trino.execution.BasicStageStats.aggregateBasicStageStats;
@@ -170,15 +176,12 @@ import static io.trino.spi.ErrorType.USER_ERROR;
 import static io.trino.spi.StandardErrorCode.EXCEEDED_TIME_LIMIT;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.REMOTE_HOST_GONE;
+import static io.trino.spi.StandardErrorCode.USER_CANCELED;
 import static io.trino.spi.exchange.Exchange.SourceHandlesDeliveryMode.EAGER;
-import static io.trino.sql.planner.RuntimeAdaptivePartitioningRewriter.consumesHashPartitionedInput;
-import static io.trino.sql.planner.RuntimeAdaptivePartitioningRewriter.getMaxPlanFragmentId;
-import static io.trino.sql.planner.RuntimeAdaptivePartitioningRewriter.getMaxPlanId;
-import static io.trino.sql.planner.RuntimeAdaptivePartitioningRewriter.overridePartitionCountRecursively;
 import static io.trino.sql.planner.SystemPartitioningHandle.COORDINATOR_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.TopologicalOrderSubPlanVisitor.sortPlanInTopologicalOrder;
-import static io.trino.sql.planner.plan.ExchangeNode.Type.REPLICATE;
+import static io.trino.tracing.TrinoAttributes.FAILURE_MESSAGE;
 import static io.trino.util.Failures.toFailure;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
@@ -208,13 +211,15 @@ public class EventDrivenFaultTolerantQueryScheduler
     private final Tracer tracer;
     private final SplitSchedulerStats schedulerStats;
     private final PartitionMemoryEstimatorFactory memoryEstimatorFactory;
-    private final OutputDataSizeEstimatorFactory outputDataSizeEstimatorFactory;
+    private final OutputStatsEstimatorFactory outputStatsEstimatorFactory;
     private final NodePartitioningManager nodePartitioningManager;
     private final ExchangeManager exchangeManager;
     private final NodeAllocatorService nodeAllocatorService;
     private final FailureDetector failureDetector;
     private final DynamicFilterService dynamicFilterService;
     private final TaskExecutionStats taskExecutionStats;
+    private final AdaptivePlanner adaptivePlanner;
+    private final boolean adaptiveQueryPlanningEnabled;
     private final SubPlan originalPlan;
     private final boolean stageEstimationForEagerParentEnabled;
 
@@ -238,13 +243,14 @@ public class EventDrivenFaultTolerantQueryScheduler
             Tracer tracer,
             SplitSchedulerStats schedulerStats,
             PartitionMemoryEstimatorFactory memoryEstimatorFactory,
-            OutputDataSizeEstimatorFactory outputDataSizeEstimatorFactory,
+            OutputStatsEstimatorFactory outputStatsEstimatorFactory,
             NodePartitioningManager nodePartitioningManager,
             ExchangeManager exchangeManager,
             NodeAllocatorService nodeAllocatorService,
             FailureDetector failureDetector,
             DynamicFilterService dynamicFilterService,
             TaskExecutionStats taskExecutionStats,
+            AdaptivePlanner adaptivePlanner,
             SubPlan originalPlan)
     {
         this.queryStateMachine = requireNonNull(queryStateMachine, "queryStateMachine is null");
@@ -261,13 +267,15 @@ public class EventDrivenFaultTolerantQueryScheduler
         this.tracer = requireNonNull(tracer, "tracer is null");
         this.schedulerStats = requireNonNull(schedulerStats, "schedulerStats is null");
         this.memoryEstimatorFactory = requireNonNull(memoryEstimatorFactory, "memoryEstimatorFactory is null");
-        this.outputDataSizeEstimatorFactory = requireNonNull(outputDataSizeEstimatorFactory, "outputDataSizeEstimatorFactory is null");
+        this.outputStatsEstimatorFactory = requireNonNull(outputStatsEstimatorFactory, "outputStatsEstimatorFactory is null");
         this.nodePartitioningManager = requireNonNull(nodePartitioningManager, "partitioningSchemeFactory is null");
         this.exchangeManager = requireNonNull(exchangeManager, "exchangeManager is null");
         this.nodeAllocatorService = requireNonNull(nodeAllocatorService, "nodeAllocatorService is null");
         this.failureDetector = requireNonNull(failureDetector, "failureDetector is null");
         this.dynamicFilterService = requireNonNull(dynamicFilterService, "dynamicFilterService is null");
         this.taskExecutionStats = requireNonNull(taskExecutionStats, "taskExecutionStats is null");
+        this.adaptivePlanner = requireNonNull(adaptivePlanner, "adaptivePlanner is null");
+        this.adaptiveQueryPlanningEnabled = isFaultTolerantExecutionAdaptiveQueryPlanningEnabled(queryStateMachine.getSession());
         this.originalPlan = requireNonNull(originalPlan, "originalPlan is null");
 
         this.stageEstimationForEagerParentEnabled = isFaultTolerantExecutionStageEstimationForEagerParentEnabled(queryStateMachine.getSession());
@@ -330,7 +338,7 @@ public class EventDrivenFaultTolerantQueryScheduler
                     tracer,
                     schedulerStats,
                     memoryEstimatorFactory,
-                    outputDataSizeEstimatorFactory.create(session),
+                    outputStatsEstimatorFactory.create(session),
                     partitioningSchemeFactory,
                     exchangeManager,
                     getTaskRetryAttemptsPerTask(session) + 1,
@@ -351,7 +359,9 @@ public class EventDrivenFaultTolerantQueryScheduler
                     isFaultTolerantExecutionRuntimeAdaptivePartitioningEnabled(session),
                     getFaultTolerantExecutionRuntimeAdaptivePartitioningPartitionCount(session),
                     getFaultTolerantExecutionRuntimeAdaptivePartitioningMaxTaskSize(session),
-                    stageEstimationForEagerParentEnabled);
+                    stageEstimationForEagerParentEnabled,
+                    adaptivePlanner,
+                    adaptiveQueryPlanningEnabled);
             queryExecutor.submit(scheduler::run);
         }
         catch (Throwable t) {
@@ -439,11 +449,7 @@ public class EventDrivenFaultTolerantQueryScheduler
             // make sure that plan is not staler than stageInfos since `getStageInfo` is called asynchronously
             SubPlan plan = requireNonNull(this.plan.get(), "plan is null");
             Set<PlanFragmentId> reportedFragments = new HashSet<>();
-            StageInfo stageInfo = getStageInfo(plan, stageInfos, reportedFragments);
-            // TODO Some stages may no longer be present in the plan when adaptive re-planning is implemented
-            // TODO Figure out how to report statistics for such stages
-            verify(reportedFragments.containsAll(stageInfos.keySet()), "some stages are left unreported");
-            return stageInfo;
+            return getStageInfo(plan, stageInfos, reportedFragments);
         }
 
         private StageInfo getStageInfo(SubPlan plan, Map<PlanFragmentId, StageInfo> infos, Set<PlanFragmentId> reportedFragments)
@@ -651,11 +657,15 @@ public class EventDrivenFaultTolerantQueryScheduler
         private static final int EVENT_BUFFER_CAPACITY = 100;
         private static final long EVENT_PROCESSING_ENFORCED_FREQUENCY_MILLIS = MINUTES.toMillis(1);
         // If scheduler is stalled for SCHEDULER_STALLED_DURATION_THRESHOLD debug log will be emitted.
-        // This value must be larger than EVENT_PROCESSING_ENFORCED_FREQUENCY as prerequiste for processing is
+        // If situation persists event logs will be emitted at SCHEDULER_MAX_DEBUG_INFO_FREQUENCY.
+        // SCHEDULER_STALLED_DURATION_THRESHOLD must be larger than EVENT_PROCESSING_ENFORCED_FREQUENCY as prerequiste for processing is
         // that there are no events in the event queue.
-        private static final long SCHEDULER_STALLED_DURATION_THRESHOLD_MILLIS = MINUTES.toMillis(5);
+        private static final long SCHEDULER_STALLED_DURATION_THRESHOLD_MILLIS = MINUTES.toMillis(10);
+        private static final long SCHEDULER_MAX_DEBUG_INFO_FREQUENCY_MILLIS = MINUTES.toMillis(10);
         private static final long SCHEDULER_STALLED_DURATION_ON_TIME_EXCEEDED_THRESHOLD_MILLIS = SECONDS.toMillis(30);
+        private static final long SCHEDULER_STALLED_DURATION_ON_USER_CANCELED_THRESHOLD_MILLIS = SECONDS.toMillis(60);
         private static final int EVENTS_DEBUG_INFOS_PER_BUCKET = 10;
+        private static final int TASK_FAILURES_LOG_SIZE = 5;
 
         private final QueryStateMachine queryStateMachine;
         private final Metadata metadata;
@@ -667,9 +677,10 @@ public class EventDrivenFaultTolerantQueryScheduler
         private final ExecutorService queryExecutor;
         private final ScheduledExecutorService scheduledExecutorService;
         private final Tracer tracer;
+        private final Span schedulerSpan;
         private final SplitSchedulerStats schedulerStats;
         private final PartitionMemoryEstimatorFactory memoryEstimatorFactory;
-        private final OutputDataSizeEstimator outputDataSizeEstimator;
+        private final OutputStatsEstimator outputStatsEstimator;
         private final FaultTolerantPartitioningSchemeFactory partitioningSchemeFactory;
         private final ExchangeManager exchangeManager;
         private final int maxTaskExecutionAttempts;
@@ -688,14 +699,20 @@ public class EventDrivenFaultTolerantQueryScheduler
 
         private final BlockingQueue<Event> eventQueue = new LinkedBlockingQueue<>();
         private final List<Event> eventBuffer = new ArrayList<>(EVENT_BUFFER_CAPACITY);
-        private final Stopwatch eventDebugInfoStopwatch = Stopwatch.createUnstarted();
+        private final Stopwatch noEventsStopwatch = Stopwatch.createUnstarted();
+        private final Stopwatch debugInfoStopwatch = Stopwatch.createUnstarted();
         private final Optional<EventDebugInfos> eventDebugInfos;
+        private final Queue<Map.Entry<TaskId, RuntimeException>> taskFailures = new ArrayDeque<>(TASK_FAILURES_LOG_SIZE);
 
         private boolean started;
         private boolean runtimeAdaptivePartitioningApplied;
 
         private SubPlan plan;
         private List<SubPlan> planInTopologicalOrder;
+
+        private final AdaptivePlanner adaptivePlanner;
+        private final boolean adaptiveQueryPlanningEnabled;
+
         private final Map<StageId, StageExecution> stageExecutions = new HashMap<>();
         private final Map<SubPlan, IsReadyForExecutionResult> isReadyForExecutionCache = new HashMap<>();
         private final SetMultimap<StageId, StageId> stageConsumers = HashMultimap.create();
@@ -722,7 +739,7 @@ public class EventDrivenFaultTolerantQueryScheduler
                 Tracer tracer,
                 SplitSchedulerStats schedulerStats,
                 PartitionMemoryEstimatorFactory memoryEstimatorFactory,
-                OutputDataSizeEstimator outputDataSizeEstimator,
+                OutputStatsEstimator outputStatsEstimator,
                 FaultTolerantPartitioningSchemeFactory partitioningSchemeFactory,
                 ExchangeManager exchangeManager,
                 int maxTaskExecutionAttempts,
@@ -739,7 +756,9 @@ public class EventDrivenFaultTolerantQueryScheduler
                 boolean runtimeAdaptivePartitioningEnabled,
                 int runtimeAdaptivePartitioningPartitionCount,
                 DataSize runtimeAdaptivePartitioningMaxTaskSize,
-                boolean stageEstimationForEagerParentEnabled)
+                boolean stageEstimationForEagerParentEnabled,
+                AdaptivePlanner adaptivePlanner,
+                boolean adaptiveQueryPlanningEnabled)
         {
             this.queryStateMachine = requireNonNull(queryStateMachine, "queryStateMachine is null");
             this.metadata = requireNonNull(metadata, "metadata is null");
@@ -753,7 +772,7 @@ public class EventDrivenFaultTolerantQueryScheduler
             this.tracer = requireNonNull(tracer, "tracer is null");
             this.schedulerStats = requireNonNull(schedulerStats, "schedulerStats is null");
             this.memoryEstimatorFactory = requireNonNull(memoryEstimatorFactory, "memoryEstimatorFactory is null");
-            this.outputDataSizeEstimator = requireNonNull(outputDataSizeEstimator, "outputDataSizeEstimator is null");
+            this.outputStatsEstimator = requireNonNull(outputStatsEstimator, "outputStatsEstimator is null");
             this.partitioningSchemeFactory = requireNonNull(partitioningSchemeFactory, "partitioningSchemeFactory is null");
             this.exchangeManager = requireNonNull(exchangeManager, "exchangeManager is null");
             checkArgument(maxTaskExecutionAttempts > 0, "maxTaskExecutionAttempts must be greater than zero: %s", maxTaskExecutionAttempts);
@@ -771,7 +790,13 @@ public class EventDrivenFaultTolerantQueryScheduler
             this.runtimeAdaptivePartitioningEnabled = runtimeAdaptivePartitioningEnabled;
             this.runtimeAdaptivePartitioningPartitionCount = runtimeAdaptivePartitioningPartitionCount;
             this.runtimeAdaptivePartitioningMaxTaskSizeInBytes = requireNonNull(runtimeAdaptivePartitioningMaxTaskSize, "runtimeAdaptivePartitioningMaxTaskSize is null").toBytes();
+            this.adaptivePlanner = requireNonNull(adaptivePlanner, "adaptivePlanner is null");
+            this.adaptiveQueryPlanningEnabled = adaptiveQueryPlanningEnabled;
             this.stageEstimationForEagerParentEnabled = stageEstimationForEagerParentEnabled;
+            this.schedulerSpan = tracer.spanBuilder("scheduler")
+                .setParent(Context.current().with(queryStateMachine.getSession().getQuerySpan()))
+                .setAttribute(TrinoAttributes.QUERY_ID, queryStateMachine.getQueryId().toString())
+                .startSpan();
 
             if (log.isDebugEnabled()) {
                 eventDebugInfos = Optional.of(new EventDebugInfos(queryStateMachine.getQueryId().toString(), EVENTS_DEBUG_INFOS_PER_BUCKET));
@@ -781,7 +806,7 @@ public class EventDrivenFaultTolerantQueryScheduler
             }
 
             planInTopologicalOrder = sortPlanInTopologicalOrder(plan);
-            eventDebugInfoStopwatch.start();
+            noEventsStopwatch.start();
         }
 
         public void run()
@@ -792,17 +817,6 @@ public class EventDrivenFaultTolerantQueryScheduler
             queryStateMachine.addStateChangeListener(state -> {
                 if (state.isDone()) {
                     eventQueue.add(Event.WAKE_UP);
-                }
-            });
-
-            queryStateMachine.addQueryInfoStateChangeListener(queryInfo -> {
-                if (!queryInfo.isFinalQueryInfo()) {
-                    return;
-                }
-                if (queryInfo.getState() == QueryState.FAILED
-                        && queryInfo.getErrorCode() == EXCEEDED_TIME_LIMIT.toErrorCode()
-                        && eventDebugInfoStopwatch.elapsed().toMillis() > SCHEDULER_STALLED_DURATION_ON_TIME_EXCEEDED_THRESHOLD_MILLIS) {
-                    logDebugInfoSafe(format("Scheduler stalled for %s on EXCEEDED_TIME_LIMIT", eventDebugInfoStopwatch.elapsed()));
                 }
             });
 
@@ -834,7 +848,11 @@ public class EventDrivenFaultTolerantQueryScheduler
             preSchedulingTaskContexts.clear();
             failure = closeAndAddSuppressed(failure, nodeAllocator);
 
-            failure.ifPresent(queryStateMachine::transitionToFailed);
+            failure.ifPresent(fail -> {
+                queryStateMachine.transitionToFailed(fail);
+                schedulerSpan.addEvent("scheduler_failure", Attributes.of(FAILURE_MESSAGE, fail.getMessage()));
+            });
+            schedulerSpan.end();
         }
 
         private Optional<Throwable> closeAndAddSuppressed(Optional<Throwable> existingFailure, Closeable closeable)
@@ -893,16 +911,31 @@ public class EventDrivenFaultTolerantQueryScheduler
                 eventBuffer.clear();
             }
 
+            // handle diagnostics logging on query failure
+            queryStateMachine.getFailureInfo().ifPresent(failureInfo -> {
+                if (failureInfo.getErrorCode() == EXCEEDED_TIME_LIMIT.toErrorCode()
+                        && noEventsStopwatch.elapsed().toMillis() > SCHEDULER_STALLED_DURATION_ON_TIME_EXCEEDED_THRESHOLD_MILLIS) {
+                    logDebugInfoSafe(format("Scheduler stalled for %s on EXCEEDED_TIME_LIMIT", noEventsStopwatch.elapsed()));
+                }
+                else if (failureInfo.getErrorCode() == USER_CANCELED.toErrorCode()
+                        && noEventsStopwatch.elapsed().toMillis() > SCHEDULER_STALLED_DURATION_ON_USER_CANCELED_THRESHOLD_MILLIS) {
+                    logDebugInfoSafe(format("Scheduler stalled for %s on USER_CANCLED", noEventsStopwatch.elapsed()));
+                }
+            });
+
             if (eventDebugInfoRecorded) {
                 // mark that we processed some events; we filter out some no-op events.
                 // If only no-op events appear in event queue we still treat scheduler as stuck
-                eventDebugInfoStopwatch.reset().start();
+                noEventsStopwatch.reset().start();
+                debugInfoStopwatch.reset();
             }
             else {
                 // if no events were recorded there is a chance scheduler is stalled
-                if (log.isDebugEnabled() && eventDebugInfoStopwatch.elapsed().toMillis() > SCHEDULER_STALLED_DURATION_THRESHOLD_MILLIS) {
-                    logDebugInfoSafe("Scheduler stalled for %s".formatted(eventDebugInfoStopwatch.elapsed()));
-                    eventDebugInfoStopwatch.reset().start(); // reset to prevent extensive logging
+                if (log.isDebugEnabled()
+                        && (!debugInfoStopwatch.isRunning() || debugInfoStopwatch.elapsed().toMillis() > SCHEDULER_MAX_DEBUG_INFO_FREQUENCY_MILLIS)
+                        && noEventsStopwatch.elapsed().toMillis() > SCHEDULER_STALLED_DURATION_THRESHOLD_MILLIS) {
+                    logDebugInfoSafe("Scheduler stalled for %s".formatted(noEventsStopwatch.elapsed()));
+                    debugInfoStopwatch.reset().start(); // reset to prevent extensive logging
                 }
             }
 
@@ -936,6 +969,7 @@ public class EventDrivenFaultTolerantQueryScheduler
             log.debug("Scheduler debug info for %s START; reason=%s", queryStateMachine.getQueryId(), reason);
             log.debug("General state: %s", toStringHelper(this)
                     .add("queryState", queryStateMachine.getQueryState())
+                    .add("finalQueryInfo", queryStateMachine.getFinalQueryInfo())
                     .add("maxTaskExecutionAttempts", maxTaskExecutionAttempts)
                     .add("maxTasksWaitingForNode", maxTasksWaitingForNode)
                     .add("maxTasksWaitingForExecution", maxTasksWaitingForExecution)
@@ -994,6 +1028,11 @@ public class EventDrivenFaultTolerantQueryScheduler
                     RuntimeException failure = failureCause == null ?
                             new TrinoException(GENERIC_INTERNAL_ERROR, "stage failed due to unknown error: %s".formatted(execution.getStageId())) :
                             failureCause.toException();
+
+                    taskFailures.forEach(taskFailure -> {
+                        failure.addSuppressed(new RuntimeException("Task " + taskFailure.getKey() + " failed", taskFailure.getValue()));
+                    });
+
                     queryStateMachine.transitionToFailed(failure);
                     return true;
                 }
@@ -1048,22 +1087,12 @@ public class EventDrivenFaultTolerantQueryScheduler
         {
             // Re-optimize plan here based on available runtime statistics.
             // Fragments changed due to re-optimization as well as their downstream stages are expected to be assigned new fragment ids.
-            plan = updateStagesPartitioning(plan);
-            return plan;
-        }
-
-        private SubPlan updateStagesPartitioning(SubPlan plan)
-        {
-            if (!runtimeAdaptivePartitioningEnabled || runtimeAdaptivePartitioningApplied) {
+            if (!adaptiveQueryPlanningEnabled) {
                 return plan;
             }
 
             for (SubPlan subPlan : planInTopologicalOrder) {
                 PlanFragment fragment = subPlan.getFragment();
-                if (!consumesHashPartitionedInput(fragment)) {
-                    // no input hash partitioning present
-                    continue;
-                }
 
                 StageId stageId = getStageId(fragment.getId());
                 if (stageExecutions.containsKey(stageId)) {
@@ -1071,59 +1100,53 @@ public class EventDrivenFaultTolerantQueryScheduler
                     continue;
                 }
 
-                IsReadyForExecutionResult isReadyForExecutionResult = isReadyForExecution(subPlan);
-                // Caching is not only needed to avoid duplicate calls, but also to avoid the case that a stage that
-                // is not ready now but becomes ready when updateStageExecutions.
-                // We want to avoid starting an execution without considering changing the number of partitions.
-                // TODO: think about how to eliminate the cache
-                isReadyForExecutionCache.put(subPlan, isReadyForExecutionResult);
-                if (!isReadyForExecutionResult.isReadyForExecution()) {
-                    // not ready for execution
+                if (subPlan.getChildren().isEmpty()) {
+                    // Skip leaf fragments since adaptive planner can't do much with them.
                     continue;
                 }
 
-                // calculate (estimated) input data size to determine if we want to change number of partitions at runtime
-                List<Long> partitionedInputBytes = fragment.getRemoteSourceNodes().stream()
-                        .filter(remoteSourceNode -> remoteSourceNode.getExchangeType() != REPLICATE)
-                        .map(remoteSourceNode -> remoteSourceNode.getSourceFragmentIds().stream()
-                                .mapToLong(sourceFragmentId -> {
-                                    StageId sourceStageId = getStageId(sourceFragmentId);
-                                    OutputDataSizeEstimate outputDataSizeEstimate = isReadyForExecutionResult.getSourceOutputSizeEstimates().get(sourceStageId);
-                                    verify(outputDataSizeEstimate != null, "outputDataSizeEstimate not found for source stage %s", sourceStageId);
-                                    return outputDataSizeEstimate.getTotalSizeInBytes();
-                                })
-                                .sum())
-                        .collect(toImmutableList());
-                // Currently the memory estimation is simplified:
-                // if it's an aggregation, then we use the total input bytes as the memory consumption
-                // if it involves multiple joins, conservatively we assume the smallest remote source will be streamed through
-                // and use the sum of input bytes of other remote sources as the memory consumption
-                // TODO: more accurate memory estimation based on context (https://github.com/trinodb/trino/issues/18698)
-                long estimatedMemoryConsumptionInBytes = (partitionedInputBytes.size() == 1) ? partitionedInputBytes.get(0) :
-                        partitionedInputBytes.stream().mapToLong(Long::longValue).sum() - Collections.min(partitionedInputBytes);
+                IsReadyForExecutionResult isReadyForExecutionResult = isReadyForExecution(subPlan);
+                // Caching is not only needed to avoid duplicate calls, but also to avoid the case that a stage that
+                // is not ready now but becomes ready when updateStageExecutions.
+                // We want to avoid starting an execution without considering changes in plan.
+                // TODO: think about how to eliminate the cache
+                IsReadyForExecutionResult oldValue = isReadyForExecutionCache.put(subPlan, isReadyForExecutionResult);
 
-                int partitionCount = fragment.getPartitionCount().orElse(maxPartitionCount);
-                if (estimatedMemoryConsumptionInBytes > runtimeAdaptivePartitioningMaxTaskSizeInBytes * partitionCount) {
-                    log.info("Stage %s has an estimated memory consumption of %s, changing partition count from %s to %s",
-                            stageId, succinctBytes(estimatedMemoryConsumptionInBytes), partitionCount, runtimeAdaptivePartitioningPartitionCount);
-                    runtimeAdaptivePartitioningApplied = true;
-                    PlanFragmentIdAllocator planFragmentIdAllocator = new PlanFragmentIdAllocator(getMaxPlanFragmentId(planInTopologicalOrder) + 1);
-                    PlanNodeIdAllocator planNodeIdAllocator = new PlanNodeIdAllocator(getMaxPlanId(planInTopologicalOrder) + 1);
-                    return overridePartitionCountRecursively(
-                            plan,
-                            partitionCount,
-                            runtimeAdaptivePartitioningPartitionCount,
-                            planFragmentIdAllocator,
-                            planNodeIdAllocator,
-                            planInTopologicalOrder.stream()
-                                    .map(SubPlan::getFragment)
-                                    .map(PlanFragment::getId)
-                                    .filter(planFragmentId -> stageExecutions.containsKey(getStageId(planFragmentId)))
-                                    .collect(toImmutableSet()));
+                // Run adaptive planner only if the stage is ready for execution, and it was not ready before.
+                // The second condition ensures that we don't repeatedly re-optimize the plan if the stage was
+                // already ready for execution.
+                if (isReadyForExecutionResult.isReadyForExecution()
+                        && (oldValue == null || !oldValue.isReadyForExecution())) {
+                    return adaptivePlanner.optimize(plan, createRuntimeInfoProvider());
                 }
             }
 
             return plan;
+        }
+
+        private RuntimeInfoProvider createRuntimeInfoProvider()
+        {
+            ImmutableMap.Builder<PlanFragmentId, OutputStatsEstimateResult> stageRuntimeOutputStats = ImmutableMap.builder();
+            ImmutableMap.Builder<PlanFragmentId, PlanFragment> planFragments = ImmutableMap.builder();
+            planInTopologicalOrder.forEach(subPlan -> planFragments.put(subPlan.getFragment().getId(), subPlan.getFragment()));
+            stageExecutions.forEach((stageId, stageExecution) -> {
+                if (isStageRuntimeStatsReady(stageExecution)) {
+                    OutputStatsEstimateResult runtimeOutputStats = stageExecution.getOutputStats(stageExecutions::get, false).get();
+                    stageRuntimeOutputStats.put(
+                            stageExecution.getStageFragment().getId(),
+                            runtimeOutputStats);
+                }
+            });
+
+            return new StaticRuntimeInfoProvider(stageRuntimeOutputStats.buildOrThrow(), planFragments.buildOrThrow());
+        }
+
+        private boolean isStageRuntimeStatsReady(StageExecution stageExecution)
+        {
+            return stageExecution
+                    .getOutputStats(stageExecutions::get, false)
+                    .map(OutputStatsEstimateResult::isAccurate)
+                    .orElse(false);
         }
 
         private void updateStageExecutions()
@@ -1138,7 +1161,13 @@ public class EventDrivenFaultTolerantQueryScheduler
                 if (stageExecution == null) {
                     IsReadyForExecutionResult result = isReadyForExecutionCache.computeIfAbsent(subPlan, ignored -> isReadyForExecution(subPlan));
                     if (result.isReadyForExecution()) {
-                        createStageExecution(subPlan, fragmentId.equals(rootFragmentId), result.getSourceOutputSizeEstimates(), nextSchedulingPriority++, result.isEager());
+                        createStageExecution(
+                                subPlan,
+                                fragmentId.equals(rootFragmentId),
+                                result.getSourceOutputSizeEstimates(),
+                                nextSchedulingPriority++,
+                                result.isSpeculative(),
+                                result.isEager());
                     }
                 }
                 if (stageExecution != null && stageExecution.getState().equals(StageState.FINISHED) && !stageExecution.isExchangeClosed()) {
@@ -1158,22 +1187,27 @@ public class EventDrivenFaultTolerantQueryScheduler
         private static class IsReadyForExecutionResult
         {
             private final boolean readyForExecution;
+            private final boolean speculative;
             private final Optional<Map<StageId, OutputDataSizeEstimate>> sourceOutputSizeEstimates;
             private final boolean eager;
 
             @CheckReturnValue
-            public static IsReadyForExecutionResult ready(Map<StageId, OutputDataSizeEstimate> sourceOutputSizeEstimates, boolean eager)
+            public static IsReadyForExecutionResult ready(Map<StageId, OutputDataSizeEstimate> sourceOutputSizeEstimates, boolean eager, boolean speculative)
             {
-                return new IsReadyForExecutionResult(true, Optional.of(sourceOutputSizeEstimates), eager);
+                return new IsReadyForExecutionResult(true, Optional.of(sourceOutputSizeEstimates), eager, speculative);
             }
 
             @CheckReturnValue
             public static IsReadyForExecutionResult notReady()
             {
-                return new IsReadyForExecutionResult(false, Optional.empty(), false);
+                return new IsReadyForExecutionResult(false, Optional.empty(), false, false);
             }
 
-            private IsReadyForExecutionResult(boolean readyForExecution, Optional<Map<StageId, OutputDataSizeEstimate>> sourceOutputSizeEstimates, boolean eager)
+            private IsReadyForExecutionResult(
+                    boolean readyForExecution,
+                    Optional<Map<StageId, OutputDataSizeEstimate>> sourceOutputSizeEstimates,
+                    boolean eager,
+                    boolean speculative)
             {
                 requireNonNull(sourceOutputSizeEstimates, "sourceOutputSizeEstimates is null");
                 if (readyForExecution) {
@@ -1183,6 +1217,7 @@ public class EventDrivenFaultTolerantQueryScheduler
                     checkArgument(sourceOutputSizeEstimates.isEmpty(), "expected sourceOutputSizeEstimates to be not set");
                 }
                 this.readyForExecution = readyForExecution;
+                this.speculative = speculative;
                 this.sourceOutputSizeEstimates = sourceOutputSizeEstimates.map(ImmutableMap::copyOf);
                 this.eager = eager;
             }
@@ -1201,6 +1236,11 @@ public class EventDrivenFaultTolerantQueryScheduler
             {
                 return eager;
             }
+
+            public boolean isSpeculative()
+            {
+                return speculative;
+            }
         }
 
         private IsReadyForExecutionResult isReadyForExecution(SubPlan subPlan)
@@ -1212,11 +1252,9 @@ public class EventDrivenFaultTolerantQueryScheduler
             boolean eager = stageEstimationForEagerParentEnabled && shouldScheduleEagerly(subPlan);
             boolean speculative = false;
             int finishedSourcesCount = 0;
-            int estimatedByProgressSourcesCount = 0;
-            int estimatedBySmallInputSourcesCount = 0;
-            int estimatedForEagerParent = 0;
+            Map<String, Integer> estimateCountByKind = new HashMap<>();
 
-            ImmutableMap.Builder<StageId, OutputDataSizeEstimate> sourceOutputSizeEstimates = ImmutableMap.builder();
+            ImmutableMap.Builder<StageId, OutputDataSizeEstimate> sourceOutputStatsEstimates = ImmutableMap.builder();
 
             boolean someSourcesMadeProgress = false;
 
@@ -1249,10 +1287,10 @@ public class EventDrivenFaultTolerantQueryScheduler
                 }
                 else {
                     // source stage finished; no more checks needed
-                    OutputDataSizeEstimateResult result = sourceStageExecution.getOutputDataSize(stageExecutions::get, eager).orElseThrow();
-                    verify(result.status() == OutputDataSizeEstimateStatus.FINISHED, "expected FINISHED status but got %s", result.status());
+                    OutputStatsEstimateResult result = sourceStageExecution.getOutputStats(stageExecutions::get, eager).orElseThrow();
+                    verify(Objects.equals(result.kind(), "FINISHED"), "expected FINISHED status but got %s", result.kind());
                     finishedSourcesCount++;
-                    sourceOutputSizeEstimates.put(sourceStageExecution.getStageId(), result.outputDataSizeEstimate());
+                    sourceOutputStatsEstimates.put(sourceStageExecution.getStageId(), result.outputDataSizeEstimate());
                     someSourcesMadeProgress = true;
                     continue;
                 }
@@ -1266,20 +1304,14 @@ public class EventDrivenFaultTolerantQueryScheduler
                     // only allow speculative execution of stage if all source stages for which we cannot stream data are finished
                     return IsReadyForExecutionResult.notReady();
                 }
-
-                Optional<OutputDataSizeEstimateResult> result = sourceStageExecution.getOutputDataSize(stageExecutions::get, eager);
+                Optional<OutputStatsEstimateResult> result = sourceStageExecution.getOutputStats(stageExecutions::get, eager);
                 if (result.isEmpty()) {
                     return IsReadyForExecutionResult.notReady();
                 }
 
-                switch (result.orElseThrow().status()) {
-                    case ESTIMATED_BY_PROGRESS -> estimatedByProgressSourcesCount++;
-                    case ESTIMATED_BY_SMALL_INPUT -> estimatedBySmallInputSourcesCount++;
-                    case ESTIMATED_FOR_EAGER_PARENT -> estimatedForEagerParent++;
-                    default -> throw new IllegalStateException(format("unexpected status %s", result.orElseThrow().status())); // FINISHED handled above
-                }
+                estimateCountByKind.compute(result.orElseThrow().kind(), (k, v) -> v == null ? 0 : v + 1);
 
-                sourceOutputSizeEstimates.put(sourceStageExecution.getStageId(), result.orElseThrow().outputDataSizeEstimate());
+                sourceOutputStatsEstimates.put(sourceStageExecution.getStageId(), result.orElseThrow().outputDataSizeEstimate());
                 someSourcesMadeProgress = someSourcesMadeProgress || sourceStageExecution.isSomeProgressMade();
             }
 
@@ -1288,15 +1320,13 @@ public class EventDrivenFaultTolerantQueryScheduler
             }
 
             if (speculative) {
-                log.debug("scheduling speculative %s/%s; sources: finished=%s; estimatedByProgress=%s; estimatedSmall=%s; estimatedForEagerParent=%s",
+                log.debug("scheduling speculative %s/%s; sources: finished=%s; kinds=%s",
                         queryStateMachine.getQueryId(),
                         subPlan.getFragment().getId(),
                         finishedSourcesCount,
-                        estimatedByProgressSourcesCount,
-                        estimatedBySmallInputSourcesCount,
-                        estimatedForEagerParent);
+                        estimateCountByKind);
             }
-            return IsReadyForExecutionResult.ready(sourceOutputSizeEstimates.buildOrThrow(), eager);
+            return IsReadyForExecutionResult.ready(sourceOutputStatsEstimates.buildOrThrow(), eager, speculative);
         }
 
         private boolean shouldScheduleEagerly(SubPlan subPlan)
@@ -1352,7 +1382,13 @@ public class EventDrivenFaultTolerantQueryScheduler
             }
         }
 
-        private void createStageExecution(SubPlan subPlan, boolean rootFragment, Map<StageId, OutputDataSizeEstimate> sourceOutputSizeEstimates, int schedulingPriority, boolean eager)
+        private void createStageExecution(
+                SubPlan subPlan,
+                boolean rootFragment,
+                Map<StageId, OutputDataSizeEstimate> sourceOutputSizeEstimates,
+                int schedulingPriority,
+                boolean speculative,
+                boolean eager)
         {
             Closer closer = Closer.create();
 
@@ -1371,6 +1407,7 @@ public class EventDrivenFaultTolerantQueryScheduler
                         nodeTaskMap,
                         queryStateMachine.getStateMachineExecutor(),
                         tracer,
+                        schedulerSpan,
                         schedulerStats);
                 closer.register(stage::abort);
                 stageRegistry.add(stage);
@@ -1414,7 +1451,10 @@ public class EventDrivenFaultTolerantQueryScheduler
                 FaultTolerantPartitioningScheme sinkPartitioningScheme = partitioningSchemeFactory.get(
                         fragment.getOutputPartitioningScheme().getPartitioning().getHandle(),
                         fragment.getOutputPartitioningScheme().getPartitionCount());
-                ExchangeContext exchangeContext = new ExchangeContext(queryStateMachine.getQueryId(), new ExchangeId("external-exchange-" + stage.getStageId().getId()));
+                ExchangeContext exchangeContext = new ExchangeContextInstance(
+                        queryStateMachine.getQueryId(),
+                        new ExchangeId("external-exchange-" + stage.getStageId().getId()),
+                        schedulerSpan);
 
                 boolean preserveOrderWithinPartition = rootFragment && stage.getFragment().getPartitioning().equals(SINGLE_DISTRIBUTION);
                 Exchange exchange = closer.register(exchangeManager.createExchange(
@@ -1435,17 +1475,19 @@ public class EventDrivenFaultTolerantQueryScheduler
                 };
                 StageExecution execution = new StageExecution(
                         taskDescriptorStorage,
+                        taskFailures,
                         stage,
                         taskSource,
                         sinkPartitioningScheme,
                         exchange,
                         memoryEstimatorFactory.createPartitionMemoryEstimator(session, fragment, planFragmentLookup),
-                        outputDataSizeEstimator,
+                        outputStatsEstimator,
                         // do not retry coordinator only tasks
                         coordinatorStage ? 1 : maxTaskExecutionAttempts,
                         schedulingPriority,
                         eager,
                         dynamicFilterService);
+                execution.setSpeculative(speculative);
 
                 stageExecutions.put(execution.getStageId(), execution);
 
@@ -1830,18 +1872,22 @@ public class EventDrivenFaultTolerantQueryScheduler
     public static class StageExecution
     {
         private final TaskDescriptorStorage taskDescriptorStorage;
+        private final Queue<Map.Entry<TaskId, RuntimeException>> taskFailures;
 
         private final SqlStage stage;
         private final EventDrivenTaskSource taskSource;
         private final FaultTolerantPartitioningScheme sinkPartitioningScheme;
         private final Exchange exchange;
         private final PartitionMemoryEstimator partitionMemoryEstimator;
-        private final OutputDataSizeEstimator outputDataSizeEstimator;
+        private final OutputStatsEstimator outputStatsEstimator;
         private final int maxTaskExecutionAttempts;
         private final int schedulingPriority;
         private final boolean eager;
+        private boolean speculative;
+
         private final DynamicFilterService dynamicFilterService;
         private final long[] outputDataSize;
+        private long outputRowCount;
 
         private final Int2ObjectMap<StagePartition> partitions = new Int2ObjectOpenHashMap<>();
         private boolean noMorePartitions;
@@ -1863,24 +1909,26 @@ public class EventDrivenFaultTolerantQueryScheduler
 
         private StageExecution(
                 TaskDescriptorStorage taskDescriptorStorage,
+                Queue<Map.Entry<TaskId, RuntimeException>> taskFailures,
                 SqlStage stage,
                 EventDrivenTaskSource taskSource,
                 FaultTolerantPartitioningScheme sinkPartitioningScheme,
                 Exchange exchange,
                 PartitionMemoryEstimator partitionMemoryEstimator,
-                OutputDataSizeEstimator outputDataSizeEstimator,
+                OutputStatsEstimator outputStatsEstimator,
                 int maxTaskExecutionAttempts,
                 int schedulingPriority,
                 boolean eager,
                 DynamicFilterService dynamicFilterService)
         {
             this.taskDescriptorStorage = requireNonNull(taskDescriptorStorage, "taskDescriptorStorage is null");
+            this.taskFailures = requireNonNull(taskFailures, "taskFailures is null");
             this.stage = requireNonNull(stage, "stage is null");
             this.taskSource = requireNonNull(taskSource, "taskSource is null");
             this.sinkPartitioningScheme = requireNonNull(sinkPartitioningScheme, "sinkPartitioningScheme is null");
             this.exchange = requireNonNull(exchange, "exchange is null");
             this.partitionMemoryEstimator = requireNonNull(partitionMemoryEstimator, "partitionMemoryEstimator is null");
-            this.outputDataSizeEstimator = requireNonNull(outputDataSizeEstimator, "outputDataSizeEstimator is null");
+            this.outputStatsEstimator = requireNonNull(outputStatsEstimator, "outputStatsEstimator is null");
             this.maxTaskExecutionAttempts = maxTaskExecutionAttempts;
             this.schedulingPriority = schedulingPriority;
             this.eager = eager;
@@ -1931,6 +1979,11 @@ public class EventDrivenFaultTolerantQueryScheduler
             return stage.getFragment().getId();
         }
 
+        public PlanFragment getStageFragment()
+        {
+            return stage.getFragment();
+        }
+
         public StageState getState()
         {
             return stage.getState();
@@ -1949,6 +2002,11 @@ public class EventDrivenFaultTolerantQueryScheduler
         public boolean isExchangeClosed()
         {
             return exchangeClosed;
+        }
+
+        public void setSpeculative(boolean speculative)
+        {
+            this.speculative = speculative;
         }
 
         public void addPartition(int partitionId, NodeRequirements nodeRequirements)
@@ -1987,7 +2045,10 @@ public class EventDrivenFaultTolerantQueryScheduler
             partition.addSplits(planNodeId, splits, noMoreSplits);
             if (readyForScheduling && !partition.isTaskScheduled()) {
                 partition.setTaskScheduled(true);
-                return Optional.of(PrioritizedScheduledTask.createSpeculative(stage.getStageId(), taskPartitionId, schedulingPriority, eager));
+                PrioritizedScheduledTask task = speculative ?
+                        PrioritizedScheduledTask.createSpeculative(stage.getStageId(), taskPartitionId, schedulingPriority, eager) :
+                        PrioritizedScheduledTask.create(stage.getStageId(), taskPartitionId, schedulingPriority);
+                return Optional.of(task);
             }
             return Optional.empty();
         }
@@ -2275,6 +2336,7 @@ public class EventDrivenFaultTolerantQueryScheduler
                 checkArgument(partitionSizeInBytes >= 0, "partitionSizeInBytes must be greater than or equal to zero: %s", partitionSizeInBytes);
                 outputDataSize[partitionId] += partitionSizeInBytes;
             }
+            outputRowCount += taskOutputStats.getRowCount();
         }
 
         public List<PrioritizedScheduledTask> taskFailed(TaskId taskId, ExecutionFailureInfo failureInfo, TaskStatus taskStatus)
@@ -2335,6 +2397,8 @@ public class EventDrivenFaultTolerantQueryScheduler
                 return ImmutableList.of();
             }
 
+            recordTaskFailureInLog(taskId, failure);
+
             if (!partition.isSealed()) {
                 // don't reschedule speculative tasks
                 return ImmutableList.of();
@@ -2344,6 +2408,14 @@ public class EventDrivenFaultTolerantQueryScheduler
 
             // reschedule a task
             return ImmutableList.of(PrioritizedScheduledTask.create(stage.getStageId(), partitionId, schedulingPriority));
+        }
+
+        private void recordTaskFailureInLog(TaskId taskId, RuntimeException failure)
+        {
+            if (taskFailures.size() == Scheduler.TASK_FAILURES_LOG_SIZE) {
+                taskFailures.remove();
+            }
+            taskFailures.add(Map.entry(taskId, failure));
         }
 
         public MemoryRequirements getMemoryRequirements(int partitionId)
@@ -2356,18 +2428,23 @@ public class EventDrivenFaultTolerantQueryScheduler
             return getStagePartition(partitionId).getNodeRequirements();
         }
 
-        public Optional<OutputDataSizeEstimateResult> getOutputDataSize(Function<StageId, StageExecution> stageExecutionLookup, boolean parentEager)
+        public Optional<OutputStatsEstimateResult> getOutputStats(Function<StageId, StageExecution> stageExecutionLookup, boolean parentEager)
         {
             if (stage.getState() == StageState.FINISHED) {
-                return Optional.of(new OutputDataSizeEstimateResult(
-                        new OutputDataSizeEstimate(ImmutableLongArray.copyOf(outputDataSize)), OutputDataSizeEstimateStatus.FINISHED));
+                return Optional.of(new OutputStatsEstimateResult(
+                        new OutputDataSizeEstimate(ImmutableLongArray.copyOf(outputDataSize)), outputRowCount, "FINISHED", true));
             }
-            return outputDataSizeEstimator.getEstimatedOutputDataSize(this, stageExecutionLookup, parentEager);
+            return outputStatsEstimator.getEstimatedOutputStats(this, stageExecutionLookup, parentEager);
         }
 
         public boolean isSomeProgressMade()
         {
             return partitions.size() > 0 && remainingPartitions.size() < partitions.size();
+        }
+
+        public long getOutputRowCount()
+        {
+            return outputRowCount;
         }
 
         public ExchangeSourceOutputSelector getSinkOutputSelector()
@@ -2984,7 +3061,8 @@ public class EventDrivenFaultTolerantQueryScheduler
 
     private interface Event
     {
-        Event ABORT = new Event() {
+        Event ABORT = new Event()
+        {
             @Override
             public <T> T accept(EventListener<T> listener)
             {
@@ -2992,7 +3070,8 @@ public class EventDrivenFaultTolerantQueryScheduler
             }
         };
 
-        Event WAKE_UP = new Event() {
+        Event WAKE_UP = new Event()
+        {
             @Override
             public <T> T accept(EventListener<T> listener)
             {
@@ -3045,7 +3124,7 @@ public class EventDrivenFaultTolerantQueryScheduler
             return onEvent(event);
         }
 
-        default T onEvent(Event event)
+        default T onEvent(Event unused)
         {
             throw new RuntimeException("EventListener no implemented");
         }

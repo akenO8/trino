@@ -124,7 +124,7 @@ public class DynamicFilterService
 
     public void registerQuery(SqlQueryExecution sqlQueryExecution, SubPlan fragmentedPlan)
     {
-        PlanNode queryPlan = sqlQueryExecution.getQueryPlan().getRoot();
+        PlanNode queryPlan = sqlQueryExecution.getQueryPlan().orElseThrow().getRoot();
         Set<DynamicFilterId> dynamicFilters = getProducedDynamicFilters(queryPlan);
         Set<DynamicFilterId> replicatedDynamicFilters = getReplicatedDynamicFilters(queryPlan);
 
@@ -452,7 +452,8 @@ public class DynamicFilterService
                                 return applySaturatedCasts(metadata, functionManager, typeOperators, session, updatedSummary, targetType);
                             }
                             return updatedSummary;
-                        })));
+                        },
+                        Domain::intersect)));
     }
 
     private static Set<DynamicFilterId> getLazyDynamicFilters(PlanFragment plan)

@@ -53,13 +53,12 @@ import java.util.regex.Pattern;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
-import static com.google.inject.util.Modules.EMPTY_MODULE;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
 import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
 import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
 import static io.trino.plugin.iceberg.IcebergTestUtils.getFileSystemFactory;
 import static io.trino.plugin.iceberg.IcebergUtil.METADATA_FOLDER_NAME;
-import static io.trino.plugin.iceberg.procedure.RegisterTableProcedure.getLatestMetadataLocation;
+import static io.trino.plugin.iceberg.IcebergUtil.getLatestMetadataLocation;
 import static io.trino.testing.TestingConnectorSession.SESSION;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
@@ -84,7 +83,7 @@ public class TestIcebergRegisterTableProcedure
         metastore = createTestingFileHiveMetastore(HDFS_FILE_SYSTEM_FACTORY, Location.of(metastoreDir.getAbsolutePath()));
 
         // TODO: convert to IcebergQueryRunner when there is a replacement for HadoopTables that works with TrinoFileSystem
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
+        QueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
                 .setCatalog(ICEBERG_CATALOG)
                 .setSchema("tpch")
                 .build()).build();
@@ -93,11 +92,7 @@ public class TestIcebergRegisterTableProcedure
         queryRunner.createCatalog("tpch", "tpch");
 
         Path dataDir = queryRunner.getCoordinator().getBaseDataDir().resolve("iceberg_data");
-        queryRunner.installPlugin(new TestingIcebergPlugin(
-                dataDir,
-                Optional.of(new TestingIcebergFileMetastoreCatalogModule(metastore)),
-                Optional.empty(),
-                EMPTY_MODULE));
+        queryRunner.installPlugin(new TestingIcebergPlugin(dataDir, Optional.of(new TestingIcebergFileMetastoreCatalogModule(metastore))));
         queryRunner.createCatalog(ICEBERG_CATALOG, "iceberg", ImmutableMap.of("iceberg.register-table-procedure.enabled", "true"));
         queryRunner.execute("CREATE SCHEMA iceberg.tpch");
         return queryRunner;

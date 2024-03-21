@@ -15,14 +15,14 @@ package io.trino.cost;
 
 import com.google.common.annotations.VisibleForTesting;
 import io.trino.Session;
+import io.trino.cost.StatsCalculator.Context;
 import io.trino.matching.Pattern;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.TypeProvider;
-import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.JoinNode.EquiJoinClause;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
 import io.trino.util.MoreMath;
 
 import java.util.Collection;
@@ -37,9 +37,9 @@ import static io.trino.SystemSessionProperties.getJoinMultiClauseIndependenceFac
 import static io.trino.cost.FilterStatsCalculator.UNKNOWN_FILTER_COEFFICIENT;
 import static io.trino.cost.PlanNodeStatsEstimateMath.estimateCorrelatedConjunctionRowCount;
 import static io.trino.cost.SymbolStatsEstimate.buildFrom;
-import static io.trino.sql.ExpressionUtils.extractConjuncts;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.IrUtils.extractConjuncts;
 import static io.trino.sql.planner.plan.Patterns.join;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
 import static io.trino.util.MoreMath.firstNonNaN;
 import static java.lang.Double.NaN;
 import static java.lang.Double.isNaN;
@@ -78,25 +78,26 @@ public class JoinStatsRule
     }
 
     @Override
-    protected Optional<PlanNodeStatsEstimate> doCalculate(JoinNode node, StatsProvider sourceStats, Lookup lookup, Session session, TypeProvider types, TableStatsProvider tableStatsProvider)
+    protected Optional<PlanNodeStatsEstimate> doCalculate(JoinNode node, Context context)
     {
-        PlanNodeStatsEstimate leftStats = sourceStats.getStats(node.getLeft());
-        PlanNodeStatsEstimate rightStats = sourceStats.getStats(node.getRight());
-        PlanNodeStatsEstimate crossJoinStats = crossJoinStats(node, leftStats, rightStats, types);
+        PlanNodeStatsEstimate leftStats = context.statsProvider().getStats(node.getLeft());
+        PlanNodeStatsEstimate rightStats = context.statsProvider().getStats(node.getRight());
+        PlanNodeStatsEstimate crossJoinStats = crossJoinStats(node, leftStats, rightStats, context.types());
 
         switch (node.getType()) {
             case INNER:
-                return Optional.of(computeInnerJoinStats(node, crossJoinStats, session, types));
+                return Optional.of(computeInnerJoinStats(node, crossJoinStats, context.session(), context.types()));
             case LEFT:
-                return Optional.of(computeLeftJoinStats(node, leftStats, rightStats, crossJoinStats, session, types));
+                return Optional.of(computeLeftJoinStats(node, leftStats, rightStats, crossJoinStats, context.session(), context.types()));
             case RIGHT:
-                return Optional.of(computeRightJoinStats(node, leftStats, rightStats, crossJoinStats, session, types));
+                return Optional.of(computeRightJoinStats(node, leftStats, rightStats, crossJoinStats, context.session(), context.types()));
             case FULL:
-                return Optional.of(computeFullJoinStats(node, leftStats, rightStats, crossJoinStats, session, types));
+                return Optional.of(computeFullJoinStats(node, leftStats, rightStats, crossJoinStats, context.session(), context.types()));
         }
         throw new IllegalStateException("Unknown join type: " + node.getType());
     }
 
+    @SuppressWarnings("ArgumentSelectionDefectChecker")
     private PlanNodeStatsEstimate computeFullJoinStats(
             JoinNode node,
             PlanNodeStatsEstimate leftStats,
@@ -128,6 +129,7 @@ public class JoinStatsRule
                 leftJoinComplementStats);
     }
 
+    @SuppressWarnings("ArgumentSelectionDefectChecker")
     private PlanNodeStatsEstimate computeRightJoinStats(
             JoinNode node,
             PlanNodeStatsEstimate leftStats,

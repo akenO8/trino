@@ -27,6 +27,7 @@ import io.trino.testing.sql.TestTable;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -66,6 +67,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.abort;
 
+@Isolated
 public class TestPhoenixConnectorTest
         extends BaseJdbcConnectorTest
 {
@@ -150,15 +152,15 @@ public class TestPhoenixConnectorTest
         // multiplication/division/modulo by zero
         assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey * 0 != 0"))
                 .isFullyPushedDown();
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey / 0 = 0"))
-                .satisfies(this::verifyDivisionByZeroFailure);
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey % 0 = 0"))
-                .satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey / 0 = 0"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey % 0 = 0"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
         // Expression that evaluates to 0 for some rows on RHS of modulus
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) / (regionkey - 1) = 2"))
-                .satisfies(this::verifyDivisionByZeroFailure);
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) % (regionkey - 1) = 2"))
-                .satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) / (regionkey - 1) = 2"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) % (regionkey - 1) = 2"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
 
         // multiplicative/divisive identity
         assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey * 1 = nationkey"))

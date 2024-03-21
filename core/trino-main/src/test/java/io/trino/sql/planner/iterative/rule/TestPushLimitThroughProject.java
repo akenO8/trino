@@ -16,26 +16,26 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.type.RowType;
+import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SubscriptExpression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.sql.tree.SubscriptExpression;
-import io.trino.sql.tree.SymbolReference;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
+import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.limit;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.sort;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictProject;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.tree.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.tree.SortItem.NullOrdering.FIRST;
 import static io.trino.sql.tree.SortItem.Ordering.ASCENDING;
 
@@ -55,7 +55,7 @@ public class TestPushLimitThroughProject
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("b", expression("true")),
+                                ImmutableMap.of("b", expression(TRUE_LITERAL)),
                                 limit(1, values())));
     }
 
@@ -77,7 +77,7 @@ public class TestPushLimitThroughProject
                 })
                 .matches(
                         project(
-                                ImmutableMap.of("projectedA", expression("a"), "projectedB", expression("b")),
+                                ImmutableMap.of("projectedA", expression(new SymbolReference("a")), "projectedB", expression(new SymbolReference("b"))),
                                 limit(1, ImmutableList.of(sort("a", ASCENDING, FIRST)), values("a", "b"))));
     }
 
@@ -101,7 +101,9 @@ public class TestPushLimitThroughProject
                 })
                 .matches(
                         project(
-                                ImmutableMap.of("projectedA", expression("a"), "projectedC", expression("a + b")),
+                                ImmutableMap.of(
+                                        "projectedA", expression(new SymbolReference("a")),
+                                        "projectedC", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("b")))),
                                 limit(1, ImmutableList.of(sort("a", ASCENDING, FIRST)), values("a", "b"))));
     }
 
@@ -150,8 +152,8 @@ public class TestPushLimitThroughProject
                     return p.limit(1,
                             p.project(
                                     Assignments.of(
-                                            p.symbol("b"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral("1")),
-                                            p.symbol("c"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral("2"))),
+                                            p.symbol("b"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral(1)),
+                                            p.symbol("c"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral(2))),
                                     p.values(a)));
                 })
                 .doesNotFire();
@@ -198,7 +200,7 @@ public class TestPushLimitThroughProject
                 })
                 .matches(
                         project(
-                                ImmutableMap.of("projectedA", expression("a"), "projectedC", expression("a + b")),
+                                ImmutableMap.of("projectedA", expression(new SymbolReference("a")), "projectedC", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("b")))),
                                 limit(1, ImmutableList.of(), true, ImmutableList.of("a"), values("a", "b"))));
     }
 
@@ -213,13 +215,13 @@ public class TestPushLimitThroughProject
                     return p.limit(1,
                             p.project(
                                     Assignments.of(
-                                            p.symbol("b"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral("1")),
+                                            p.symbol("b"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral(1)),
                                             p.symbol("c", rowType), a.toSymbolReference()),
                                     p.values(a)));
                 })
                 .matches(
                         project(
-                                ImmutableMap.of("b", expression("a[1]"), "c", expression("a")),
+                                ImmutableMap.of("b", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new SubscriptExpression(new SymbolReference("a"), new LongLiteral(1))), "c", expression(new SymbolReference("a"))),
                                 limit(1,
                                         values("a"))));
     }

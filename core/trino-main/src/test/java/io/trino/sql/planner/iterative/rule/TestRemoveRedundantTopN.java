@@ -15,6 +15,9 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.LongLiteral;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.FilterNode;
@@ -23,10 +26,10 @@ import io.trino.sql.planner.plan.ValuesNode;
 import org.junit.jupiter.api.Test;
 
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expression;
-import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.expressions;
+import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.aggregation;
 
 public class TestRemoveRedundantTopN
         extends BaseRuleTest
@@ -40,7 +43,7 @@ public class TestRemoveRedundantTopN
                                 10,
                                 ImmutableList.of(p.symbol("c")),
                                 p.aggregation(builder -> builder
-                                        .addAggregation(p.symbol("c"), expression("count(foo)"), ImmutableList.of(BIGINT))
+                                        .addAggregation(p.symbol("c"), aggregation("count", ImmutableList.of(new SymbolReference("foo"))), ImmutableList.of(BIGINT))
                                         .globalGrouping()
                                         .source(p.values(p.symbol("foo"))))))
                 .matches(
@@ -53,12 +56,12 @@ public class TestRemoveRedundantTopN
                                 10,
                                 ImmutableList.of(p.symbol("a")),
                                 p.filter(
-                                        expression("b > 5"),
+                                        new ComparisonExpression(GREATER_THAN, new SymbolReference("b"), new LongLiteral(5)),
                                         p.values(
                                                 ImmutableList.of(p.symbol("a"), p.symbol("b")),
                                                 ImmutableList.of(
-                                                        expressions("1", "10"),
-                                                        expressions("2", "11"))))))
+                                                        ImmutableList.of(new LongLiteral(1), new LongLiteral(10)),
+                                                        ImmutableList.of(new LongLiteral(2), new LongLiteral(11)))))))
                 // TODO: verify contents
                 .matches(
                         node(SortNode.class,
@@ -75,12 +78,12 @@ public class TestRemoveRedundantTopN
                                 0,
                                 ImmutableList.of(p.symbol("a")),
                                 p.filter(
-                                        expression("b > 5"),
+                                        new ComparisonExpression(GREATER_THAN, new SymbolReference("b"), new LongLiteral(5)),
                                         p.values(
                                                 ImmutableList.of(p.symbol("a"), p.symbol("b")),
                                                 ImmutableList.of(
-                                                        expressions("1", "10"),
-                                                        expressions("2", "11"))))))
+                                                        ImmutableList.of(new LongLiteral(1), new LongLiteral(10)),
+                                                        ImmutableList.of(new LongLiteral(2), new LongLiteral(11)))))))
                 // TODO: verify contents
                 .matches(values(ImmutableMap.of()));
     }
@@ -94,7 +97,7 @@ public class TestRemoveRedundantTopN
                                 10,
                                 ImmutableList.of(p.symbol("c")),
                                 p.aggregation(builder -> builder
-                                        .addAggregation(p.symbol("c"), expression("count(foo)"), ImmutableList.of(BIGINT))
+                                        .addAggregation(p.symbol("c"), aggregation("count", ImmutableList.of(new SymbolReference("foo"))), ImmutableList.of(BIGINT))
                                         .singleGroupingSet(p.symbol("foo"))
                                         .source(p.values(20, p.symbol("foo"))))))
                 .doesNotFire();

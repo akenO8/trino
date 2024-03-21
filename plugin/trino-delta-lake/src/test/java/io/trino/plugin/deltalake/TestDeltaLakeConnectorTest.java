@@ -21,6 +21,7 @@ import io.airlift.units.DataSize;
 import io.trino.Session;
 import io.trino.execution.QueryInfo;
 import io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.ColumnMappingMode;
+import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.plugin.tpch.TpchPlugin;
@@ -31,9 +32,9 @@ import io.trino.sql.planner.plan.TableWriterNode;
 import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
-import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.MaterializedRow;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.containers.Minio;
 import io.trino.testing.minio.MinioClient;
@@ -98,7 +99,7 @@ public class TestDeltaLakeConnectorTest
         minio.createBucket(bucketName);
         minioClient = closeAfterClass(minio.createMinioClient());
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
+        QueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
                         .setCatalog(DELTA_CATALOG)
                         .setSchema(SCHEMA)
                         .build())
@@ -511,6 +512,32 @@ public class TestDeltaLakeConnectorTest
     }
 
     @Test
+    public void testCreateTableWithCompressionCodec()
+    {
+        for (HiveCompressionCodec compressionCodec : HiveCompressionCodec.values()) {
+            testCreateTableWithCompressionCodec(compressionCodec);
+        }
+    }
+
+    private void testCreateTableWithCompressionCodec(HiveCompressionCodec compressionCodec)
+    {
+        Session session = Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "compression_codec", compressionCodec.name())
+                .build();
+        String tableName = "test_table_with_compression_" + compressionCodec;
+        String createTableSql = format("CREATE TABLE %s AS TABLE tpch.tiny.nation", tableName);
+        if (compressionCodec == HiveCompressionCodec.LZ4) {
+            // TODO (https://github.com/trinodb/trino/issues/9142) Support LZ4 compression with native Parquet writer
+            assertQueryFails(session, createTableSql, "Unsupported codec: " + compressionCodec);
+            return;
+        }
+        assertUpdate(session, createTableSql, 25);
+        assertQuery("SELECT * FROM " + tableName, "SELECT * FROM nation");
+        assertQuery("SELECT count(*) FROM " + tableName, "VALUES 25");
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
     public void testTimestampPredicatePushdown()
     {
         testTimestampPredicatePushdown("1965-10-31 01:00:08.123 UTC");
@@ -529,13 +556,13 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("CREATE TABLE " + tableName + " (t TIMESTAMP WITH TIME ZONE)");
         assertUpdate("INSERT INTO " + tableName + " VALUES (TIMESTAMP '" + value + "')", 1);
 
-        DistributedQueryRunner queryRunner = (DistributedQueryRunner) getQueryRunner();
-        MaterializedResultWithQueryId queryResult = queryRunner.executeWithQueryId(
+        QueryRunner queryRunner = getQueryRunner();
+        MaterializedResultWithPlan queryResult = queryRunner.executeWithPlan(
                 getSession(),
                 "SELECT * FROM " + tableName + " WHERE t < TIMESTAMP '" + value + "'");
         assertThat(getQueryInfo(queryRunner, queryResult).getQueryStats().getProcessedInputDataSize().toBytes()).isEqualTo(0);
 
-        queryResult = queryRunner.executeWithQueryId(
+        queryResult = queryRunner.executeWithPlan(
                 getSession(),
                 "SELECT * FROM " + tableName + " WHERE t > TIMESTAMP '" + value + "'");
         assertThat(getQueryInfo(queryRunner, queryResult).getQueryStats().getProcessedInputDataSize().toBytes()).isEqualTo(0);
@@ -722,9 +749,9 @@ public class TestDeltaLakeConnectorTest
         }
     }
 
-    private QueryInfo getQueryInfo(DistributedQueryRunner queryRunner, MaterializedResultWithQueryId queryResult)
+    private QueryInfo getQueryInfo(QueryRunner queryRunner, MaterializedResultWithPlan queryResult)
     {
-        return queryRunner.getCoordinator().getQueryManager().getFullQueryInfo(queryResult.getQueryId());
+        return queryRunner.getCoordinator().getQueryManager().getFullQueryInfo(queryResult.queryId());
     }
 
     @Test
@@ -789,6 +816,38 @@ public class TestDeltaLakeConnectorTest
                     "SELECT x, a FROM " + table.getName(),
                     "VALUES ('first', 'new column'), ('second', 'new column')");
         }
+    }
+
+    @Test
+    public void testDropNotNullConstraintWithColumnMapping()
+    {
+        testDropNotNullConstraintWithColumnMapping(ColumnMappingMode.ID);
+        testDropNotNullConstraintWithColumnMapping(ColumnMappingMode.NAME);
+        testDropNotNullConstraintWithColumnMapping(ColumnMappingMode.NONE);
+    }
+
+    private void testDropNotNullConstraintWithColumnMapping(ColumnMappingMode mode)
+    {
+        String tableName = "test_drop_not_null_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + "(" +
+                " data integer NOT NULL COMMENT 'test comment'," +
+                " part integer NOT NULL COMMENT 'test part comment')" +
+                "WITH (partitioned_by = ARRAY['part'], column_mapping_mode = '" + mode + "')");
+        assertUpdate("ALTER TABLE " + tableName + " ALTER COLUMN data DROP NOT NULL");
+        assertThat(columnIsNullable(tableName, "data")).isTrue();
+        assertThat(columnIsNullable(tableName, "part")).isFalse();
+
+        assertUpdate("ALTER TABLE " + tableName + " ALTER COLUMN part DROP NOT NULL");
+        assertThat(columnIsNullable(tableName, "data")).isTrue();
+        assertThat(columnIsNullable(tableName, "part")).isTrue();
+        assertThat(getColumnComment(tableName, "data")).isEqualTo("test comment");
+        assertThat(getColumnComment(tableName, "part")).isEqualTo("test part comment");
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES (NULL, NULL)", 1);
+        assertQuery("SELECT * FROM " + tableName, "VALUES (NULL, NULL)");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1135,15 +1194,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("CREATE TABLE " + tableName + "(col1 INTEGER NOT NULL, col2 INTEGER, col3 INTEGER) WITH (column_mapping_mode='" + mode + "')");
         assertUpdate("INSERT INTO " + tableName + " VALUES(1, 10, 100)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES(2, 20, 200)", 1);
-        assertThatThrownBy(() -> query("INSERT INTO " + tableName + " VALUES(null, 30, 300)"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
-        assertThatThrownBy(() -> query("INSERT INTO " + tableName + " VALUES(TRY(5/0), 40, 400)"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("INSERT INTO " + tableName + " VALUES(null, 30, 300)"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("INSERT INTO " + tableName + " VALUES(TRY(5/0), 40, 400)"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
 
-        assertThatThrownBy(() -> query("UPDATE " + tableName + " SET col1 = NULL where col3 = 100"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
-        assertThatThrownBy(() -> query("UPDATE " + tableName + " SET col1 = TRY(5/0) where col3 = 200"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("UPDATE " + tableName + " SET col1 = NULL where col3 = 100"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("UPDATE " + tableName + " SET col1 = TRY(5/0) where col3 = 200"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
 
         assertQuery("SELECT * FROM " + tableName, "VALUES(1, 10, 100), (2, 20, 200)");
     }
@@ -2103,7 +2162,7 @@ public class TestDeltaLakeConnectorTest
                 sessionWithoutPushdown,
                 "EXPLAIN SELECT root.f2 FROM " + tableName,
                 "ScanProject\\[table = (.*)]",
-                "expr := \"root\"\\[2]",
+                "expr := root\\[2]",
                 "root := root:row\\(f1 bigint, f2 bigint\\):REGULAR");
 
         assertUpdate("DROP TABLE " + tableName);
@@ -2120,7 +2179,7 @@ public class TestDeltaLakeConnectorTest
         assertExplain(
                 "EXPLAIN SELECT id, _row.child, _array[1].child, _map[1] FROM " + tableName,
                 "ScanProject\\[table = (.*)]",
-                "expr(.*) := \"_array(.*)\"\\[BIGINT '1']\\[1]",
+                "expr(.*) := _array(.*)\\[bigint '1']\\[1]",
                 "id(.*) := id:bigint:REGULAR",
                 // _array:array\\(row\\(child bigint\\)\\) is a symbol name, not a dereference expression.
                 "_array(.*) := _array:array\\(row\\(child bigint\\)\\):REGULAR",
@@ -2917,6 +2976,7 @@ public class TestDeltaLakeConnectorTest
     private void assertTableChangesQuery(@Language("SQL") String sql, @Language("SQL") String expectedResult)
     {
         assertThat(query(sql))
+                .result()
                 .exceptColumns("_commit_timestamp")
                 .skippingTypesCheck()
                 .matches(expectedResult);
@@ -3386,7 +3446,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("CREATE TABLE " + tableName + "(id, boolean, tinyint) WITH (location = '" + tableLocation + "') AS " + initialValues, 5);
         assertThat(query("SELECT * FROM " + tableName)).matches(initialValues);
 
-        DistributedQueryRunner queryRunner = (DistributedQueryRunner) getQueryRunner();
+        QueryRunner queryRunner = getQueryRunner();
         HiveMetastore metastore = TestingDeltaLakeUtils.getConnectorService(queryRunner, HiveMetastoreFactory.class)
                 .createMetastore(Optional.empty());
 
@@ -3405,6 +3465,29 @@ public class TestDeltaLakeConnectorTest
                 ",(7, BOOLEAN 'true', TINYINT '13')";
         assertUpdate("CREATE TABLE " + tableName + "(id, boolean, tinyint) WITH (location = '" + tableLocation + "') AS " + newValues, 7);
         assertThat(query("SELECT * FROM " + tableName)).matches(newValues);
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testQueriesWithoutCheckpointFiltering()
+    {
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty("delta", "checkpoint_filtering_enabled", "false")
+                .build();
+
+        String tableName = "test_without_checkpoint_filtering_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " (col INT) " +
+                "WITH (checkpoint_interval=3)");
+
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 1", 1);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 2, 3", 2);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 4, 5", 2);
+
+        assertQuery(session, "SELECT * FROM " + tableName, "VALUES 1, 2, 3, 4, 5");
+        assertUpdate(session, "UPDATE " + tableName + " SET col = 44 WHERE col = 4", 1);
+        assertUpdate(session, "DELETE FROM " + tableName + " WHERE col = 3", 1);
+        assertQuery(session, "SELECT * FROM " + tableName, "VALUES 1, 2, 44, 5");
 
         assertUpdate("DROP TABLE " + tableName);
     }

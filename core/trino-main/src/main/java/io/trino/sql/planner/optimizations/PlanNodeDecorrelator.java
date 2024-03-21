@@ -23,9 +23,11 @@ import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import io.trino.spi.connector.SortOrder;
 import io.trino.spi.type.Type;
-import io.trino.spi.type.TypeManager;
-import io.trino.sql.ExpressionUtils;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -44,10 +46,6 @@ import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.RowNumberNode;
 import io.trino.sql.planner.plan.TopNNode;
 import io.trino.sql.planner.plan.TopNRankingNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.SymbolReference;
 import io.trino.type.TypeCoercion;
 
 import java.util.List;
@@ -60,13 +58,15 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toTypeSignature;
+import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.IrUtils.and;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
+import static io.trino.sql.ir.IrUtils.extractConjuncts;
 import static io.trino.sql.planner.DeterminismEvaluator.isDeterministic;
 import static io.trino.sql.planner.optimizations.SymbolMapper.symbolMapper;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.sql.planner.plan.TopNRankingNode.RankingType.ROW_NUMBER;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
@@ -91,7 +91,7 @@ public class PlanNodeDecorrelator
             return Optional.of(new DecorrelatedNode(ImmutableList.of(), node));
         }
 
-        Optional<DecorrelationResult> decorrelationResultOptional = node.accept(new DecorrelatingVisitor(plannerContext.getTypeManager(), correlation), null);
+        Optional<DecorrelationResult> decorrelationResultOptional = node.accept(new DecorrelatingVisitor(correlation), null);
         return decorrelationResultOptional.flatMap(decorrelationResult -> decorrelatedNode(
                 decorrelationResult.correlatedPredicates,
                 decorrelationResult.node,
@@ -101,12 +101,10 @@ public class PlanNodeDecorrelator
     private class DecorrelatingVisitor
             extends PlanVisitor<Optional<DecorrelationResult>, Void>
     {
-        private final TypeManager typeManager;
         private final List<Symbol> correlation;
 
-        DecorrelatingVisitor(TypeManager typeManager, List<Symbol> correlation)
+        DecorrelatingVisitor(List<Symbol> correlation)
         {
-            this.typeManager = requireNonNull(typeManager, "typeManager is null");
             this.correlation = requireNonNull(correlation, "correlation is null");
         }
 
@@ -152,7 +150,7 @@ public class PlanNodeDecorrelator
             }
 
             Expression predicate = node.getPredicate();
-            Map<Boolean, List<Expression>> predicates = ExpressionUtils.extractConjuncts(predicate).stream()
+            Map<Boolean, List<Expression>> predicates = extractConjuncts(predicate).stream()
                     .collect(Collectors.partitioningBy(PlanNodeDecorrelator.DecorrelatingVisitor.this::isCorrelated));
             List<Expression> correlatedPredicates = ImmutableList.copyOf(predicates.get(true));
             List<Expression> uncorrelatedPredicates = ImmutableList.copyOf(predicates.get(false));
@@ -161,7 +159,7 @@ public class PlanNodeDecorrelator
             FilterNode newFilterNode = new FilterNode(
                     node.getId(),
                     childDecorrelationResult.node,
-                    ExpressionUtils.combineConjuncts(plannerContext.getMetadata(), uncorrelatedPredicates));
+                    combineConjuncts(plannerContext.getMetadata(), uncorrelatedPredicates));
 
             Set<Symbol> symbolsToPropagate = Sets.difference(SymbolsExtractor.extractUnique(correlatedPredicates), ImmutableSet.copyOf(correlation));
             return Optional.of(new DecorrelationResult(
@@ -546,7 +544,7 @@ public class PlanNodeDecorrelator
             Symbol sourceSymbol = Symbol.from(cast.getExpression());
 
             Type sourceType = symbolAllocator.getTypes().get(sourceSymbol);
-            Type targetType = typeManager.getType(toTypeSignature(((Cast) expression).getType()));
+            Type targetType = ((Cast) expression).getType();
 
             return typeCoercion.isInjectiveCoercion(sourceType, targetType);
         }
@@ -645,7 +643,7 @@ public class PlanNodeDecorrelator
             if (correlatedPredicates.isEmpty()) {
                 return Optional.empty();
             }
-            return Optional.of(ExpressionUtils.and(correlatedPredicates));
+            return Optional.of(and(correlatedPredicates));
         }
 
         public PlanNode getNode()

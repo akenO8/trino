@@ -95,6 +95,7 @@ public class MysqlEventListener
         Timestamp endTime = Timestamp.from(event.getEndTime());
         Optional<QueryFailureInfo> failureInfo = event.getFailureInfo();
         QueryStatistics stats = event.getStatistics();
+
         QueryEntity entity = new QueryEntity(
                 createTime,
                 executionStartTime,

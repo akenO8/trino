@@ -64,6 +64,7 @@ public class TestTimestamp
     {
         for (HiveTimestampPrecision timestamp : HiveTimestampPrecision.values()) {
             String logicalAnnotation = switch (timestamp) {
+                case SECONDS -> "TIMESTAMP(SECONDS,true)";
                 case MILLISECONDS -> "TIMESTAMP(MILLIS,true)";
                 case MICROSECONDS -> "TIMESTAMP(MICROS,true)";
                 case NANOSECONDS -> "TIMESTAMP(NANOS,true)";
@@ -89,6 +90,7 @@ public class TestTimestamp
                 return null;
             }
             return switch (timestamp) {
+                case SECONDS -> SqlTimestamp.fromMillis(0, value);
                 case MILLISECONDS -> SqlTimestamp.fromMillis(timestamp.getPrecision(), value);
                 case MICROSECONDS -> SqlTimestamp.newInstance(timestamp.getPrecision(), value, 0);
                 case NANOSECONDS -> SqlTimestamp.newInstance(

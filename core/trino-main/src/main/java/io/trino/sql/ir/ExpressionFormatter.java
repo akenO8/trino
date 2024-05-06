@@ -13,25 +13,27 @@
  */
 package io.trino.sql.ir;
 
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.io.BaseEncoding;
+import io.trino.sql.planner.Symbol;
 
-import java.text.DecimalFormat;
-import java.text.DecimalFormatSymbols;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.function.Function;
 
-import static io.trino.sql.SqlFormatter.formatName;
+import static io.trino.metadata.GlobalFunctionCatalog.isBuiltinFunctionName;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 
 public final class ExpressionFormatter
 {
-    private static final ThreadLocal<DecimalFormat> doubleFormatter = ThreadLocal.withInitial(
-            () -> new DecimalFormat("0.###################E0###", new DecimalFormatSymbols(Locale.US)));
+    private static final CharMatcher UNAMBIGUOUS_REFERENCE_NAME_CHARACTERS =
+            CharMatcher.inRange('a', 'z')
+                    .or(CharMatcher.inRange('A', 'Z'))
+                    .or(CharMatcher.inRange('0', '9'))
+                    .or(CharMatcher.anyOf("_$"))
+                    .precomputed();
 
     private ExpressionFormatter() {}
 
@@ -43,21 +45,29 @@ public final class ExpressionFormatter
     public static class Formatter
             extends IrVisitor<String, Void>
     {
-        private final Optional<Function<Literal, String>> literalFormatter;
-        private final Optional<Function<SymbolReference, String>> symbolReferenceFormatter;
+        private final Optional<Function<Constant, String>> literalFormatter;
+        private final Optional<Function<Reference, String>> symbolReferenceFormatter;
 
         public Formatter(
-                Optional<Function<Literal, String>> literalFormatter,
-                Optional<Function<SymbolReference, String>> symbolReferenceFormatter)
+                Optional<Function<Constant, String>> literalFormatter,
+                Optional<Function<Reference, String>> symbolReferenceFormatter)
         {
             this.literalFormatter = requireNonNull(literalFormatter, "literalFormatter is null");
             this.symbolReferenceFormatter = requireNonNull(symbolReferenceFormatter, "symbolReferenceFormatter is null");
         }
 
         @Override
+        protected String visitArray(Array node, Void context)
+        {
+            return node.elements().stream()
+                    .map(child -> process(child, context))
+                    .collect(joining(", ", "ARRAY[", "]"));
+        }
+
+        @Override
         protected String visitRow(Row node, Void context)
         {
-            return node.getItems().stream()
+            return node.items().stream()
                     .map(child -> process(child, context))
                     .collect(joining(", ", "ROW (", ")"));
         }
@@ -69,284 +79,171 @@ public final class ExpressionFormatter
         }
 
         @Override
-        protected String visitBooleanLiteral(BooleanLiteral node, Void context)
+        protected String visitFieldReference(FieldReference node, Void context)
+        {
+            return formatExpression(node.base()) + "." + node.field();
+        }
+
+        @Override
+        protected String visitConstant(Constant node, Void context)
         {
             return literalFormatter
                     .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> String.valueOf(node.getValue()));
+                    .orElseGet(() -> {
+                        if (node.value() == null) {
+                            return "null::" + node.type();
+                        }
+                        else {
+                            return node.type() + " '" + node.type().getObjectValue(null, node.getValueAsBlock(), 0) + "'";
+                        }
+                    });
         }
 
         @Override
-        protected String visitStringLiteral(StringLiteral node, Void context)
+        protected String visitCall(Call node, Void context)
         {
-            return literalFormatter
-                    .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> formatStringLiteral(node.getValue()));
+            String name = isBuiltinFunctionName(node.function().name()) ?
+                    node.function().name().getFunctionName() :
+                    node.function().name().toString();
+
+            return name + '(' + joinExpressions(node.arguments()) + ')';
         }
 
         @Override
-        protected String visitBinaryLiteral(BinaryLiteral node, Void context)
-        {
-            return literalFormatter
-                    .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> "X'" + BaseEncoding.base16().encode(node.getValue()) + "'");
-        }
-
-        @Override
-        protected String visitArray(Array node, Void context)
-        {
-            return node.getValues().stream()
-                    .map(ExpressionFormatter::formatExpression)
-                    .collect(joining(",", "ARRAY[", "]"));
-        }
-
-        @Override
-        protected String visitSubscriptExpression(SubscriptExpression node, Void context)
-        {
-            return formatExpression(node.getBase()) + "[" + formatExpression(node.getIndex()) + "]";
-        }
-
-        @Override
-        protected String visitLongLiteral(LongLiteral node, Void context)
-        {
-            return literalFormatter
-                    .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> Long.toString(node.getValue()));
-        }
-
-        @Override
-        protected String visitDoubleLiteral(DoubleLiteral node, Void context)
-        {
-            return literalFormatter
-                    .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> doubleFormatter.get().format(node.getValue()));
-        }
-
-        @Override
-        protected String visitDecimalLiteral(DecimalLiteral node, Void context)
-        {
-            return literalFormatter
-                    .map(formatter -> formatter.apply(node))
-                    // TODO return node value without "DECIMAL '..'" when FeaturesConfig#parseDecimalLiteralsAsDouble switch is removed
-                    .orElseGet(() -> "DECIMAL '" + node.getValue() + "'");
-        }
-
-        @Override
-        protected String visitGenericLiteral(GenericLiteral node, Void context)
-        {
-            return literalFormatter
-                    .map(formatter -> formatter.apply(node))
-                    .orElseGet(() -> node.getType() + " " + formatStringLiteral(node.getValue()));
-        }
-
-        @Override
-        protected String visitNullLiteral(NullLiteral node, Void context)
-        {
-            return literalFormatter
-                    .map(formatter -> formatter.apply(node))
-                    .orElse("null");
-        }
-
-        @Override
-        protected String visitIntervalLiteral(IntervalLiteral node, Void context)
-        {
-            if (literalFormatter.isPresent()) {
-                return literalFormatter.get().apply(node);
-            }
-            String sign = (node.getSign() == IntervalLiteral.Sign.NEGATIVE) ? "-" : "";
-            StringBuilder builder = new StringBuilder()
-                    .append("INTERVAL ")
-                    .append(sign)
-                    .append("'").append(node.getValue()).append("' ")
-                    .append(node.getStartField());
-
-            if (node.getEndField().isPresent()) {
-                builder.append(" TO ").append(node.getEndField().get());
-            }
-            return builder.toString();
-        }
-
-        @Override
-        protected String visitFunctionCall(FunctionCall node, Void context)
-        {
-            return formatName(node.getName()) + '(' + joinExpressions(node.getArguments()) + ')';
-        }
-
-        @Override
-        protected String visitLambdaExpression(LambdaExpression node, Void context)
+        protected String visitLambda(Lambda node, Void context)
         {
             return "(" +
-                    String.join(", ", node.getArguments()) +
+                    node.arguments().stream()
+                            .map(Symbol::name)
+                            .collect(joining(", ")) +
                     ") -> " +
-                    process(node.getBody(), context);
+                    process(node.body(), context);
         }
 
         @Override
-        protected String visitSymbolReference(SymbolReference node, Void context)
+        protected String visitReference(Reference node, Void context)
         {
             if (symbolReferenceFormatter.isPresent()) {
                 return symbolReferenceFormatter.get().apply(node);
             }
-            return node.getName();
+            String name = node.name();
+            if (UNAMBIGUOUS_REFERENCE_NAME_CHARACTERS.matchesAllOf(name)) {
+                return name;
+            }
+            return "\"" + name.replace("\"", "\"\"") + "\"";
         }
 
         @Override
-        protected String visitBindExpression(BindExpression node, Void context)
+        protected String visitBind(Bind node, Void context)
         {
             StringBuilder builder = new StringBuilder();
 
-            builder.append("\"$INTERNAL$BIND\"(");
-            for (Expression value : node.getValues()) {
+            builder.append("\"$bind\"(");
+            for (Expression value : node.values()) {
                 builder.append(process(value, context))
                         .append(", ");
             }
-            builder.append(process(node.getFunction(), context))
+            builder.append(process(node.function(), context))
                     .append(")");
             return builder.toString();
         }
 
         @Override
-        protected String visitLogicalExpression(LogicalExpression node, Void context)
+        protected String visitLogical(Logical node, Void context)
         {
             return "(" +
-                    node.getTerms().stream()
+                    node.terms().stream()
                             .map(term -> process(term, context))
-                            .collect(joining(" " + node.getOperator().toString() + " ")) +
+                            .collect(joining(" " + node.operator().toString() + " ")) +
                     ")";
         }
 
         @Override
-        protected String visitNotExpression(NotExpression node, Void context)
+        protected String visitNot(Not node, Void context)
         {
-            return "(NOT " + process(node.getValue(), context) + ")";
+            return "(NOT " + process(node.value(), context) + ")";
         }
 
         @Override
-        protected String visitComparisonExpression(ComparisonExpression node, Void context)
+        protected String visitComparison(Comparison node, Void context)
         {
-            return formatBinaryExpression(node.getOperator().getValue(), node.getLeft(), node.getRight());
+            return formatBinaryExpression(node.operator().getValue(), node.left(), node.right());
         }
 
         @Override
-        protected String visitIsNullPredicate(IsNullPredicate node, Void context)
+        protected String visitIsNull(IsNull node, Void context)
         {
-            return "(" + process(node.getValue(), context) + " IS NULL)";
+            return "(" + process(node.value(), context) + " IS NULL)";
         }
 
         @Override
-        protected String visitIsNotNullPredicate(IsNotNullPredicate node, Void context)
+        protected String visitNullIf(NullIf node, Void context)
         {
-            return "(" + process(node.getValue(), context) + " IS NOT NULL)";
+            return "NULLIF(" + process(node.first(), context) + ", " + process(node.second(), context) + ')';
         }
 
         @Override
-        protected String visitNullIfExpression(NullIfExpression node, Void context)
+        protected String visitCoalesce(Coalesce node, Void context)
         {
-            return "NULLIF(" + process(node.getFirst(), context) + ", " + process(node.getSecond(), context) + ')';
-        }
-
-        @Override
-        protected String visitIfExpression(IfExpression node, Void context)
-        {
-            StringBuilder builder = new StringBuilder();
-            builder.append("IF(")
-                    .append(process(node.getCondition(), context))
-                    .append(", ")
-                    .append(process(node.getTrueValue(), context));
-            if (node.getFalseValue().isPresent()) {
-                builder.append(", ")
-                        .append(process(node.getFalseValue().get(), context));
-            }
-            builder.append(")");
-            return builder.toString();
-        }
-
-        @Override
-        protected String visitCoalesceExpression(CoalesceExpression node, Void context)
-        {
-            return "COALESCE(" + joinExpressions(node.getOperands()) + ")";
-        }
-
-        @Override
-        protected String visitArithmeticUnary(ArithmeticUnaryExpression node, Void context)
-        {
-            String value = process(node.getValue(), context);
-
-            return switch (node.getSign()) {
-                // Unary is ambiguous with respect to negative numbers. "-1" parses as a number, but "-(1)" parses as "unaryMinus(number)"
-                // The parentheses are needed to ensure the parsing roundtrips properly.
-                case MINUS -> "-(" + value + ")";
-                case PLUS -> "+" + value;
-            };
-        }
-
-        @Override
-        protected String visitArithmeticBinary(ArithmeticBinaryExpression node, Void context)
-        {
-            return formatBinaryExpression(node.getOperator().getValue(), node.getLeft(), node.getRight());
+            return "COALESCE(" + joinExpressions(node.operands()) + ")";
         }
 
         @Override
         public String visitCast(Cast node, Void context)
         {
-            return (node.isSafe() ? "TRY_CAST" : "CAST") +
-                    "(" + process(node.getExpression(), context) + " AS " + node.getType().getDisplayName() + ")";
+            return (node.safe() ? "TRY_CAST" : "CAST") +
+                    "(" + process(node.expression(), context) + " AS " + node.type().getDisplayName() + ")";
         }
 
         @Override
-        protected String visitSearchedCaseExpression(SearchedCaseExpression node, Void context)
+        protected String visitCase(Case node, Void context)
         {
             ImmutableList.Builder<String> parts = ImmutableList.builder();
             parts.add("CASE");
-            for (WhenClause whenClause : node.getWhenClauses()) {
-                parts.add(process(whenClause, context));
+            for (WhenClause whenClause : node.whenClauses()) {
+                parts.add(format(whenClause, context));
             }
 
-            node.getDefaultValue()
-                    .ifPresent(value -> parts.add("ELSE").add(process(value, context)));
-
+            parts.add("ELSE").add(process(node.defaultValue(), context));
             parts.add("END");
 
             return "(" + Joiner.on(' ').join(parts.build()) + ")";
         }
 
         @Override
-        protected String visitSimpleCaseExpression(SimpleCaseExpression node, Void context)
+        protected String visitSwitch(Switch node, Void context)
         {
             ImmutableList.Builder<String> parts = ImmutableList.builder();
 
             parts.add("CASE")
-                    .add(process(node.getOperand(), context));
+                    .add(process(node.operand(), context));
 
-            for (WhenClause whenClause : node.getWhenClauses()) {
-                parts.add(process(whenClause, context));
+            for (WhenClause whenClause : node.whenClauses()) {
+                parts.add(format(whenClause, context));
             }
 
-            node.getDefaultValue()
-                    .ifPresent(value -> parts.add("ELSE").add(process(value, context)));
-
+            parts.add("ELSE").add(process(node.defaultValue(), context));
             parts.add("END");
 
             return "(" + Joiner.on(' ').join(parts.build()) + ")";
         }
 
-        @Override
-        protected String visitWhenClause(WhenClause node, Void context)
+        protected String format(WhenClause node, Void context)
         {
             return "WHEN " + process(node.getOperand(), context) + " THEN " + process(node.getResult(), context);
         }
 
         @Override
-        protected String visitBetweenPredicate(BetweenPredicate node, Void context)
+        protected String visitBetween(Between node, Void context)
         {
-            return "(" + process(node.getValue(), context) + " BETWEEN " +
-                    process(node.getMin(), context) + " AND " + process(node.getMax(), context) + ")";
+            return "(" + process(node.value(), context) + " BETWEEN " +
+                    process(node.min(), context) + " AND " + process(node.max(), context) + ")";
         }
 
         @Override
-        protected String visitInPredicate(InPredicate node, Void context)
+        protected String visitIn(In node, Void context)
         {
-            return "(" + process(node.getValue(), context) + " IN " + joinExpressions(node.getValueList()) + ")";
+            return "(" + process(node.value(), context) + " IN (" + joinExpressions(node.valueList()) + "))";
         }
 
         private String formatBinaryExpression(String operator, Expression left, Expression right)
@@ -360,10 +257,5 @@ public final class ExpressionFormatter
                     .map(e -> process(e, null))
                     .collect(joining(", "));
         }
-    }
-
-    static String formatStringLiteral(String s)
-    {
-        return "'" + s.replace("'", "''") + "'";
     }
 }

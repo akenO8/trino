@@ -68,11 +68,11 @@ public class InCodeGenerator
 
     public InCodeGenerator(SpecialForm specialForm)
     {
-        checkArgument(specialForm.getArguments().size() >= 2, "At least two arguments are required");
-        valueExpression = specialForm.getArguments().get(0);
-        testExpressions = specialForm.getArguments().subList(1, specialForm.getArguments().size());
+        checkArgument(specialForm.arguments().size() >= 2, "At least two arguments are required");
+        valueExpression = specialForm.arguments().get(0);
+        testExpressions = specialForm.arguments().subList(1, specialForm.arguments().size());
 
-        checkArgument(specialForm.getFunctionDependencies().size() == 3);
+        checkArgument(specialForm.functionDependencies().size() == 3);
         resolvedEqualsFunction = specialForm.getOperatorDependency(EQUAL);
         resolvedHashCodeFunction = specialForm.getOperatorDependency(HASH_CODE);
         resolvedIsIndeterminate = specialForm.getOperatorDependency(INDETERMINATE);
@@ -101,10 +101,10 @@ public class InCodeGenerator
             // For non-constant expressions, they will be added to the default case in the generated switch code. They do not affect any of
             // the cases other than the default one. Therefore, it's okay to skip them when choosing between DIRECT_SWITCH and HASH_SWITCH.
             // Same argument applies for nulls.
-            if (!(expression instanceof ConstantExpression)) {
+            if (!(expression instanceof ConstantExpression constantExpression)) {
                 continue;
             }
-            Object constant = ((ConstantExpression) expression).getValue();
+            Object constant = constantExpression.value();
             if (constant == null) {
                 continue;
             }
@@ -119,7 +119,7 @@ public class InCodeGenerator
     @Override
     public BytecodeNode generateExpression(BytecodeGeneratorContext generatorContext)
     {
-        Type type = valueExpression.getType();
+        Type type = valueExpression.type();
         Class<?> javaType = type.getJavaType();
 
         SwitchGenerationCase switchGenerationCase = checkSwitchGenerationCase(type, testExpressions);
@@ -137,7 +137,7 @@ public class InCodeGenerator
 
             if (isDeterminateConstant(testValue, indeterminateMethodHandle)) {
                 ConstantExpression constant = (ConstantExpression) testValue;
-                Object object = constant.getValue();
+                Object object = constant.value();
                 switch (switchGenerationCase) {
                     case DIRECT_SWITCH:
                     case SET_CONTAINS:
@@ -215,7 +215,7 @@ public class InCodeGenerator
                 switchBlock = new BytecodeBlock()
                         .comment("lookupSwitch(hashCode(<stackValue>))")
                         .getVariable(value)
-                        .append(invoke(hashCodeBinding, resolvedHashCodeFunction.getSignature()))
+                        .append(invoke(hashCodeBinding, resolvedHashCodeFunction.signature()))
                         .invokeStatic(Long.class, "hashCode", int.class, long.class)
                         .putVariable(expression)
                         .append(switchBuilder.build());
@@ -368,7 +368,7 @@ public class InCodeGenerator
         if (!(expression instanceof ConstantExpression constantExpression)) {
             return false;
         }
-        Object value = constantExpression.getValue();
+        Object value = constantExpression.value();
         if (value == null) {
             return false;
         }

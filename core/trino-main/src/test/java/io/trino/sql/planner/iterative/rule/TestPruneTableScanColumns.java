@@ -30,7 +30,7 @@ import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.expression.Variable;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
@@ -45,6 +45,7 @@ import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictConstrainedTableScan;
@@ -65,17 +66,17 @@ public class TestPruneTableScanColumns
                     Symbol orderdate = p.symbol("orderdate", DATE);
                     Symbol totalprice = p.symbol("totalprice", DOUBLE);
                     return p.project(
-                            Assignments.of(p.symbol("x"), totalprice.toSymbolReference()),
+                            Assignments.of(p.symbol("x", DOUBLE), totalprice.toSymbolReference()),
                             p.tableScan(
                                     tester().getCurrentCatalogTableHandle(TINY_SCHEMA_NAME, "orders"),
                                     ImmutableList.of(orderdate, totalprice),
                                     ImmutableMap.of(
-                                            orderdate, new TpchColumnHandle(orderdate.getName(), DATE),
-                                            totalprice, new TpchColumnHandle(totalprice.getName(), DOUBLE))));
+                                            orderdate, new TpchColumnHandle(orderdate.name(), DATE),
+                                            totalprice, new TpchColumnHandle(totalprice.name(), DOUBLE))));
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("x_", PlanMatchPattern.expression(new SymbolReference("totalprice_"))),
+                                ImmutableMap.of("x_", PlanMatchPattern.expression(new Reference(DOUBLE, "totalprice_"))),
                                 strictTableScan("orders", ImmutableMap.of("totalprice_", "totalprice"))));
     }
 
@@ -86,10 +87,10 @@ public class TestPruneTableScanColumns
                 .on(p -> {
                     Symbol orderdate = p.symbol("orderdate", DATE);
                     Symbol totalprice = p.symbol("totalprice", DOUBLE);
-                    TpchColumnHandle orderdateHandle = new TpchColumnHandle(orderdate.getName(), DATE);
-                    TpchColumnHandle totalpriceHandle = new TpchColumnHandle(totalprice.getName(), DOUBLE);
+                    TpchColumnHandle orderdateHandle = new TpchColumnHandle(orderdate.name(), DATE);
+                    TpchColumnHandle totalpriceHandle = new TpchColumnHandle(totalprice.name(), DOUBLE);
                     return p.project(
-                            Assignments.of(p.symbol("x"), totalprice.toSymbolReference()),
+                            Assignments.of(p.symbol("x", DOUBLE), totalprice.toSymbolReference()),
                             p.tableScan(
                                     tester().getCurrentCatalogTableHandle(TINY_SCHEMA_NAME, "orders"),
                                     List.of(orderdate, totalprice),
@@ -102,7 +103,7 @@ public class TestPruneTableScanColumns
                 })
                 .matches(
                         strictProject(
-                                Map.of("X", PlanMatchPattern.expression(new SymbolReference("TOTALPRICE"))),
+                                Map.of("X", PlanMatchPattern.expression(new Reference(DOUBLE, "TOTALPRICE"))),
                                 strictConstrainedTableScan(
                                         "orders",
                                         Map.of("TOTALPRICE", "totalprice"),
@@ -116,7 +117,7 @@ public class TestPruneTableScanColumns
         tester().assertThat(new PruneTableScanColumns(tester().getMetadata()))
                 .on(p ->
                         p.project(
-                                Assignments.of(p.symbol("y"), new SymbolReference("x")),
+                                Assignments.of(p.symbol("y"), new Reference(BIGINT, "x")),
                                 p.tableScan(
                                         ImmutableList.of(p.symbol("x")),
                                         ImmutableMap.of(p.symbol("x"), new TestingColumnHandle("x")))))
@@ -151,7 +152,7 @@ public class TestPruneTableScanColumns
                         Symbol symbolA = p.symbol("cola", DATE);
                         Symbol symbolB = p.symbol("colb", DOUBLE);
                         return p.project(
-                                Assignments.of(p.symbol("x"), symbolB.toSymbolReference()),
+                                Assignments.of(p.symbol("x", DOUBLE), symbolB.toSymbolReference()),
                                 p.tableScan(
                                         ruleTester.getCurrentCatalogTableHandle(testSchema, testTable),
                                         ImmutableList.of(symbolA, symbolB),
@@ -161,7 +162,7 @@ public class TestPruneTableScanColumns
                     })
                     .matches(
                             strictProject(
-                                    ImmutableMap.of("expr", PlanMatchPattern.expression(new SymbolReference("COLB"))),
+                                    ImmutableMap.of("expr", PlanMatchPattern.expression(new Reference(BIGINT, "COLB"))),
                                     tableScan(
                                             new MockConnectorTableHandle(
                                                     testSchemaTable,

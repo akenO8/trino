@@ -16,8 +16,8 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.collect.ImmutableList;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
-import io.trino.sql.ir.ComparisonExpression;
-import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
@@ -29,7 +29,7 @@ import io.trino.sql.planner.plan.RowNumberNode;
 import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
 import static io.trino.sql.planner.plan.Patterns.offset;
 
 /**
@@ -77,10 +77,10 @@ public class ImplementOffset
         FilterNode filterNode = new FilterNode(
                 context.getIdAllocator().getNextId(),
                 rowNumberNode,
-                new ComparisonExpression(
+                new Comparison(
                         GREATER_THAN,
                         rowNumberSymbol.toSymbolReference(),
-                        new GenericLiteral(BIGINT, Long.toString(parent.getCount()))));
+                        new Constant(BIGINT, parent.getCount())));
 
         ProjectNode projectNode = new ProjectNode(
                 context.getIdAllocator().getNextId(),

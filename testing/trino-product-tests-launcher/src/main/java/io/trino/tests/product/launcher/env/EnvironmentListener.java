@@ -231,10 +231,7 @@ public interface EnvironmentListener
             public void environmentStarted(Environment environment)
             {
                 // Print stats for all containers every 30s after environment is started
-                executorService.scheduleWithFixedDelay(() ->
-                {
-                    printContainerStats();
-                }, 5 * 1000L, 30 * 1000L, MILLISECONDS);
+                executorService.scheduleWithFixedDelay(this::printContainerStats, 5 * 1000L, 30 * 1000L, MILLISECONDS);
             }
 
             @Override
@@ -259,7 +256,7 @@ public interface EnvironmentListener
                     log.info("Container stats:\n%s", statistics.render());
                 }
                 catch (Exception e) {
-                    e.printStackTrace();
+                    log.error(e, "Error printing container stats");
                 }
             }
         };

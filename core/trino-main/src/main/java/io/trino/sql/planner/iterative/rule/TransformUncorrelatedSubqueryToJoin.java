@@ -20,10 +20,8 @@ import com.google.common.collect.Sets;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.spi.type.Type;
-import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.IfExpression;
-import io.trino.sql.ir.NullLiteral;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.iterative.Rule;
@@ -37,7 +35,8 @@ import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.matching.Pattern.empty;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.IrExpressions.ifExpression;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.extractCardinality;
 import static io.trino.sql.planner.plan.JoinType.FULL;
 import static io.trino.sql.planner.plan.JoinType.INNER;
@@ -82,9 +81,9 @@ public class TransformUncorrelatedSubqueryToJoin
         else {
             type = JoinType.LEFT;
         }
-        JoinNode joinNode = rewriteToJoin(correlatedJoinNode, type, TRUE_LITERAL, context.getLookup());
+        JoinNode joinNode = rewriteToJoin(correlatedJoinNode, type, TRUE, context.getLookup());
 
-        if (correlatedJoinNode.getFilter().equals(TRUE_LITERAL)) {
+        if (correlatedJoinNode.getFilter().equals(TRUE)) {
             return Result.ofPlanNode(joinNode);
         }
 
@@ -97,8 +96,8 @@ public class TransformUncorrelatedSubqueryToJoin
             for (Symbol inputSymbol : Sets.intersection(
                     ImmutableSet.copyOf(correlatedJoinNode.getInput().getOutputSymbols()),
                     ImmutableSet.copyOf(correlatedJoinNode.getOutputSymbols()))) {
-                Type inputType = context.getSymbolAllocator().getTypes().get(inputSymbol);
-                assignments.put(inputSymbol, new IfExpression(correlatedJoinNode.getFilter(), inputSymbol.toSymbolReference(), new Cast(new NullLiteral(), inputType)));
+                Type inputType = inputSymbol.type();
+                assignments.put(inputSymbol, ifExpression(correlatedJoinNode.getFilter(), inputSymbol.toSymbolReference(), new Constant(inputType, null)));
             }
             ProjectNode projectNode = new ProjectNode(
                     context.getIdAllocator().getNextId(),
@@ -114,7 +113,7 @@ public class TransformUncorrelatedSubqueryToJoin
 
     private JoinNode rewriteToJoin(CorrelatedJoinNode parent, JoinType type, Expression filter, Lookup lookup)
     {
-        if (type == JoinType.LEFT && extractCardinality(parent.getSubquery(), lookup).isAtLeastScalar() && filter.equals(TRUE_LITERAL)) {
+        if (type == JoinType.LEFT && extractCardinality(parent.getSubquery(), lookup).isAtLeastScalar() && filter.equals(TRUE)) {
             // input rows will always be matched against subquery rows
             type = JoinType.INNER;
         }
@@ -127,7 +126,7 @@ public class TransformUncorrelatedSubqueryToJoin
                 parent.getInput().getOutputSymbols(),
                 parent.getSubquery().getOutputSymbols(),
                 false,
-                filter.equals(TRUE_LITERAL) ? Optional.empty() : Optional.of(filter),
+                filter.equals(TRUE) ? Optional.empty() : Optional.of(filter),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),

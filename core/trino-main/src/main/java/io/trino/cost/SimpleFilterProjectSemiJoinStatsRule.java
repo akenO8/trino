@@ -17,12 +17,10 @@ import com.google.common.collect.Iterables;
 import io.trino.Session;
 import io.trino.cost.StatsCalculator.Context;
 import io.trino.matching.Pattern;
-import io.trino.metadata.Metadata;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Not;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
@@ -49,13 +47,11 @@ public class SimpleFilterProjectSemiJoinStatsRule
 {
     private static final Pattern<FilterNode> PATTERN = filter();
 
-    private final Metadata metadata;
     private final FilterStatsCalculator filterStatsCalculator;
 
-    public SimpleFilterProjectSemiJoinStatsRule(Metadata metadata, StatsNormalizer normalizer, FilterStatsCalculator filterStatsCalculator)
+    public SimpleFilterProjectSemiJoinStatsRule(StatsNormalizer normalizer, FilterStatsCalculator filterStatsCalculator)
     {
         super(normalizer);
-        this.metadata = requireNonNull(metadata, "metadata is null");
         this.filterStatsCalculator = requireNonNull(filterStatsCalculator, "filterStatsCalculator cannot be null");
     }
 
@@ -75,22 +71,22 @@ public class SimpleFilterProjectSemiJoinStatsRule
                 return Optional.empty();
             }
             PlanNode projectNodeSource = context.lookup().resolve(projectNode.getSource());
-            if (!(projectNodeSource instanceof SemiJoinNode)) {
+            if (!(projectNodeSource instanceof SemiJoinNode value)) {
                 return Optional.empty();
             }
-            semiJoinNode = (SemiJoinNode) projectNodeSource;
+            semiJoinNode = value;
         }
-        else if (nodeSource instanceof SemiJoinNode) {
-            semiJoinNode = (SemiJoinNode) nodeSource;
+        else if (nodeSource instanceof SemiJoinNode value) {
+            semiJoinNode = value;
         }
         else {
             return Optional.empty();
         }
 
-        return calculate(node, semiJoinNode, context.statsProvider(), context.session(), context.types());
+        return calculate(node, semiJoinNode, context.statsProvider(), context.session());
     }
 
-    private Optional<PlanNodeStatsEstimate> calculate(FilterNode filterNode, SemiJoinNode semiJoinNode, StatsProvider statsProvider, Session session, TypeProvider types)
+    private Optional<PlanNodeStatsEstimate> calculate(FilterNode filterNode, SemiJoinNode semiJoinNode, StatsProvider statsProvider, Session session)
     {
         PlanNodeStatsEstimate sourceStats = statsProvider.getStats(semiJoinNode.getSource());
         PlanNodeStatsEstimate filteringSourceStats = statsProvider.getStats(semiJoinNode.getFilteringSource());
@@ -116,7 +112,7 @@ public class SimpleFilterProjectSemiJoinStatsRule
         }
 
         // apply remaining predicate
-        PlanNodeStatsEstimate filteredStats = filterStatsCalculator.filterStats(semiJoinStats, semiJoinOutputFilter.get().getRemainingPredicate(), session, types);
+        PlanNodeStatsEstimate filteredStats = filterStatsCalculator.filterStats(semiJoinStats, semiJoinOutputFilter.get().getRemainingPredicate(), session);
         if (filteredStats.isOutputRowCountUnknown()) {
             return Optional.of(semiJoinStats.mapOutputRowCount(rowCount -> rowCount * UNKNOWN_FILTER_COEFFICIENT));
         }
@@ -135,18 +131,17 @@ public class SimpleFilterProjectSemiJoinStatsRule
         }
 
         Expression semiJoinOutputReference = Iterables.getOnlyElement(semiJoinOutputReferences);
-        Expression remainingPredicate = combineConjuncts(metadata, conjuncts.stream()
+        Expression remainingPredicate = combineConjuncts(conjuncts.stream()
                 .filter(conjunct -> conjunct != semiJoinOutputReference)
                 .collect(toImmutableList()));
-        boolean negated = semiJoinOutputReference instanceof NotExpression;
+        boolean negated = semiJoinOutputReference instanceof Not;
         return Optional.of(new SemiJoinOutputFilter(negated, remainingPredicate));
     }
 
     private static boolean isSemiJoinOutputReference(Expression conjunct, Symbol semiJoinOutput)
     {
-        SymbolReference semiJoinOutputSymbolReference = semiJoinOutput.toSymbolReference();
-        return conjunct.equals(semiJoinOutputSymbolReference) ||
-                (conjunct instanceof NotExpression && ((NotExpression) conjunct).getValue().equals(semiJoinOutputSymbolReference));
+        Reference semiJoinOutputSymbolReference = semiJoinOutput.toSymbolReference();
+        return conjunct.equals(semiJoinOutputSymbolReference) || (conjunct instanceof Not not && not.value().equals(semiJoinOutputSymbolReference));
     }
 
     private static class SemiJoinOutputFilter

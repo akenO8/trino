@@ -16,11 +16,12 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
-import io.trino.SystemSessionProperties;
 import io.trino.connector.StaticConnectorFactory;
 import io.trino.metadata.MaterializedViewDefinition;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.metadata.ViewColumn;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnMetadata;
@@ -30,6 +31,7 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.ViewExpression;
 import io.trino.spi.transaction.IsolationLevel;
@@ -37,15 +39,16 @@ import io.trino.spi.type.TestingTypeManager;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeParameter;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.ComparisonExpression;
-import io.trino.sql.ir.GenericLiteral;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.testing.PlanTester;
 import io.trino.testing.TestingAccessControlManager;
 import io.trino.testing.TestingMetadata;
+import io.trino.type.DateTimes;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -61,8 +64,7 @@ import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.TimestampWithTimeZoneType.createTimestampWithTimeZoneType;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -80,6 +82,9 @@ import static io.trino.testing.TestingSession.testSessionBuilder;
 public class TestMaterializedViews
         extends BasePlanTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
+
     private static final String SCHEMA = "tiny";
 
     @Override
@@ -276,9 +281,6 @@ public class TestMaterializedViews
     public void testNotFreshMaterializedView()
     {
         Session defaultSession = getPlanTester().getDefaultSession();
-        Session legacyGracePeriod = Session.builder(defaultSession)
-                .setSystemProperty(SystemSessionProperties.LEGACY_MATERIALIZED_VIEW_GRACE_PERIOD, "true")
-                .build();
         Session futureSession = Session.builder(defaultSession)
                 .setStart(Instant.now().plus(1, ChronoUnit.DAYS))
                 .build();
@@ -289,11 +291,6 @@ public class TestMaterializedViews
                 anyTree(
                         tableScan("storage_table")));
 
-        assertPlan(
-                "SELECT * FROM not_fresh_materialized_view",
-                legacyGracePeriod,
-                anyTree(
-                        tableScan("test_table")));
         assertPlan(
                 "SELECT * FROM not_fresh_materialized_view",
                 futureSession,
@@ -314,8 +311,8 @@ public class TestMaterializedViews
                 anyTree(
                         project(
                                 ImmutableMap.of(
-                                        "A_CAST", expression(new ArithmeticBinaryExpression(ADD, new Cast(new SymbolReference("A"), BIGINT), new GenericLiteral(BIGINT, "1"))),
-                                        "B_CAST", expression(new Cast(new SymbolReference("B"), BIGINT))),
+                                        "A_CAST", expression(new Call(ADD_BIGINT, ImmutableList.of(new Cast(new Reference(BIGINT, "A"), BIGINT), new Constant(BIGINT, 1L)))),
+                                        "B_CAST", expression(new Cast(new Reference(BIGINT, "B"), BIGINT))),
                                 tableScan("storage_table_with_casts", ImmutableMap.of("A", "a", "B", "b")))));
     }
 
@@ -327,14 +324,14 @@ public class TestMaterializedViews
                         tableWriter(List.of("A_CAST", "B_CAST"), List.of("a", "b"),
                                 exchange(LOCAL,
                                         project(Map.of(
-                                                        "A_CAST", expression(new Cast(new SymbolReference("A"), TINYINT)),
-                                                        "B_CAST", expression(new Cast(new SymbolReference("B"), VARCHAR))),
+                                                        "A_CAST", expression(new Cast(new Reference(BIGINT, "A"), TINYINT)),
+                                                        "B_CAST", expression(new Cast(new Reference(BIGINT, "B"), VARCHAR))),
                                                 tableScan("test_table", Map.of("A", "a", "B", "b")))))));
 
         // No-op REFRESH
         assertPlan("REFRESH MATERIALIZED VIEW materialized_view_with_casts",
                 output(
-                        values(List.of("rows"), List.of(List.of(new GenericLiteral(BIGINT, "0"))))));
+                        values(List.of("rows"), List.of(List.of(new Constant(BIGINT, 0L))))));
     }
 
     @Test
@@ -342,9 +339,9 @@ public class TestMaterializedViews
     {
         assertPlan("SELECT * FROM timestamp_mv_test WHERE ts < TIMESTAMP '2024-01-01 00:00:00.000 America/New_York'",
                 anyTree(
-                        project(ImmutableMap.of("ts_0", expression(new Cast(new SymbolReference("ts"), TIMESTAMP_TZ_MILLIS))),
+                        project(ImmutableMap.of("ts_0", expression(new Cast(new Reference(TIMESTAMP_TZ_MILLIS, "ts"), TIMESTAMP_TZ_MILLIS))),
                                 filter(
-                                        new ComparisonExpression(LESS_THAN, new Cast(new SymbolReference("ts"), TIMESTAMP_TZ_MILLIS), new GenericLiteral(createTimestampWithTimeZoneType(3), "2024-01-01 00:00:00.000 America/New_York")),
+                                        new Comparison(LESS_THAN, new Cast(new Reference(TIMESTAMP_TZ_MILLIS, "ts"), TIMESTAMP_TZ_MILLIS), new Constant(createTimestampWithTimeZoneType(3), DateTimes.parseTimestampWithTimeZone(3, "2024-01-01 00:00:00.000 America/New_York"))),
                                         tableScan("timestamp_test_storage", ImmutableMap.of("ts", "ts", "id", "id"))))));
     }
 

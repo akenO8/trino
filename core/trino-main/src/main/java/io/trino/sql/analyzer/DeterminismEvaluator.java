@@ -13,7 +13,6 @@
  */
 package io.trino.sql.analyzer;
 
-import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.sql.tree.CurrentDate;
 import io.trino.sql.tree.CurrentTime;
@@ -35,11 +34,6 @@ import static java.util.Objects.requireNonNull;
 public final class DeterminismEvaluator
 {
     private DeterminismEvaluator() {}
-
-    public static boolean isDeterministic(Expression expression, Metadata metadata)
-    {
-        return isDeterministic(expression, functionCall -> metadata.decodeFunction(functionCall.getName()));
-    }
 
     public static boolean isDeterministic(Expression expression, Function<FunctionCall, ResolvedFunction> resolvedFunctionSupplier)
     {
@@ -64,7 +58,7 @@ public final class DeterminismEvaluator
         @Override
         protected Void visitFunctionCall(FunctionCall node, AtomicBoolean deterministic)
         {
-            if (!resolvedFunctionSupplier.apply(node).isDeterministic()) {
+            if (!resolvedFunctionSupplier.apply(node).deterministic()) {
                 deterministic.set(false);
                 return null;
             }

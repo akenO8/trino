@@ -19,7 +19,9 @@ import com.google.common.collect.ImmutableSet;
 import io.trino.Session;
 import io.trino.cost.ScalarStatsCalculator;
 import io.trino.metadata.InternalFunctionBundle;
+import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TableHandle;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.plugin.hive.HiveTransactionHandle;
 import io.trino.plugin.hive.metastore.Database;
 import io.trino.plugin.hive.metastore.HiveMetastore;
@@ -31,18 +33,18 @@ import io.trino.plugin.iceberg.IcebergPlugin;
 import io.trino.plugin.iceberg.IcebergTableHandle;
 import io.trino.plugin.iceberg.TestingIcebergConnectorFactory;
 import io.trino.spi.connector.CatalogHandle;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
-import io.trino.sql.ir.ArithmeticUnaryExpression;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.PruneTableScanColumns;
 import io.trino.sql.planner.iterative.rule.PushPredicateIntoTableScan;
@@ -68,9 +70,7 @@ import static io.trino.plugin.iceberg.TableType.DATA;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.ir.ArithmeticUnaryExpression.Sign.MINUS;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
@@ -84,6 +84,10 @@ import static java.util.Arrays.asList;
 public class TestConnectorPushdownRulesWithIceberg
         extends BaseRuleTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
+    private static final ResolvedFunction NEGATION_BIGINT = FUNCTIONS.resolveOperator(OperatorType.NEGATION, ImmutableList.of(BIGINT));
+
     private static final String SCHEMA_NAME = "test_schema";
 
     private static final Type ROW_TYPE = RowType.from(asList(field("a", BIGINT), field("b", BIGINT)));
@@ -138,8 +142,7 @@ public class TestConnectorPushdownRulesWithIceberg
         String tableName = "projection_test";
         PushProjectionIntoTableScan pushProjectionIntoTableScan = new PushProjectionIntoTableScan(
                 tester().getPlannerContext(),
-                tester().getTypeAnalyzer(),
-                new ScalarStatsCalculator(tester().getPlannerContext(), tester().getTypeAnalyzer()));
+                new ScalarStatsCalculator(tester().getPlannerContext()));
 
         tester().getPlanTester().executeStatement(format(
                 "CREATE TABLE  %s (struct_of_int) AS " +
@@ -191,7 +194,7 @@ public class TestConnectorPushdownRulesWithIceberg
                                         ImmutableMap.of(p.symbol("struct_of_int", baseType), fullColumn))))
                 .matches(
                         project(
-                                ImmutableMap.of("expr", expression(new SymbolReference("col"))),
+                                ImmutableMap.of("expr", expression(new Reference(INTEGER, "col"))),
                                 tableScan(
                                         icebergTable.withProjectedColumns(ImmutableSet.of(fullColumn))::equals,
                                         TupleDomain.all(),
@@ -216,13 +219,13 @@ public class TestConnectorPushdownRulesWithIceberg
                 .on(p ->
                         p.project(
                                 Assignments.of(
-                                        p.symbol("expr_deref", BIGINT), new SubscriptExpression(p.symbol("struct_of_int", baseType).toSymbolReference(), new LongLiteral(1))),
+                                        p.symbol("expr_deref", BIGINT), new FieldReference(p.symbol("struct_of_int", baseType).toSymbolReference(), 0)),
                                 p.tableScan(
                                         table,
                                         ImmutableList.of(p.symbol("struct_of_int", baseType)),
                                         ImmutableMap.of(p.symbol("struct_of_int", baseType), fullColumn))))
                 .matches(project(
-                        ImmutableMap.of("expr_deref", expression(new SymbolReference("struct_of_int#a"))),
+                        ImmutableMap.of("expr_deref", expression(new Reference(BIGINT, "struct_of_int#a"))),
                         tableScan(
                                 icebergTable.withProjectedColumns(ImmutableSet.of(partialColumn))::equals,
                                 TupleDomain.all(),
@@ -236,9 +239,9 @@ public class TestConnectorPushdownRulesWithIceberg
     {
         String tableName = "predicate_test";
         tester().getPlanTester().executeStatement(format("CREATE TABLE %s (a, b) AS SELECT 5, 6", tableName));
-        long snapshotId = ((IcebergTableHandle) tester().getPlanTester().getTableHandle(TEST_CATALOG_NAME, SCHEMA_NAME, tableName).getConnectorHandle()).getSnapshotId().orElseThrow();
+        long snapshotId = ((IcebergTableHandle) tester().getPlanTester().getTableHandle(TEST_CATALOG_NAME, SCHEMA_NAME, tableName).connectorHandle()).getSnapshotId().orElseThrow();
 
-        PushPredicateIntoTableScan pushPredicateIntoTableScan = new PushPredicateIntoTableScan(tester().getPlannerContext(), tester().getTypeAnalyzer(), false);
+        PushPredicateIntoTableScan pushPredicateIntoTableScan = new PushPredicateIntoTableScan(tester().getPlannerContext(), false);
 
         IcebergTableHandle icebergTable = new IcebergTableHandle(
                 CatalogHandle.fromId("iceberg:NORMAL:v12345"),
@@ -267,13 +270,13 @@ public class TestConnectorPushdownRulesWithIceberg
         tester().assertThat(pushPredicateIntoTableScan)
                 .on(p ->
                         p.filter(
-                                new ComparisonExpression(EQUAL, new SymbolReference("a"), new LongLiteral(5)),
+                                new Comparison(EQUAL, new Reference(INTEGER, "a"), new Constant(INTEGER, 5L)),
                                 p.tableScan(
                                         table,
                                         ImmutableList.of(p.symbol("a", INTEGER)),
                                         ImmutableMap.of(p.symbol("a", INTEGER), column))))
                 .matches(filter(
-                        new ComparisonExpression(EQUAL, new SymbolReference("a"), new LongLiteral(5)),
+                        new Comparison(EQUAL, new Reference(INTEGER, "a"), new Constant(INTEGER, 5L)),
                         tableScan(
                                 tableHandle -> ((IcebergTableHandle) tableHandle).getUnenforcedPredicate().getDomains().get()
                                         .equals(ImmutableMap.of(column, Domain.singleValue(INTEGER, 5L))),
@@ -321,7 +324,7 @@ public class TestConnectorPushdownRulesWithIceberg
                     Symbol symbolA = p.symbol("a", INTEGER);
                     Symbol symbolB = p.symbol("b", INTEGER);
                     return p.project(
-                            Assignments.of(p.symbol("x"), symbolA.toSymbolReference()),
+                            Assignments.of(p.symbol("x", INTEGER), symbolA.toSymbolReference()),
                             p.tableScan(
                                     table,
                                     ImmutableList.of(symbolA, symbolB),
@@ -331,7 +334,7 @@ public class TestConnectorPushdownRulesWithIceberg
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("expr", expression(new SymbolReference("COLA"))),
+                                ImmutableMap.of("expr", expression(new Reference(INTEGER, "COLA"))),
                                 tableScan(
                                         icebergTable.withProjectedColumns(ImmutableSet.of(columnA))::equals,
                                         TupleDomain.all(),
@@ -350,8 +353,7 @@ public class TestConnectorPushdownRulesWithIceberg
 
         PushProjectionIntoTableScan pushProjectionIntoTableScan = new PushProjectionIntoTableScan(
                 tester().getPlannerContext(),
-                tester().getTypeAnalyzer(),
-                new ScalarStatsCalculator(tester().getPlannerContext(), tester().getTypeAnalyzer()));
+                new ScalarStatsCalculator(tester().getPlannerContext()));
 
         IcebergTableHandle icebergTable = new IcebergTableHandle(
                 CatalogHandle.fromId("iceberg:NORMAL:v12345"),
@@ -387,8 +389,8 @@ public class TestConnectorPushdownRulesWithIceberg
         // Test projection pushdown with duplicate column references
         tester().assertThat(pushProjectionIntoTableScan)
                 .on(p -> {
-                    SymbolReference column = p.symbol("just_bigint", BIGINT).toSymbolReference();
-                    Expression negation = new ArithmeticUnaryExpression(MINUS, column);
+                    Reference column = p.symbol("just_bigint", BIGINT).toSymbolReference();
+                    Expression negation = new Call(NEGATION_BIGINT, ImmutableList.of(column));
                     return p.project(
                             Assignments.of(
                                     // The column reference is part of both the assignments
@@ -401,8 +403,8 @@ public class TestConnectorPushdownRulesWithIceberg
                 })
                 .matches(project(
                         ImmutableMap.of(
-                                "column_ref", expression(new SymbolReference("just_bigint_0")),
-                                "negated_column_ref", expression(new ArithmeticUnaryExpression(MINUS, new SymbolReference("just_bigint_0")))),
+                                "column_ref", expression(new Reference(BIGINT, "just_bigint_0")),
+                                "negated_column_ref", expression(new Call(NEGATION_BIGINT, ImmutableList.of(new Reference(BIGINT, "just_bigint_0"))))),
                         tableScan(
                                 icebergTable.withProjectedColumns(ImmutableSet.of(bigintColumn))::equals,
                                 TupleDomain.all(),
@@ -411,12 +413,12 @@ public class TestConnectorPushdownRulesWithIceberg
         // Test Dereference pushdown
         tester().assertThat(pushProjectionIntoTableScan)
                 .on(p -> {
-                    SubscriptExpression subscript = new SubscriptExpression(p.symbol("struct_of_bigint", ROW_TYPE).toSymbolReference(), new LongLiteral(1));
-                    Expression sum = new ArithmeticBinaryExpression(ADD, subscript, new LongLiteral(2));
+                    FieldReference fieldReference = new FieldReference(p.symbol("struct_of_bigint", ROW_TYPE).toSymbolReference(), 0);
+                    Expression sum = new Call(ADD_BIGINT, ImmutableList.of(fieldReference, new Constant(BIGINT, 2L)));
                     return p.project(
                             Assignments.of(
                                     // The subscript expression instance is part of both the assignments
-                                    p.symbol("expr_deref", BIGINT), subscript,
+                                    p.symbol("expr_deref", BIGINT), fieldReference,
                                     p.symbol("expr_deref_2", BIGINT), sum),
                             p.tableScan(
                                     table,
@@ -425,8 +427,8 @@ public class TestConnectorPushdownRulesWithIceberg
                 })
                 .matches(project(
                         ImmutableMap.of(
-                                "expr_deref", expression(new SymbolReference("struct_of_bigint#a")),
-                                "expr_deref_2", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("struct_of_bigint#a"), new LongLiteral(2)))),
+                                "expr_deref", expression(new Reference(BIGINT, "struct_of_bigint#a")),
+                                "expr_deref_2", expression(new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "struct_of_bigint#a"), new Constant(BIGINT, 2L))))),
                         tableScan(
                                 icebergTable.withProjectedColumns(ImmutableSet.of(partialColumn))::equals,
                                 TupleDomain.all(),

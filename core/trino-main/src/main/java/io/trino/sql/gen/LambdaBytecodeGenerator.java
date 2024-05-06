@@ -32,6 +32,7 @@ import io.airlift.bytecode.expression.BytecodeExpression;
 import io.trino.metadata.FunctionManager;
 import io.trino.operator.aggregation.AccumulatorCompiler;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.sql.planner.Symbol;
 import io.trino.sql.relational.CallExpression;
 import io.trino.sql.relational.ConstantExpression;
 import io.trino.sql.relational.InputReferenceExpression;
@@ -119,9 +120,10 @@ public final class LambdaBytecodeGenerator
         ImmutableMap.Builder<String, ParameterAndType> parameterMapBuilder = ImmutableMap.builder();
 
         parameters.add(arg("session", ConnectorSession.class));
-        for (int i = 0; i < lambdaExpression.getArguments().size(); i++) {
-            Class<?> type = Primitives.wrap(lambdaExpression.getArgumentTypes().get(i).getJavaType());
-            String argumentName = lambdaExpression.getArguments().get(i);
+        for (int i = 0; i < lambdaExpression.arguments().size(); i++) {
+            Symbol argument = lambdaExpression.arguments().get(i);
+            Class<?> type = Primitives.wrap(argument.type().getJavaType());
+            String argumentName = argument.name();
             Parameter arg = arg("lambda_" + i + "_" + BytecodeUtils.sanitizeName(argumentName), type);
             parameters.add(arg);
             parameterMapBuilder.put(argumentName, new ParameterAndType(arg, type));
@@ -150,12 +152,12 @@ public final class LambdaBytecodeGenerator
             LambdaDefinitionExpression lambda)
     {
         checkCondition(inputParameters.size() <= 254, NOT_SUPPORTED, "Too many arguments for lambda expression");
-        Class<?> returnType = Primitives.wrap(lambda.getBody().getType().getJavaType());
+        Class<?> returnType = Primitives.wrap(lambda.body().type().getJavaType());
         MethodDefinition method = classDefinition.declareMethod(a(PUBLIC), methodName, type(returnType), inputParameters);
 
         Scope scope = method.getScope();
         Variable wasNull = scope.declareVariable(boolean.class, "wasNull");
-        BytecodeNode compiledBody = innerExpressionCompiler.compile(lambda.getBody(), scope);
+        BytecodeNode compiledBody = innerExpressionCompiler.compile(lambda.body(), scope);
         method.getBody()
                 .putVariable(wasNull, false)
                 .append(compiledBody)
@@ -194,7 +196,7 @@ public final class LambdaBytecodeGenerator
         // generate values to be captured
         ImmutableList.Builder<BytecodeExpression> captureVariableBuilder = ImmutableList.builder();
         for (RowExpression captureExpression : captureExpressions) {
-            Class<?> valueType = Primitives.wrap(captureExpression.getType().getJavaType());
+            Class<?> valueType = Primitives.wrap(captureExpression.type().getJavaType());
             Variable valueVariable = scope.createTempVariable(valueType);
             block.append(context.generate(captureExpression));
             block.append(boxPrimitiveIfNecessary(scope, valueType));
@@ -349,7 +351,7 @@ public final class LambdaBytecodeGenerator
             @Override
             public BytecodeNode visitVariableReference(VariableReferenceExpression reference, Scope context)
             {
-                ParameterAndType parameterAndType = parameterMap.get(reference.getName());
+                ParameterAndType parameterAndType = parameterMap.get(reference.name());
                 Parameter parameter = parameterAndType.getParameter();
                 Class<?> type = parameterAndType.getType();
                 return new BytecodeBlock()

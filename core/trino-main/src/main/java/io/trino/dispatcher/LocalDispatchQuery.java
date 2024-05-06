@@ -127,7 +127,7 @@ public class LocalDispatchQuery
             ListenableFuture<Void> minimumWorkerFuture = clusterSizeMonitor.waitForMinimumWorkers(executionMinCount, getRequiredWorkersMaxWait(session));
             // when worker requirement is met, start the execution
             addSuccessCallback(minimumWorkerFuture, () -> startExecution(queryExecution), queryExecutor);
-            addExceptionCallback(minimumWorkerFuture, throwable -> stateMachine.transitionToFailed(throwable), queryExecutor);
+            addExceptionCallback(minimumWorkerFuture, stateMachine::transitionToFailed, queryExecutor);
 
             // cancel minimumWorkerFuture if query fails for some reason or is cancelled by user
             stateMachine.addStateChangeListener(state -> {
@@ -299,6 +299,12 @@ public class LocalDispatchQuery
     public void pruneInfo()
     {
         stateMachine.pruneQueryInfo();
+    }
+
+    @Override
+    public boolean isInfoPruned()
+    {
+        return stateMachine.isQueryInfoPruned();
     }
 
     @Override

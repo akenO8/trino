@@ -20,6 +20,7 @@ import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.DictionaryBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
 
@@ -51,6 +52,7 @@ import static io.trino.spi.predicate.Utils.nativeValueToBlock;
 import static io.trino.spi.type.TypeUtils.isFloatingPointNaN;
 import static io.trino.spi.type.TypeUtils.readNativeValue;
 import static io.trino.spi.type.TypeUtils.writeNativeValue;
+import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
@@ -512,7 +514,21 @@ public final class SortedRangeSet
         if (that.isNone()) {
             return that;
         }
+        int thisRangeCount = this.getRangeCount();
+        int thatRangeCount = that.getRangeCount();
 
+        if (max(thisRangeCount, thatRangeCount) * 0.02 < min(thisRangeCount, thatRangeCount)) {
+            return linearSearchIntersect(that);
+        }
+        else {
+            // Binary search is better than linear search for sets with large size difference
+            return binarySearchIntersect(that);
+        }
+    }
+
+    // visible for testing
+    SortedRangeSet linearSearchIntersect(SortedRangeSet that)
+    {
         int thisRangeCount = this.getRangeCount();
         int thatRangeCount = that.getRangeCount();
 
@@ -552,6 +568,128 @@ public final class SortedRangeSet
         return new SortedRangeSet(type, inclusive, blockBuilder.build());
     }
 
+    // visible for testing
+    SortedRangeSet binarySearchIntersect(SortedRangeSet that)
+    {
+        SortedRangeSet testRangeSet;
+        SortedRangeSet probeRangeSet;
+        if (this.getRangeCount() > that.getRangeCount()) {
+            testRangeSet = that;
+            probeRangeSet = this;
+        }
+        else {
+            testRangeSet = this;
+            probeRangeSet = that;
+        }
+        int testEnd = testRangeSet.getRangeCount();
+        int probeEnd = probeRangeSet.getRangeCount();
+        int resultIndex = 0;
+
+        // postponed allocation
+        boolean[] inclusive = null;
+        BlockBuilder blockBuilder = null;
+
+        for (int testIndex = 0; testIndex < testEnd; testIndex++) {
+            RangeView current = testRangeSet.getRangeView(testIndex);
+            int insertionStartIndex = 0;
+            if (!current.isLowUnbounded()) {
+                insertionStartIndex = findRangeInsertionPoint(probeRangeSet, 0, probeEnd, current.lowBound());
+                if (insertionStartIndex < 0) {
+                    insertionStartIndex = ~insertionStartIndex;
+                }
+            }
+            int intersectionEndIndex = probeEnd;
+            if (!current.isHighUnbounded()) {
+                intersectionEndIndex = findRangeInsertionPoint(probeRangeSet, 0, probeEnd, current.highBound());
+                if (intersectionEndIndex < 0) {
+                    intersectionEndIndex = ~intersectionEndIndex;
+                }
+                else {
+                    // The intersectionEndIndex is an exclusive index that needs to be increased when an overlapping RangeSet was found
+                    intersectionEndIndex++;
+                }
+            }
+            // test if testRange covers whole probeSet
+            if (insertionStartIndex == 0 && intersectionEndIndex >= probeEnd) {
+                RangeView startRange = probeRangeSet.getRangeView(0);
+                RangeView endRange = probeRangeSet.getRangeView(probeEnd - 1);
+
+                Optional<RangeView> startRangeIntersection = startRange.tryIntersect(current);
+                Optional<RangeView> endRangeIntersection = endRange.tryIntersect(current);
+                if (startRangeIntersection.isPresent() && endRangeIntersection.isPresent() &&
+                        startRangeIntersection.get().compareTo(startRange) == 0 && endRangeIntersection.get().compareTo(endRange) == 0) {
+                    return probeRangeSet;
+                }
+            }
+            if (blockBuilder == null) {
+                blockBuilder = type.createBlockBuilder(null, 2 * (testEnd + probeEnd));
+                inclusive = new boolean[2 * (testEnd + probeEnd)];
+            }
+            int probeIndex = insertionStartIndex;
+            while (probeIndex < intersectionEndIndex) {
+                RangeView probeRange = probeRangeSet.getRangeView(probeIndex);
+                // intersection at edges as [1, 9], [12, 18] intersected with [7, 15], [17, 21] should end up as [7, 9], [12, 15], [17, 18]
+                if (probeIndex == insertionStartIndex || probeIndex + 1 >= intersectionEndIndex) {
+                    Optional<RangeView> intersect = probeRange.tryIntersect(current);
+                    if (intersect.isPresent()) {
+                        writeRange(type, blockBuilder, inclusive, resultIndex, intersect.get());
+                        resultIndex++;
+                    }
+                    probeIndex++;
+                }
+                else {
+                    Block block = probeRangeSet.getSortedRanges();
+                    if (block instanceof DictionaryBlock || block instanceof ValueBlock) {
+                        int size = intersectionEndIndex - probeIndex - 1;
+                        int offset = probeIndex * 2;
+                        if (block instanceof DictionaryBlock) {
+                            copyDictionaryBlock(blockBuilder, inclusive, probeRangeSet, offset, resultIndex, size);
+                        }
+                        else {
+                            copyValueBlock(blockBuilder, inclusive, probeRangeSet, offset, resultIndex, size);
+                        }
+                        probeIndex += size;
+                        resultIndex += size;
+                    }
+                    else {
+                        // RLE
+                        writeRange(type, blockBuilder, inclusive, resultIndex, probeRange);
+                        resultIndex++;
+                        probeIndex++;
+                    }
+                }
+            }
+        }
+
+        if (blockBuilder == null) {
+            blockBuilder = type.createBlockBuilder(null, 0);
+            inclusive = new boolean[0];
+        }
+        if (resultIndex * 2 < inclusive.length) {
+            inclusive = Arrays.copyOf(inclusive, resultIndex * 2);
+        }
+
+        return new SortedRangeSet(type, inclusive, blockBuilder.build());
+    }
+
+    private static void copyValueBlock(BlockBuilder blockBuilder, boolean[] inclusive, SortedRangeSet source, int sourceOffset, int destinationOffset, int size)
+    {
+        ValueBlock valueBlock = (ValueBlock) source.getSortedRanges();
+        System.arraycopy(source.getInclusive(), sourceOffset, inclusive, destinationOffset * 2, size * 2);
+        blockBuilder.appendRange(valueBlock.getUnderlyingValueBlock(), sourceOffset, size * 2);
+    }
+
+    private static void copyDictionaryBlock(BlockBuilder blockBuilder, boolean[] inclusive, SortedRangeSet source, int sourceOffset, int destinationOffset, int size)
+    {
+        DictionaryBlock dictionaryBlock = (DictionaryBlock) source.getSortedRanges();
+        int[] positions = new int[size * 2];
+        for (int position = 0; position < size * 2; position++) {
+            positions[position] = dictionaryBlock.getUnderlyingValuePosition(position + sourceOffset);
+        }
+        System.arraycopy(source.getInclusive(), sourceOffset, inclusive, destinationOffset * 2, positions.length);
+        blockBuilder.appendPositions(dictionaryBlock.getUnderlyingValueBlock(), positions, 0, positions.length);
+    }
+
     @Override
     public boolean overlaps(ValueSet other)
     {
@@ -564,24 +702,123 @@ public final class SortedRangeSet
         int thisRangeCount = this.getRangeCount();
         int thatRangeCount = that.getRangeCount();
 
+        if (max(thisRangeCount, thatRangeCount) * 0.005 < min(thisRangeCount, thatRangeCount)) {
+            return linearSearchOverlaps(that);
+        }
+        // Binary search is better than linear search for sets with large size difference
+        return binarySearchOverlaps(that);
+    }
+
+    // visible for testing
+    boolean binarySearchOverlaps(SortedRangeSet that)
+    {
+        SortedRangeSet testRangeSet;
+        SortedRangeSet probeRangeSet;
+        if (that.getRangeCount() < this.getRangeCount()) {
+            testRangeSet = that;
+            probeRangeSet = this;
+        }
+        else {
+            testRangeSet = this;
+            probeRangeSet = that;
+        }
+        int testIndex = 0;
+        int probeIndex = 0;
+        int probeEnd = probeRangeSet.getRangeCount();
+        int testEnd = testRangeSet.getRangeCount();
+
+        // skip ahead in testRangeSet to find index that either overlaps or is after the range of first element of probeRangeSet
+        if (testEnd > 1) {
+            testIndex = findRangeInsertionPoint(testRangeSet, testIndex, testEnd, probeRangeSet.getRangeView(0));
+            if (testIndex >= 0) {
+                return true;
+            }
+            testIndex = ~testIndex;
+        }
+        while (testIndex < testEnd) {
+            RangeView range = testRangeSet.getRangeView(testIndex);
+            int insertionIndex = findRangeInsertionPoint(probeRangeSet, probeIndex, probeEnd, range);
+            // found overlapping range index
+            if (insertionIndex >= 0) {
+                return true;
+            }
+            probeIndex = ~insertionIndex;
+            // all testRangeSet ranges are larger than probeRangeSet
+            if (probeIndex >= probeEnd) {
+                return false;
+            }
+            testIndex++;
+        }
+        return false;
+    }
+
+    // visible for testing
+    boolean linearSearchOverlaps(SortedRangeSet that)
+    {
+        int thisRangeCount = this.getRangeCount();
+        int thatRangeCount = that.getRangeCount();
+
         int thisNextRangeIndex = 0;
         int thatNextRangeIndex = 0;
+        // skip thisRangeSet values to match first from thatRangeSet
+        if (thisRangeCount > 512) {
+            thisNextRangeIndex = findRangeInsertionPoint(this, 0, thisRangeCount, that.getRangeView(0));
+            if (thisNextRangeIndex >= 0) {
+                return true; // overlaps
+            }
+            thisNextRangeIndex = ~thisNextRangeIndex;
+        }
+        // skip thatRangeSet values to match first from thisRangeSet
+        if (thatRangeCount > 512) {
+            thatNextRangeIndex = findRangeInsertionPoint(that, 0, thatRangeCount, this.getRangeView(thisNextRangeIndex));
+            if (thatNextRangeIndex >= 0) {
+                return true; // overlaps
+            }
+            thatNextRangeIndex = ~thatNextRangeIndex;
+        }
         while (thisNextRangeIndex < thisRangeCount && thatNextRangeIndex < thatRangeCount) {
             RangeView thisCurrent = this.getRangeView(thisNextRangeIndex);
             RangeView thatCurrent = that.getRangeView(thatNextRangeIndex);
-            if (thisCurrent.overlaps(thatCurrent)) {
-                return true;
-            }
-            int compare = thisCurrent.compareTo(thatCurrent);
-            if (compare < 0) {
+            if (thisCurrent.isFullyBefore(thatCurrent)) {
                 thisNextRangeIndex++;
             }
-            if (compare > 0) {
+            else if (thatCurrent.isFullyBefore(thisCurrent)) {
                 thatNextRangeIndex++;
+            }
+            else {
+                return true; // overlaps
             }
         }
 
         return false;
+    }
+
+    /**
+     * @param sortedRangeSet the SortedRangeSet to be searched
+     * @param fromIndex the index of the first range in sortedRangeSet (inclusive) to be searched
+     * @param toIndex the index of the last range in sortedRangeSet (exclusive) to be searched
+     * @param range the range to be searched for
+     * @return index of the overlapping range, if it is contained in the SortedRangeSet otherwise, (-(insertion point) - 1).
+     * The insertion point is defined as the point at which the range would be inserted into the SortedRangeSet
+     */
+    private static int findRangeInsertionPoint(SortedRangeSet sortedRangeSet, int fromIndex, int toIndex, RangeView range)
+    {
+        int low = fromIndex;
+        int high = toIndex - 1;
+        while (low <= high) {
+            int mid = (low + high) >>> 1;
+            RangeView current = sortedRangeSet.getRangeView(mid);
+            if (current.isFullyBefore(range)) {
+                low = mid + 1;
+            }
+            else if (range.isFullyBefore(current)) {
+                high = mid - 1;
+            }
+            else {
+                return mid; // overlaps
+            }
+        }
+        return -(low + 1);
     }
 
     @Override
@@ -610,7 +847,7 @@ public final class SortedRangeSet
                 unioned.add(toUnion.get(i).union(toUnion.get(i + 1)));
             }
             if (toUnion.size() % 2 != 0) {
-                unioned.add(toUnion.get(toUnion.size() - 1));
+                unioned.add(toUnion.getLast());
             }
             toUnion = unioned;
         }
@@ -817,8 +1054,9 @@ public final class SortedRangeSet
         if (hash == 0) {
             hash = Objects.hash(type, Arrays.hashCode(inclusive));
             for (int position = 0; position < sortedRanges.getPositionCount(); position++) {
-                if (sortedRanges.isNull(position)) {
-                    hash = hash * 31;
+                boolean positionIsNull = sortedRanges.isNull(position);
+                hash = hash * 31 + Boolean.hashCode(positionIsNull);
+                if (positionIsNull) {
                     continue;
                 }
                 try {
@@ -1333,6 +1571,34 @@ public final class SortedRangeSet
                     lowValue,
                     highValue,
                     highInclusive ? "]" : ")");
+        }
+
+        public RangeView highBound()
+        {
+            return new RangeView(
+                    type,
+                    comparisonOperator,
+                    rangeComparisonOperator,
+                    true,
+                    this.highValueBlock,
+                    this.highValuePosition,
+                    true,
+                    this.highValueBlock,
+                    this.highValuePosition);
+        }
+
+        public RangeView lowBound()
+        {
+            return new RangeView(
+                    type,
+                    comparisonOperator,
+                    rangeComparisonOperator,
+                    true,
+                    this.lowValueBlock,
+                    this.lowValuePosition,
+                    true,
+                    this.lowValueBlock,
+                    this.lowValuePosition);
         }
     }
 }

@@ -15,6 +15,7 @@ package io.trino.execution.scheduler.faulttolerant;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.airlift.units.DataSize;
 import io.trino.Session;
 import io.trino.client.NodeVersion;
@@ -228,14 +229,14 @@ public class TestExponentialGrowthPartitionMemoryEstimator
         return new PlanFragment(
                 new PlanFragmentId("exchange_fragment_id"),
                 new ValuesNode(new PlanNodeId("values"), 1),
-                ImmutableMap.of(),
+                ImmutableSet.of(),
                 partitioningHandle,
                 Optional.empty(),
                 ImmutableList.of(),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of()),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
-                ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
     }
 

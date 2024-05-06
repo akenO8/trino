@@ -29,11 +29,12 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.NodeRef;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
-import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AssignUniqueId;
 import io.trino.sql.planner.plan.DistinctLimitNode;
@@ -64,15 +65,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.spi.type.TypeUtils.isFloatingPointNaN;
 import static io.trino.spi.type.TypeUtils.readNativeValue;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.ir.IrUtils.expressionOrNullSymbols;
 import static io.trino.sql.ir.IrUtils.extractConjuncts;
@@ -91,55 +91,52 @@ public class EffectivePredicateExtractor
 
     private static final Function<Map.Entry<Symbol, ? extends Expression>, Expression> ENTRY_TO_EQUALITY =
             entry -> {
-                SymbolReference reference = entry.getKey().toSymbolReference();
+                Reference reference = entry.getKey().toSymbolReference();
                 Expression expression = entry.getValue();
+
+                if (expression instanceof Constant constant && constant.value() == null) {
+                    return new IsNull(reference);
+                }
+
                 // TODO: this is not correct with respect to NULLs ('reference IS NULL' would be correct, rather than 'reference = NULL')
                 // TODO: switch this to 'IS NOT DISTINCT FROM' syntax when EqualityInference properly supports it
-                return new ComparisonExpression(EQUAL, reference, expression);
+                return new Comparison(EQUAL, reference, expression);
             };
 
     private final PlannerContext plannerContext;
-    private final DomainTranslator domainTranslator;
     private final boolean useTableProperties;
 
-    public EffectivePredicateExtractor(DomainTranslator domainTranslator, PlannerContext plannerContext, boolean useTableProperties)
+    public EffectivePredicateExtractor(PlannerContext plannerContext, boolean useTableProperties)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-        this.domainTranslator = requireNonNull(domainTranslator, "domainTranslator is null");
         this.useTableProperties = useTableProperties;
     }
 
-    public Expression extract(Session session, PlanNode node, TypeProvider types, IrTypeAnalyzer typeAnalyzer)
+    public Expression extract(Session session, PlanNode node)
     {
-        return node.accept(new Visitor(domainTranslator, plannerContext, session, types, typeAnalyzer, useTableProperties), null);
+        return node.accept(new Visitor(plannerContext, session, useTableProperties), null);
     }
 
     private static class Visitor
             extends PlanVisitor<Expression, Void>
     {
-        private final DomainTranslator domainTranslator;
         private final PlannerContext plannerContext;
         private final Metadata metadata;
         private final Session session;
-        private final TypeProvider types;
-        private final IrTypeAnalyzer typeAnalyzer;
         private final boolean useTableProperties;
 
-        public Visitor(DomainTranslator domainTranslator, PlannerContext plannerContext, Session session, TypeProvider types, IrTypeAnalyzer typeAnalyzer, boolean useTableProperties)
+        public Visitor(PlannerContext plannerContext, Session session, boolean useTableProperties)
         {
-            this.domainTranslator = requireNonNull(domainTranslator, "domainTranslator is null");
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.metadata = plannerContext.getMetadata();
             this.session = requireNonNull(session, "session is null");
-            this.types = requireNonNull(types, "types is null");
-            this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
             this.useTableProperties = useTableProperties;
         }
 
         @Override
         protected Expression visitPlan(PlanNode node, Void context)
         {
-            return TRUE_LITERAL;
+            return TRUE;
         }
 
         @Override
@@ -151,7 +148,7 @@ public class EffectivePredicateExtractor
             // Therefore, we can't say anything about the effective predicate of the
             // output of such an aggregation.
             if (node.getGroupingKeys().isEmpty()) {
-                return TRUE_LITERAL;
+                return TRUE;
             }
 
             Expression underlyingPredicate = node.getSource().accept(this, context);
@@ -164,19 +161,28 @@ public class EffectivePredicateExtractor
         {
             Expression underlyingPredicate = node.getSource().accept(this, context);
 
-            Expression predicate = node.getPredicate();
+            DomainTranslator.ExtractionResult underlying = DomainTranslator.getExtractionResult(plannerContext, session, filterDeterministicConjuncts(underlyingPredicate));
 
-            // Remove non-deterministic conjuncts
-            predicate = filterDeterministicConjuncts(metadata, predicate);
+            if (underlying.getTupleDomain().isNone()) {
+                // Effective predicate extraction is incorrect in the presence of nulls, which manifests as a NONE domain
+                // In that case, ignore it and combine it into the filter directly
+                // See EffectivePredicateExtractor#ENTRY_TO_EQUALITY
+                // TODO: this should be removed once EffectivePredicate extraction is fixed for null handling
+                return combineConjuncts(underlyingPredicate, node.getPredicate());
+            }
 
-            return combineConjuncts(metadata, predicate, underlyingPredicate);
+            DomainTranslator.ExtractionResult current = DomainTranslator.getExtractionResult(plannerContext, session, filterDeterministicConjuncts(node.getPredicate()));
+            return combineConjuncts(
+                    DomainTranslator.toPredicate(underlying.getTupleDomain().intersect(current.getTupleDomain())),
+                    underlying.getRemainingExpression(),
+                    current.getRemainingExpression());
         }
 
         @Override
         public Expression visitExchange(ExchangeNode node, Void context)
         {
             return deriveCommonPredicates(node, source -> {
-                Map<Symbol, SymbolReference> mappings = new HashMap<>();
+                Map<Symbol, Reference> mappings = new HashMap<>();
                 for (int i = 0; i < node.getInputs().get(source).size(); i++) {
                     mappings.put(
                             node.getOutputSymbols().get(i),
@@ -211,16 +217,16 @@ public class EffectivePredicateExtractor
                     .collect(toImmutableList());
 
             List<Expression> projectionEqualities = nonIdentityAssignments.stream()
+                    .filter(assignment -> assignment.getKey().type().isComparable() || assignment.getKey().type().isOrderable())
                     .filter(assignment -> Sets.intersection(SymbolsExtractor.extractUnique(assignment.getValue()), newlyAssignedSymbols).isEmpty())
                     .map(ENTRY_TO_EQUALITY)
                     .collect(toImmutableList());
 
             return pullExpressionThroughSymbols(combineConjuncts(
-                    metadata,
-                    ImmutableList.<Expression>builder()
-                            .addAll(projectionEqualities)
-                            .addAll(validUnderlyingEqualities)
-                            .build()),
+                            ImmutableList.<Expression>builder()
+                                    .addAll(projectionEqualities)
+                                    .addAll(validUnderlyingEqualities)
+                                    .build()),
                     node.getOutputSymbols());
         }
 
@@ -259,7 +265,7 @@ public class EffectivePredicateExtractor
             }
 
             // TODO: replace with metadata.getTableProperties() when table layouts are fully removed
-            return domainTranslator.toPredicate(predicate.simplify()
+            return DomainTranslator.toPredicate(predicate.simplify()
                     .filter((columnHandle, domain) -> assignments.containsKey(columnHandle))
                     .transformKeys(assignments::get));
         }
@@ -292,7 +298,7 @@ public class EffectivePredicateExtractor
         @Override
         public Expression visitUnnest(UnnestNode node, Void context)
         {
-            return TRUE_LITERAL;
+            return TRUE;
         }
 
         @Override
@@ -306,23 +312,23 @@ public class EffectivePredicateExtractor
                     .collect(toImmutableList());
 
             return switch (node.getType()) {
-                case INNER -> pullExpressionThroughSymbols(combineConjuncts(metadata, ImmutableList.<Expression>builder()
+                case INNER -> pullExpressionThroughSymbols(combineConjuncts(ImmutableList.<Expression>builder()
                         .add(leftPredicate)
                         .add(rightPredicate)
-                        .add(combineConjuncts(metadata, joinConjuncts))
-                        .add(node.getFilter().orElse(TRUE_LITERAL))
+                        .add(combineConjuncts(joinConjuncts))
+                        .add(node.getFilter().orElse(TRUE))
                         .build()), node.getOutputSymbols());
-                case LEFT -> combineConjuncts(metadata, ImmutableList.<Expression>builder()
+                case LEFT -> combineConjuncts(ImmutableList.<Expression>builder()
                         .add(pullExpressionThroughSymbols(leftPredicate, node.getOutputSymbols()))
                         .addAll(pullNullableConjunctsThroughOuterJoin(extractConjuncts(rightPredicate), node.getOutputSymbols(), node.getRight().getOutputSymbols()::contains))
                         .addAll(pullNullableConjunctsThroughOuterJoin(joinConjuncts, node.getOutputSymbols(), node.getRight().getOutputSymbols()::contains))
                         .build());
-                case RIGHT -> combineConjuncts(metadata, ImmutableList.<Expression>builder()
+                case RIGHT -> combineConjuncts(ImmutableList.<Expression>builder()
                         .add(pullExpressionThroughSymbols(rightPredicate, node.getOutputSymbols()))
                         .addAll(pullNullableConjunctsThroughOuterJoin(extractConjuncts(leftPredicate), node.getOutputSymbols(), node.getLeft().getOutputSymbols()::contains))
                         .addAll(pullNullableConjunctsThroughOuterJoin(joinConjuncts, node.getOutputSymbols(), node.getLeft().getOutputSymbols()::contains))
                         .build());
-                case FULL -> combineConjuncts(metadata, ImmutableList.<Expression>builder()
+                case FULL -> combineConjuncts(ImmutableList.<Expression>builder()
                         .addAll(pullNullableConjunctsThroughOuterJoin(extractConjuncts(leftPredicate), node.getOutputSymbols(), node.getLeft().getOutputSymbols()::contains))
                         .addAll(pullNullableConjunctsThroughOuterJoin(extractConjuncts(rightPredicate), node.getOutputSymbols(), node.getRight().getOutputSymbols()::contains))
                         .addAll(pullNullableConjunctsThroughOuterJoin(joinConjuncts, node.getOutputSymbols(), node.getLeft().getOutputSymbols()::contains, node.getRight().getOutputSymbols()::contains))
@@ -334,23 +340,13 @@ public class EffectivePredicateExtractor
         public Expression visitValues(ValuesNode node, Void context)
         {
             if (node.getOutputSymbols().isEmpty()) {
-                return TRUE_LITERAL;
+                return TRUE;
             }
 
             // for each row of Values, get all expressions that will be evaluated:
             // - if the row is of type Row, evaluate fields of the row
             // - otherwise evaluate the whole expression and then analyze fields of the resulting row
             checkState(node.getRows().isPresent(), "rows is empty");
-            List<Expression> processedExpressions = node.getRows().get().stream()
-                    .flatMap(row -> {
-                        if (row instanceof Row) {
-                            return ((Row) row).getItems().stream();
-                        }
-                        return Stream.of(row);
-                    })
-                    .collect(toImmutableList());
-
-            Map<NodeRef<Expression>, Type> expressionTypes = typeAnalyzer.getTypes(session, types, processedExpressions);
 
             boolean[] hasNull = new boolean[node.getOutputSymbols().size()];
             boolean[] hasNaN = new boolean[node.getOutputSymbols().size()];
@@ -361,53 +357,51 @@ public class EffectivePredicateExtractor
             }
             List<ImmutableList.Builder<Object>> valuesBuilders = builders.build();
 
-            for (Expression row : node.getRows().get()) {
-                if (row instanceof Row) {
+            for (Expression expression : node.getRows().get()) {
+                if (expression instanceof Row row) {
                     for (int i = 0; i < node.getOutputSymbols().size(); i++) {
-                        Expression value = ((Row) row).getItems().get(i);
-                        if (!DeterminismEvaluator.isDeterministic(value, metadata)) {
+                        Expression value = row.items().get(i);
+                        if (!DeterminismEvaluator.isDeterministic(value)) {
                             nonDeterministic[i] = true;
                         }
                         else {
-                            IrExpressionInterpreter interpreter = new IrExpressionInterpreter(value, plannerContext, session, expressionTypes);
-                            Object item = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
-                            if (item instanceof Expression) {
-                                return TRUE_LITERAL;
+                            Expression item = new IrExpressionInterpreter(value, plannerContext, session).optimize();
+                            if (!(item instanceof Constant constant)) {
+                                return TRUE;
                             }
-                            if (item == null) {
+                            if (constant.value() == null) {
                                 hasNull[i] = true;
                             }
                             else {
-                                Type type = types.get(node.getOutputSymbols().get(i));
+                                Type type = node.getOutputSymbols().get(i).type();
                                 if (!type.isComparable() && !type.isOrderable()) {
-                                    return TRUE_LITERAL;
+                                    return TRUE;
                                 }
-                                if (hasNestedNulls(type, item)) {
+                                if (hasNestedNulls(type, ((Constant) item).value())) {
                                     // Workaround solution to deal with array and row comparisons don't support null elements currently.
                                     // TODO: remove when comparisons are fixed
-                                    return TRUE_LITERAL;
+                                    return TRUE;
                                 }
-                                if (isFloatingPointNaN(type, item)) {
+                                if (isFloatingPointNaN(type, ((Constant) item).value())) {
                                     hasNaN[i] = true;
                                 }
-                                valuesBuilders.get(i).add(item);
+                                valuesBuilders.get(i).add(((Constant) item).value());
                             }
                         }
                     }
                 }
                 else {
-                    if (!DeterminismEvaluator.isDeterministic(row, metadata)) {
-                        return TRUE_LITERAL;
+                    if (!DeterminismEvaluator.isDeterministic(expression)) {
+                        return TRUE;
                     }
-                    IrExpressionInterpreter interpreter = new IrExpressionInterpreter(row, plannerContext, session, expressionTypes);
-                    Object evaluated = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
-                    if (evaluated instanceof Expression) {
-                        return TRUE_LITERAL;
+                    Expression evaluated = new IrExpressionInterpreter(expression, plannerContext, session).optimize();
+                    if (!(evaluated instanceof Constant constant)) {
+                        return TRUE;
                     }
-                    SqlRow sqlRow = (SqlRow) evaluated;
+                    SqlRow sqlRow = (SqlRow) constant.value();
                     int rawIndex = sqlRow.getRawIndex();
                     for (int i = 0; i < node.getOutputSymbols().size(); i++) {
-                        Type type = types.get(node.getOutputSymbols().get(i));
+                        Type type = node.getOutputSymbols().get(i).type();
                         Block fieldBlock = sqlRow.getRawFieldBlock(i);
                         Object item = readNativeValue(type, fieldBlock, rawIndex);
                         if (item == null) {
@@ -415,12 +409,12 @@ public class EffectivePredicateExtractor
                         }
                         else {
                             if (!type.isComparable() && !type.isOrderable()) {
-                                return TRUE_LITERAL;
+                                return TRUE;
                             }
                             if (hasNestedNulls(type, item)) {
                                 // Workaround solution to deal with array and row comparisons don't support null elements currently.
                                 // TODO: remove when comparisons are fixed
-                                return TRUE_LITERAL;
+                                return TRUE;
                             }
                             if (isFloatingPointNaN(type, item)) {
                                 hasNaN[i] = true;
@@ -435,7 +429,7 @@ public class EffectivePredicateExtractor
             ImmutableMap.Builder<Symbol, Domain> domains = ImmutableMap.builder();
             for (int i = 0; i < node.getOutputSymbols().size(); i++) {
                 Symbol symbol = node.getOutputSymbols().get(i);
-                Type type = types.get(symbol);
+                Type type = symbol.type();
                 if (nonDeterministic[i]) {
                     // We can't describe a predicate for this column because at least
                     // one cell is non-deterministic, so skip it.
@@ -463,7 +457,7 @@ public class EffectivePredicateExtractor
             }
 
             // simplify to avoid a large expression if there are many rows in ValuesNode
-            return domainTranslator.toPredicate(TupleDomain.withColumnDomains(domains.buildOrThrow()).simplify());
+            return DomainTranslator.toPredicate(TupleDomain.withColumnDomains(domains.buildOrThrow()).simplify());
         }
 
         private boolean hasNestedNulls(Type type, Object value)
@@ -513,7 +507,7 @@ public class EffectivePredicateExtractor
             // Conjuncts without any symbol dependencies cannot be applied to the effective predicate (e.g. FALSE literal)
             return conjuncts.stream()
                     .map(expression -> pullExpressionThroughSymbols(expression, outputSymbols))
-                    .map(expression -> SymbolsExtractor.extractAll(expression).isEmpty() ? TRUE_LITERAL : expression)
+                    .map(expression -> SymbolsExtractor.extractAll(expression).isEmpty() ? TRUE : expression)
                     .map(expressionOrNullSymbols(nullSymbolScopes))
                     .collect(toImmutableList());
         }
@@ -532,18 +526,18 @@ public class EffectivePredicateExtractor
             Expression rightPredicate = node.getRight().accept(this, context);
 
             return switch (node.getType()) {
-                case INNER -> combineConjuncts(metadata, ImmutableList.<Expression>builder()
+                case INNER -> combineConjuncts(ImmutableList.<Expression>builder()
                         .add(pullExpressionThroughSymbols(leftPredicate, node.getOutputSymbols()))
                         .add(pullExpressionThroughSymbols(rightPredicate, node.getOutputSymbols()))
                         .build());
-                case LEFT -> combineConjuncts(metadata, ImmutableList.<Expression>builder()
+                case LEFT -> combineConjuncts(ImmutableList.<Expression>builder()
                         .add(pullExpressionThroughSymbols(leftPredicate, node.getOutputSymbols()))
                         .addAll(pullNullableConjunctsThroughOuterJoin(extractConjuncts(rightPredicate), node.getOutputSymbols(), node.getRight().getOutputSymbols()::contains))
                         .build());
             };
         }
 
-        private Expression deriveCommonPredicates(PlanNode node, Function<Integer, Collection<Map.Entry<Symbol, SymbolReference>>> mapping)
+        private Expression deriveCommonPredicates(PlanNode node, Function<Integer, Collection<Map.Entry<Symbol, Reference>>> mapping)
         {
             // Find the predicates that can be pulled up from each source
             List<Set<Expression>> sourceOutputConjuncts = new ArrayList<>();
@@ -556,11 +550,10 @@ public class EffectivePredicateExtractor
                         .collect(toImmutableList());
 
                 sourceOutputConjuncts.add(ImmutableSet.copyOf(extractConjuncts(pullExpressionThroughSymbols(combineConjuncts(
-                        metadata,
-                        ImmutableList.<Expression>builder()
-                                .addAll(equalities)
-                                .add(underlyingPredicate)
-                                .build()),
+                                ImmutableList.<Expression>builder()
+                                        .addAll(equalities)
+                                        .add(underlyingPredicate)
+                                        .build()),
                         node.getOutputSymbols()))));
             }
 
@@ -572,17 +565,17 @@ public class EffectivePredicateExtractor
                 potentialOutputConjuncts = Sets.intersection(potentialOutputConjuncts, iterator.next());
             }
 
-            return combineConjuncts(metadata, potentialOutputConjuncts);
+            return combineConjuncts(potentialOutputConjuncts);
         }
 
         private Expression pullExpressionThroughSymbols(Expression expression, Collection<Symbol> symbols)
         {
-            EqualityInference equalityInference = new EqualityInference(metadata, expression);
+            EqualityInference equalityInference = new EqualityInference(expression);
 
             ImmutableList.Builder<Expression> effectiveConjuncts = ImmutableList.builder();
             Set<Symbol> scope = ImmutableSet.copyOf(symbols);
-            EqualityInference.nonInferrableConjuncts(metadata, expression).forEach(conjunct -> {
-                if (DeterminismEvaluator.isDeterministic(conjunct, metadata)) {
+            EqualityInference.nonInferrableConjuncts(expression).forEach(conjunct -> {
+                if (DeterminismEvaluator.isDeterministic(conjunct)) {
                     Expression rewritten = equalityInference.rewrite(conjunct, scope);
                     if (rewritten != null) {
                         effectiveConjuncts.add(rewritten);
@@ -592,7 +585,7 @@ public class EffectivePredicateExtractor
 
             effectiveConjuncts.addAll(equalityInference.generateEqualitiesPartitionedBy(scope).getScopeEqualities());
 
-            return combineConjuncts(metadata, effectiveConjuncts.build());
+            return combineConjuncts(effectiveConjuncts.build());
         }
     }
 }

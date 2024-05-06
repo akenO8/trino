@@ -510,7 +510,7 @@ public abstract class AbstractTestTrinoFileSystem
 
             if (isCreateExclusive()) {
                 // re-create without overwrite is an error
-                assertThatThrownBy(outputFile::create)
+                assertThatThrownBy(() -> outputFile.create().close())
                         .isInstanceOf(FileAlreadyExistsException.class)
                         .hasMessageContaining(tempBlob.location().toString());
 
@@ -905,6 +905,33 @@ public abstract class AbstractTestTrinoFileSystem
                     assertThatThrownBy(() -> getFileSystem().renameFile(createLocation("a"), createLocation("b")))
                             .isInstanceOf(IOException.class);
                 }
+            }
+        }
+        finally {
+            // clean up manually created parent directory
+            try {
+                getFileSystem().deleteFile(createLocation("renameTarget"));
+            }
+            catch (IOException ignored) {
+            }
+        }
+
+        // rename to a file with special characters in the name
+        try (TempBlob sourceBlob = randomBlobLocation("renameSource");
+                TempBlob targetBlob = randomBlobLocation("renameTarget%25special")) {
+            sourceBlob.createOrOverwrite("data");
+            getFileSystem().createDirectory(targetBlob.location().parentDirectory());
+            getFileSystem().renameFile(sourceBlob.location(), targetBlob.location());
+            assertThat(sourceBlob.exists()).isFalse();
+            assertThat(targetBlob.exists()).isTrue();
+            assertThat(targetBlob.read()).isEqualTo("data");
+        }
+        finally {
+            // clean up manually created parent directory
+            try {
+                getFileSystem().deleteFile(createLocation("renameTarget%25special"));
+            }
+            catch (IOException ignored) {
             }
         }
     }
@@ -1310,7 +1337,7 @@ public abstract class AbstractTestTrinoFileSystem
         }
     }
 
-    private Location createBlob(Closer closer, String path)
+    protected Location createBlob(Closer closer, String path)
     {
         Location location = createLocation(path);
         closer.register(new TempBlob(location)).createOrOverwrite(TEST_BLOB_CONTENT_PREFIX + location.toString());

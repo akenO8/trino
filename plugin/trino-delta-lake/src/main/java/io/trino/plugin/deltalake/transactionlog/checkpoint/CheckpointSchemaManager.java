@@ -61,13 +61,10 @@ public class CheckpointSchemaManager
             RowType.field("version", BIGINT),
             RowType.field("lastUpdated", BIGINT)));
 
-    private static final RowType REMOVE_ENTRY_TYPE = RowType.from(ImmutableList.of(
-            RowType.field("path", VARCHAR),
-            RowType.field("deletionTimestamp", BIGINT),
-            RowType.field("dataChange", BOOLEAN)));
-
     private final RowType metadataEntryType;
     private final RowType commitInfoEntryType;
+    private final RowType removeEntryType;
+    private final RowType sidecarEntryType;
     private final ArrayType stringList;
 
     @Inject
@@ -109,6 +106,19 @@ public class CheckpointSchemaManager
                 RowType.field("readVersion", BIGINT),
                 RowType.field("isolationLevel", VARCHAR),
                 RowType.field("isBlindAppend", BOOLEAN)));
+
+        removeEntryType = RowType.from(ImmutableList.of(
+                RowType.field("path", VARCHAR),
+                RowType.field("partitionValues", stringMap),
+                RowType.field("deletionTimestamp", BIGINT),
+                RowType.field("dataChange", BOOLEAN)));
+
+        sidecarEntryType = RowType.from(ImmutableList.<RowType.Field>builder()
+                .add(RowType.field("path", VARCHAR))
+                .add(RowType.field("sizeInBytes", BIGINT))
+                .add(RowType.field("modificationTime", BIGINT))
+                .add(RowType.field("tags", stringMap))
+                .build());
     }
 
     public RowType getMetadataEntryType()
@@ -127,18 +137,18 @@ public class CheckpointSchemaManager
         List<DeltaLakeColumnMetadata> allColumns = extractSchema(metadataEntry, protocolEntry, typeManager);
         List<DeltaLakeColumnMetadata> minMaxColumns = columnsWithStats(metadataEntry, protocolEntry, typeManager);
         minMaxColumns = minMaxColumns.stream()
-                .filter(column -> addStatsMinMaxColumnFilter.test(column.getName()))
+                .filter(column -> addStatsMinMaxColumnFilter.test(column.name()))
                 .collect(toImmutableList());
         boolean deletionVectorEnabled = isDeletionVectorEnabled(metadataEntry, protocolEntry);
 
         ImmutableList.Builder<RowType.Field> minMaxFields = ImmutableList.builder();
         for (DeltaLakeColumnMetadata dataColumn : minMaxColumns) {
-            Type type = dataColumn.getPhysicalColumnType();
+            Type type = dataColumn.physicalColumnType();
             if (type instanceof TimestampWithTimeZoneType) {
-                minMaxFields.add(RowType.field(dataColumn.getPhysicalName(), TIMESTAMP_MILLIS));
+                minMaxFields.add(RowType.field(dataColumn.physicalName(), TIMESTAMP_MILLIS));
             }
             else {
-                minMaxFields.add(RowType.field(dataColumn.getPhysicalName(), type));
+                minMaxFields.add(RowType.field(dataColumn.physicalName(), type));
             }
         }
 
@@ -154,7 +164,7 @@ public class CheckpointSchemaManager
 
         statsColumns.add(RowType.field(
                 "nullCount",
-                RowType.from(allColumns.stream().map(column -> buildNullCountType(Optional.of(column.getPhysicalName()), column.getPhysicalColumnType())).collect(toImmutableList()))));
+                RowType.from(allColumns.stream().map(column -> buildNullCountType(Optional.of(column.physicalName()), column.physicalColumnType())).collect(toImmutableList()))));
 
         MapType stringMap = (MapType) typeManager.getType(TypeSignature.mapType(VARCHAR.getTypeSignature(), VARCHAR.getTypeSignature()));
         ImmutableList.Builder<RowType.Field> addFields = ImmutableList.builder();
@@ -209,7 +219,7 @@ public class CheckpointSchemaManager
 
     public RowType getRemoveEntryType()
     {
-        return REMOVE_ENTRY_TYPE;
+        return removeEntryType;
     }
 
     public RowType getTxnEntryType()
@@ -234,4 +244,10 @@ public class CheckpointSchemaManager
     public RowType getCommitInfoEntryType()
     {
         return commitInfoEntryType;
-    }}
+    }
+
+    public RowType getSidecarEntryType()
+    {
+        return sidecarEntryType;
+    }
+}

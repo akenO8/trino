@@ -19,18 +19,14 @@ import com.google.common.collect.ImmutableSet;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
-import io.trino.sql.ir.BooleanLiteral;
-import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Case;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.IrUtils;
-import io.trino.sql.ir.IsNotNullPredicate;
-import io.trino.sql.ir.IsNullPredicate;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.ir.NullLiteral;
-import io.trino.sql.ir.SearchedCaseExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Not;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
@@ -59,6 +55,7 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.sql.ir.Booleans.FALSE;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.ir.IrUtils.or;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
@@ -85,7 +82,6 @@ import static java.util.Objects.requireNonNull;
  *       - AssignUniqueId (A')
  *         - A
  * </pre>
- * <p>
  *
  * @see TransformCorrelatedGlobalAggregationWithProjection
  */
@@ -181,9 +177,9 @@ public class TransformCorrelatedInPredicateToJoin
 
         Expression joinExpression = and(
                 or(
-                        new IsNullPredicate(probeSideSymbol.toSymbolReference()),
-                        new ComparisonExpression(ComparisonExpression.Operator.EQUAL, probeSideSymbol.toSymbolReference(), buildSideSymbol.toSymbolReference()),
-                        new IsNullPredicate(buildSideSymbol.toSymbolReference())),
+                        new IsNull(probeSideSymbol.toSymbolReference()),
+                        new Comparison(Comparison.Operator.EQUAL, probeSideSymbol.toSymbolReference(), buildSideSymbol.toSymbolReference()),
+                        new IsNull(buildSideSymbol.toSymbolReference())),
                 correlationCondition);
 
         JoinNode leftOuterJoin = leftOuterJoin(idAllocator, probeSide, buildSide, joinExpression);
@@ -220,11 +216,11 @@ public class TransformCorrelatedInPredicateToJoin
                 singleGroupingSet(probeSide.getOutputSymbols()));
 
         // TODO since we care only about "some count > 0", we could have specialized node instead of leftOuterJoin that does the job without materializing join results
-        SearchedCaseExpression inPredicateEquivalent = new SearchedCaseExpression(
+        Case inPredicateEquivalent = new Case(
                 ImmutableList.of(
                         new WhenClause(isGreaterThan(countMatchesSymbol, 0), booleanConstant(true)),
                         new WhenClause(isGreaterThan(countNullMatchesSymbol, 0), booleanConstant(null))),
-                Optional.of(booleanConstant(false)));
+                FALSE);
         return new ProjectNode(
                 idAllocator.getNextId(),
                 aggregation,
@@ -267,33 +263,33 @@ public class TransformCorrelatedInPredicateToJoin
 
     private static Expression isGreaterThan(Symbol symbol, long value)
     {
-        return new ComparisonExpression(
-                ComparisonExpression.Operator.GREATER_THAN,
+        return new Comparison(
+                Comparison.Operator.GREATER_THAN,
                 symbol.toSymbolReference(),
                 bigint(value));
     }
 
     private static Expression not(Expression booleanExpression)
     {
-        return new NotExpression(booleanExpression);
+        return new Not(booleanExpression);
     }
 
     private static Expression isNotNull(Symbol symbol)
     {
-        return new IsNotNullPredicate(symbol.toSymbolReference());
+        return new Not(new IsNull(symbol.toSymbolReference()));
     }
 
     private static Expression bigint(long value)
     {
-        return new Cast(new LongLiteral(value), BIGINT);
+        return new Constant(BIGINT, value);
     }
 
     private static Expression booleanConstant(@Nullable Boolean value)
     {
         if (value == null) {
-            return new Cast(new NullLiteral(), BOOLEAN);
+            return new Constant(BOOLEAN, null);
         }
-        return new BooleanLiteral(value);
+        return new Constant(BOOLEAN, value);
     }
 
     private static class DecorrelatingVisitor
@@ -329,8 +325,8 @@ public class TransformCorrelatedInPredicateToJoin
                 // Pull up all symbols used by a filter (except correlation)
                 decorrelated.getCorrelatedPredicates().stream()
                         .flatMap(IrUtils::preOrder)
-                        .filter(SymbolReference.class::isInstance)
-                        .map(SymbolReference.class::cast)
+                        .filter(Reference.class::isInstance)
+                        .map(Reference.class::cast)
                         .filter(symbolReference -> !correlation.contains(Symbol.from(symbolReference)))
                         .forEach(symbolReference -> assignments.putIdentity(Symbol.from(symbolReference)));
 

@@ -13,7 +13,6 @@
  */
 package io.trino.connector;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.errorprone.annotations.ThreadSafe;
@@ -23,7 +22,10 @@ import io.airlift.log.Logger;
 import io.trino.Session;
 import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.CatalogHandle;
+import io.trino.spi.connector.ConnectorName;
+import io.trino.util.AutoCloseableCloser;
 import jakarta.annotation.PreDestroy;
 
 import java.util.ArrayList;
@@ -37,15 +39,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.Executors.newCachedThreadPool;
 
 @ThreadSafe
 public class WorkerDynamicCatalogManager
@@ -59,9 +62,9 @@ public class WorkerDynamicCatalogManager
     private final Lock catalogLoadingLock = catalogsLock.readLock();
     private final Lock catalogRemovingLock = catalogsLock.writeLock();
     private final ConcurrentMap<CatalogHandle, CatalogConnector> catalogs = new ConcurrentHashMap<>();
-    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    private final ExecutorService executor = newCachedThreadPool(daemonThreadsNamed("worker-dynamic-catalog-manager-%s"));
 
-    @GuardedBy("catalogsUpdateLock")
+    @GuardedBy("catalogsLock")
     private boolean stopped;
 
     @Inject
@@ -72,25 +75,24 @@ public class WorkerDynamicCatalogManager
 
     @PreDestroy
     public void stop()
+            throws Exception
     {
-        List<CatalogConnector> catalogs;
+        try (AutoCloseableCloser closer = AutoCloseableCloser.create()) {
+            catalogRemovingLock.lock();
+            try {
+                if (stopped) {
+                    return;
+                }
+                stopped = true;
 
-        catalogRemovingLock.lock();
-        try {
-            if (stopped) {
-                return;
+                catalogs.values().forEach(catalog -> closer.register(catalog::shutdown));
+                catalogs.clear();
             }
-            stopped = true;
+            finally {
+                catalogRemovingLock.unlock();
+            }
 
-            catalogs = ImmutableList.copyOf(this.catalogs.values());
-            this.catalogs.clear();
-        }
-        finally {
-            catalogRemovingLock.unlock();
-        }
-
-        for (CatalogConnector connector : catalogs) {
-            connector.shutdown();
+            closer.register(executor::shutdownNow);
         }
     }
 
@@ -111,14 +113,14 @@ public class WorkerDynamicCatalogManager
             }
 
             List<CatalogProperties> missingCatalogs = getMissingCatalogs(expectedCatalogs);
-            missingCatalogs.forEach(catalog -> checkArgument(!catalog.getCatalogHandle().equals(GlobalSystemConnector.CATALOG_HANDLE), "Global system catalog not registered"));
+            missingCatalogs.forEach(catalog -> checkArgument(!catalog.catalogHandle().equals(GlobalSystemConnector.CATALOG_HANDLE), "Global system catalog not registered"));
             List<ListenableFuture<Void>> loadedCatalogs = Futures.inCompletionOrder(
                     missingCatalogs.stream()
                             .map(catalog ->
                                     Futures.submit(() -> {
-                                        catalogs.computeIfAbsent(catalog.getCatalogHandle(), ignore -> {
+                                        catalogs.computeIfAbsent(catalog.catalogHandle(), ignore -> {
                                             CatalogConnector newCatalog = catalogFactory.createCatalog(catalog);
-                                            log.debug("Added catalog: " + catalog.getCatalogHandle());
+                                            log.debug("Added catalog: " + catalog.catalogHandle());
                                             return newCatalog;
                                         });
                                     }, executor))
@@ -196,7 +198,7 @@ public class WorkerDynamicCatalogManager
     private List<CatalogProperties> getMissingCatalogs(List<CatalogProperties> expectedCatalogs)
     {
         return expectedCatalogs.stream()
-                .filter(catalog -> !catalogs.containsKey(catalog.getCatalogHandle()))
+                .filter(catalog -> !catalogs.containsKey(catalog.catalogHandle()))
                 .collect(toImmutableList());
     }
 

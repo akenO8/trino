@@ -19,8 +19,9 @@ import io.trino.operator.scalar.TryFunction;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.NullableValue;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Booleans;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.NullLiteral;
 
 import java.util.Map;
 import java.util.Set;
@@ -35,10 +36,10 @@ public class LayoutConstraintEvaluator
     private final IrExpressionInterpreter evaluator;
     private final Set<ColumnHandle> arguments;
 
-    public LayoutConstraintEvaluator(PlannerContext plannerContext, IrTypeAnalyzer typeAnalyzer, Session session, TypeProvider types, Map<Symbol, ColumnHandle> assignments, Expression expression)
+    public LayoutConstraintEvaluator(PlannerContext plannerContext, Session session, Map<Symbol, ColumnHandle> assignments, Expression expression)
     {
         this.assignments = ImmutableMap.copyOf(requireNonNull(assignments, "assignments is null"));
-        evaluator = new IrExpressionInterpreter(expression, plannerContext, session, typeAnalyzer.getTypes(session, types, expression));
+        evaluator = new IrExpressionInterpreter(expression, plannerContext, session);
         arguments = SymbolsExtractor.extractUnique(expression).stream()
                 .map(assignments::get)
                 .collect(toImmutableSet());
@@ -58,9 +59,9 @@ public class LayoutConstraintEvaluator
 
         // Skip pruning if evaluation fails in a recoverable way. Failing here can cause
         // spurious query failures for partitions that would otherwise be filtered out.
-        Object optimized = TryFunction.evaluate(() -> evaluator.optimize(inputs), true);
+        Expression optimized = TryFunction.evaluate(() -> evaluator.optimize(inputs), Booleans.TRUE);
 
         // If any conjuncts evaluate to FALSE or null, then the whole predicate will never be true and so the partition should be pruned
-        return !(Boolean.FALSE.equals(optimized) || optimized == null || optimized instanceof NullLiteral);
+        return !(optimized instanceof Constant constant) || Boolean.TRUE.equals(constant.value());
     }
 }

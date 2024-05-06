@@ -120,19 +120,19 @@ public class DisabledSystemSecurityMetadata
     @Override
     public void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
@@ -224,6 +224,9 @@ public class DisabledSystemSecurityMetadata
 
     @Override
     public void columnTypeChanged(Session session, CatalogSchemaTableName table, String column, String oldType, String newType) {}
+
+    @Override
+    public void columnNotNullConstraintDropped(Session session, CatalogSchemaTableName table, String column) {}
 
     private static TrinoException notSupportedException(String catalogName)
     {

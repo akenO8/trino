@@ -13,32 +13,32 @@
  */
 package io.trino.sql.ir;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.Type;
 
 import java.util.List;
-import java.util.Objects;
-import java.util.stream.Collectors;
 
+import static io.trino.sql.ir.IrUtils.validateType;
 import static java.util.Objects.requireNonNull;
 
-public final class Array
-        extends Expression
+public record Array(Type elementType, List<Expression> elements)
+        implements Expression
 {
-    private final List<Expression> values;
-
-    @JsonCreator
-    public Array(List<Expression> values)
+    public Array
     {
-        requireNonNull(values, "values is null");
-        this.values = ImmutableList.copyOf(values);
+        requireNonNull(elementType, "type is null");
+        elements = ImmutableList.copyOf(elements);
+
+        for (Expression item : elements) {
+            validateType(elementType, item);
+        }
     }
 
-    @JsonProperty
-    public List<Expression> getValues()
+    @Override
+    public Type type()
     {
-        return values;
+        return new ArrayType(elementType);
     }
 
     @Override
@@ -48,37 +48,8 @@ public final class Array
     }
 
     @Override
-    public List<? extends Expression> getChildren()
+    public List<? extends Expression> children()
     {
-        return values;
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-
-        Array that = (Array) o;
-        return Objects.equals(values, that.values);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return values.hashCode();
-    }
-
-    @Override
-    public String toString()
-    {
-        return "Array[%s]".formatted(
-                values.stream()
-                        .map(Expression::toString)
-                        .collect(Collectors.joining(", ")));
+        return elements;
     }
 }

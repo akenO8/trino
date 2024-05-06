@@ -126,7 +126,7 @@ public class TestPrometheusSplit
         ConnectorSplitSource splits = splitManager.getSplits(
                 null,
                 null,
-                new PrometheusTableHandle("default", table.getName()),
+                new PrometheusTableHandle("default", table.name()),
                 (DynamicFilter) null,
                 Constraint.alwaysTrue());
         PrometheusSplit split = (PrometheusSplit) splits.getNextBatch(1).getNow(null).getSplits().get(0);
@@ -150,7 +150,7 @@ public class TestPrometheusSplit
         ConnectorSplitSource splits = splitManager.getSplits(
                 null,
                 null,
-                new PrometheusTableHandle("default", table.getName()),
+                new PrometheusTableHandle("default", table.name()),
                 (DynamicFilter) null,
                 Constraint.alwaysTrue());
         PrometheusSplit split = (PrometheusSplit) splits.getNextBatch(1).getNow(null).getSplits().get(0);
@@ -174,7 +174,7 @@ public class TestPrometheusSplit
         ConnectorSplitSource splitsMaybe = splitManager.getSplits(
                 null,
                 null,
-                new PrometheusTableHandle("default", table.getName()),
+                new PrometheusTableHandle("default", table.name()),
                 (DynamicFilter) null,
                 Constraint.alwaysTrue());
         List<ConnectorSplit> splits = splitsMaybe.getNextBatch(NUMBER_MORE_THAN_EXPECTED_NUMBER_SPLITS).getNow(null).getSplits();
@@ -199,7 +199,7 @@ public class TestPrometheusSplit
         ConnectorSplitSource splits = splitManager.getSplits(
                 null,
                 null,
-                new PrometheusTableHandle("default", table.getName()),
+                new PrometheusTableHandle("default", table.name()),
                 (DynamicFilter) null,
                 Constraint.alwaysTrue());
         PrometheusSplit split1 = (PrometheusSplit) splits.getNextBatch(1).getNow(null).getSplits().get(0);
@@ -357,9 +357,9 @@ public class TestPrometheusSplit
 
         TemporalAmount expectedMaxQueryAsTime = java.time.Duration.ofMillis(maxQueryRangeDuration.toMillis() +
                 ((splitTimes.size() - 1) * OFFSET_MILLIS));
-        String lastSplit = splitTimes.get(splitTimes.size() - 1);
+        String lastSplit = splitTimes.getLast();
         Instant lastSplitAsTime = ofEpochMilli(longFromDecimalSecondString(lastSplit));
-        String earliestSplit = splitTimes.get(0);
+        String earliestSplit = splitTimes.getFirst();
         Instant earliestSplitAsTime = ofEpochMilli(longFromDecimalSecondString(earliestSplit));
         TemporalAmount queryChunkAsTime = java.time.Duration.ofMillis(queryChunkSizeDuration.toMillis());
         java.time.Duration actualMaxDuration = Duration.between(earliestSplitAsTime
@@ -391,9 +391,9 @@ public class TestPrometheusSplit
 
         TemporalAmount expectedMaxQueryAsTime = java.time.Duration.ofMillis(new io.airlift.units.Duration(10, TimeUnit.MINUTES).toMillis() +
                 ((splitTimes.size() - 1) * OFFSET_MILLIS));
-        String lastSplit = splitTimes.get(splitTimes.size() - 1);
+        String lastSplit = splitTimes.getLast();
         Instant lastSplitAsTime = ofEpochMilli(longFromDecimalSecondString(lastSplit));
-        String earliestSplit = splitTimes.get(0);
+        String earliestSplit = splitTimes.getFirst();
         Instant earliestSplitAsTime = ofEpochMilli(longFromDecimalSecondString(earliestSplit));
         TemporalAmount queryChunkAsTime = java.time.Duration.ofMillis(queryChunkSizeDuration.toMillis());
         java.time.Duration actualMaxDuration = Duration.between(earliestSplitAsTime

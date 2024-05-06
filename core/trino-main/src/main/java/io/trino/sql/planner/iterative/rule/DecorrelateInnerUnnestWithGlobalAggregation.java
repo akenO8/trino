@@ -20,7 +20,8 @@ import com.google.common.collect.Streams;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.IsNotNullPredicate;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Not;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -49,7 +50,7 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.planner.iterative.rule.AggregationDecorrelation.rewriteWithMasks;
 import static io.trino.sql.planner.iterative.rule.Util.restrictOutputs;
@@ -74,7 +75,7 @@ import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
  * in subquery are supported.
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - CorrelatedJoin (LEFT or INNER) on true, correlation(c1, c2)
  *      - Input (a, c1, c2)
  *      - Aggregation
@@ -89,9 +90,9 @@ import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
  *                          g <- unnest(c1)
  *                          u <- unnest(c2)
  *                          replicate: ()
- * </pre>
+ * }</pre>
  * Into:
- * <pre>
+ * <pre>{@code
  * - Projection (restrict outputs)
  *      - Aggregation
  *           group by (a, c1, c2, unique)
@@ -109,14 +110,14 @@ import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
  *                               replicate: (a, c1, c2, unique)
  *                               - AssignUniqueId unique
  *                                    - Input (a, c1, c2)
- * </pre>
+ * }</pre>
  */
 public class DecorrelateInnerUnnestWithGlobalAggregation
         implements Rule<CorrelatedJoinNode>
 {
     private static final Pattern<CorrelatedJoinNode> PATTERN = correlatedJoin()
             .with(nonEmpty(correlation()))
-            .with(filter().equalTo(TRUE_LITERAL))
+            .with(filter().equalTo(TRUE))
             .matching(node -> node.getType() == JoinType.INNER || node.getType() == JoinType.LEFT);
 
     @Override
@@ -139,10 +140,10 @@ public class DecorrelateInnerUnnestWithGlobalAggregation
         }
 
         // if there are multiple global aggregations, the one that is closest to the source is the "reducing" aggregation, because it reduces multiple input rows to single output row
-        AggregationNode reducingAggregation = (AggregationNode) globalAggregations.get(globalAggregations.size() - 1);
+        AggregationNode reducingAggregation = (AggregationNode) globalAggregations.getLast();
 
         // find unnest in subquery
-        Optional<UnnestNode> subqueryUnnest = PlanNodeSearcher.searchFrom(reducingAggregation.getSource(), context.getLookup())
+        Optional<PlanNode> subqueryUnnest = PlanNodeSearcher.searchFrom(reducingAggregation.getSource(), context.getLookup())
                 .where(node -> isSupportedUnnest(node, correlatedJoinNode.getCorrelation(), context.getLookup()))
                 .recurseOnlyWhen(node -> node instanceof ProjectNode || isGroupedAggregation(node))
                 .findFirst();
@@ -151,7 +152,7 @@ public class DecorrelateInnerUnnestWithGlobalAggregation
             return Result.empty();
         }
 
-        UnnestNode unnestNode = subqueryUnnest.get();
+        UnnestNode unnestNode = (UnnestNode) subqueryUnnest.get();
 
         // assign unique id to input rows to restore semantics of aggregations after rewrite
         PlanNode input = new AssignUniqueId(
@@ -192,7 +193,7 @@ public class DecorrelateInnerUnnestWithGlobalAggregation
                 rewrittenUnnest,
                 Assignments.builder()
                         .putIdentities(rewrittenUnnest.getOutputSymbols())
-                        .put(mask, new IsNotNullPredicate(ordinalitySymbol.toSymbolReference()))
+                        .put(mask, new Not(new IsNull(ordinalitySymbol.toSymbolReference())))
                         .build());
 
         // restore all projections, grouped aggregations and global aggregations from the subquery

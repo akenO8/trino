@@ -16,10 +16,8 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Maps;
 import com.google.inject.Inject;
 import io.trino.Session;
-import io.trino.connector.CatalogProperties;
 import io.trino.cost.StatsAndCosts;
 import io.trino.execution.QueryManagerConfig;
 import io.trino.execution.warnings.WarningCollector;
@@ -27,15 +25,15 @@ import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.CatalogManager;
 import io.trino.metadata.FunctionManager;
 import io.trino.metadata.LanguageFunctionManager;
-import io.trino.metadata.LanguageScalarFunctionData;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableProperties.TablePartitioning;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.TrinoException;
 import io.trino.spi.TrinoWarning;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.ConnectorPartitioningHandle;
-import io.trino.spi.type.Type;
+import io.trino.spi.function.FunctionId;
 import io.trino.sql.planner.optimizations.PlanNodeSearcher;
 import io.trino.sql.planner.plan.AdaptivePlanNode;
 import io.trino.sql.planner.plan.ExchangeNode;
@@ -59,6 +57,7 @@ import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.TableUpdateNode;
 import io.trino.sql.planner.plan.TableWriterNode;
 import io.trino.sql.planner.plan.ValuesNode;
+import io.trino.sql.routine.ir.IrRoutine;
 import io.trino.transaction.TransactionManager;
 
 import java.util.ArrayList;
@@ -71,7 +70,6 @@ import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.base.Predicates.in;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.getQueryMaxStageCount;
 import static io.trino.SystemSessionProperties.getRetryPolicy;
@@ -145,15 +143,14 @@ public class PlanFragmenter
             Map<ExchangeSourceId, SubPlan> unchangedSubPlans)
     {
         List<CatalogProperties> activeCatalogs = transactionManager.getActiveCatalogs(session.getTransactionId().orElseThrow()).stream()
-                .map(CatalogInfo::getCatalogHandle)
+                .map(CatalogInfo::catalogHandle)
                 .flatMap(catalogHandle -> catalogManager.getCatalogProperties(catalogHandle).stream())
                 .collect(toImmutableList());
-        List<LanguageScalarFunctionData> languageScalarFunctions = languageFunctionManager.serializeFunctionsForWorkers(session);
+        Map<FunctionId, IrRoutine> languageScalarFunctions = languageFunctionManager.serializeFunctionsForWorkers(session);
         Fragmenter fragmenter = new Fragmenter(
                 session,
                 metadata,
                 functionManager,
-                plan.getTypes(),
                 plan.getStatsAndCosts(),
                 activeCatalogs,
                 languageScalarFunctions,
@@ -249,10 +246,9 @@ public class PlanFragmenter
         private final Session session;
         private final Metadata metadata;
         private final FunctionManager functionManager;
-        private final TypeProvider types;
         private final StatsAndCosts statsAndCosts;
         private final List<CatalogProperties> activeCatalogs;
-        private final List<LanguageScalarFunctionData> languageFunctions;
+        private final Map<FunctionId, IrRoutine> languageFunctions;
         private final PlanFragmentIdAllocator idAllocator;
         private final Map<ExchangeSourceId, SubPlan> unchangedSubPlans;
         private final PlanFragmentId rootFragmentID;
@@ -261,20 +257,18 @@ public class PlanFragmenter
                 Session session,
                 Metadata metadata,
                 FunctionManager functionManager,
-                TypeProvider types,
                 StatsAndCosts statsAndCosts,
                 List<CatalogProperties> activeCatalogs,
-                List<LanguageScalarFunctionData> languageFunctions,
+                Map<FunctionId, IrRoutine> languageFunctions,
                 PlanFragmentIdAllocator idAllocator,
                 Map<ExchangeSourceId, SubPlan> unchangedSubPlans)
         {
             this.session = requireNonNull(session, "session is null");
             this.metadata = requireNonNull(metadata, "metadata is null");
             this.functionManager = requireNonNull(functionManager, "functionManager is null");
-            this.types = requireNonNull(types, "types is null");
             this.statsAndCosts = requireNonNull(statsAndCosts, "statsAndCosts is null");
             this.activeCatalogs = requireNonNull(activeCatalogs, "activeCatalogs is null");
-            this.languageFunctions = requireNonNull(languageFunctions, "languageFunctions is null");
+            this.languageFunctions = ImmutableMap.copyOf(languageFunctions);
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
             this.unchangedSubPlans = ImmutableMap.copyOf(requireNonNull(unchangedSubPlans, "unchangedSubPlans is null"));
             this.rootFragmentID = idAllocator.getNextId();
@@ -293,12 +287,10 @@ public class PlanFragmenter
             boolean equals = properties.getPartitionedSources().equals(ImmutableSet.copyOf(schedulingOrder));
             checkArgument(equals, "Expected scheduling order (%s) to contain an entry for all partitioned sources (%s)", schedulingOrder, properties.getPartitionedSources());
 
-            Map<Symbol, Type> symbols = Maps.filterKeys(types.allTypes(), in(dependencies));
-
             PlanFragment fragment = new PlanFragment(
                     fragmentId,
                     root,
-                    symbols,
+                    dependencies,
                     properties.getPartitioningHandle(),
                     properties.getPartitionCount(),
                     schedulingOrder,
@@ -306,7 +298,7 @@ public class PlanFragmenter
                     statsAndCosts.getForSubplan(root),
                     activeCatalogs,
                     languageFunctions,
-                    Optional.of(jsonFragmentPlan(root, symbols, metadata, functionManager, session)));
+                    Optional.of(jsonFragmentPlan(root, metadata, functionManager, session)));
 
             return new SubPlan(fragment, properties.getChildren());
         }
@@ -369,7 +361,7 @@ public class PlanFragmenter
             PartitioningHandle partitioning = metadata.getTableProperties(session, node.getTable())
                     .getTablePartitioning()
                     .filter(value -> node.isUseConnectorNodePartitioning())
-                    .map(TablePartitioning::getPartitioningHandle)
+                    .map(TablePartitioning::partitioningHandle)
                     .orElse(SOURCE_DISTRIBUTION);
 
             context.get().addSourceDistribution(node.getId(), partitioning, metadata, session);
@@ -475,8 +467,7 @@ public class PlanFragmenter
             ExchangeNodeToRemoteSourceRewriter rewriter = new ExchangeNodeToRemoteSourceRewriter(remoteSourceNodes, unchangedSubPlans.keySet());
             PlanNode newInitialPlan = SimplePlanRewriter.rewriteWith(rewriter, adaptivePlan.getInitialPlan());
             Set<Symbol> dependencies = SymbolsExtractor.extractOutputSymbols(newInitialPlan);
-            Map<Symbol, Type> filteredSymbols = Maps.filterKeys(types.allTypes(), in(dependencies));
-            return new AdaptivePlanNode(adaptivePlan.getId(), newInitialPlan, filteredSymbols, adaptivePlan.getCurrentPlan());
+            return new AdaptivePlanNode(adaptivePlan.getId(), newInitialPlan, dependencies, adaptivePlan.getCurrentPlan());
         }
 
         @Override
@@ -808,7 +799,7 @@ public class PlanFragmenter
             PartitioningHandle partitioning = metadata.getTableProperties(session, node.getTable())
                     .getTablePartitioning()
                     .filter(value -> node.isUseConnectorNodePartitioning())
-                    .map(TablePartitioning::getPartitioningHandle)
+                    .map(TablePartitioning::partitioningHandle)
                     .orElse(SOURCE_DISTRIBUTION);
             if (partitioning.equals(fragmentPartitioningHandle)) {
                 // do nothing if the current scan node's partitioning matches the fragment's

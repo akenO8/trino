@@ -37,7 +37,7 @@ import java.util.OptionalInt;
 
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.spi.predicate.Range.range;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.planner.plan.Patterns.filter;
 import static io.trino.sql.planner.plan.Patterns.project;
@@ -53,19 +53,19 @@ import static java.util.Objects.requireNonNull;
  * TODO This rule should be removed as soon as RowNumberNode becomes capable of absorbing pruning projections (i.e. capable of pruning outputs).
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - Filter (rowNumber <= 5 && a > 1)
  *     - Project (a, rowNumber)
  *         - RowNumber (maxRowCountPerPartition = 10)
  *             - source (a, b)
- * </pre>
+ * }</pre>
  * into:
- * <pre>
+ * <pre>{@code
  * - Filter (a > 1)
  *     - Project (a, rowNumber)
  *         - RowNumber (maxRowCountPerPartition = 5)
  *             - source (a, b)
- * </pre>
+ * }</pre>
  */
 public class PushPredicateThroughProjectIntoRowNumber
         implements Rule<FilterNode>
@@ -107,8 +107,7 @@ public class PushPredicateThroughProjectIntoRowNumber
         ExtractionResult extractionResult = DomainTranslator.getExtractionResult(
                 plannerContext,
                 context.getSession(),
-                filter.getPredicate(),
-                context.getSymbolAllocator().getTypes());
+                filter.getPredicate());
         TupleDomain<Symbol> tupleDomain = extractionResult.getTupleDomain();
         OptionalInt upperBound = extractUpperBound(tupleDomain, rowNumberSymbol);
         if (upperBound.isEmpty()) {
@@ -139,10 +138,9 @@ public class PushPredicateThroughProjectIntoRowNumber
         // Remove the row number domain because it is absorbed into the node
         TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(rowNumberSymbol));
         Expression newPredicate = combineConjuncts(
-                plannerContext.getMetadata(),
                 extractionResult.getRemainingExpression(),
-                new DomainTranslator(plannerContext).toPredicate(newTupleDomain));
-        if (newPredicate.equals(TRUE_LITERAL)) {
+                DomainTranslator.toPredicate(newTupleDomain));
+        if (newPredicate.equals(TRUE)) {
             return Result.ofPlanNode(project);
         }
         return Result.ofPlanNode(new FilterNode(filter.getId(), project, newPredicate));

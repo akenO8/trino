@@ -37,7 +37,6 @@ import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.ENABLE_LARGE_DYNAMIC_FILTERS;
-import static io.trino.plugin.memory.MemoryQueryRunner.createMemoryQueryRunner;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,9 +55,9 @@ public class TestMemoryConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createMemoryQueryRunner(
-                // Adjust DF limits to test edge cases
-                ImmutableMap.<String, String>builder()
+        return MemoryQueryRunner.builder()
+                .addExtraProperties(ImmutableMap.<String, String>builder()
+                        // Adjust DF limits to test edge cases
                         .put("dynamic-filtering.small.max-distinct-values-per-driver", "100")
                         .put("dynamic-filtering.small.range-row-limit-per-driver", "100")
                         .put("dynamic-filtering.large.max-distinct-values-per-driver", "100")
@@ -69,12 +68,18 @@ public class TestMemoryConnectorTest
                         .put("dynamic-filtering.large-partitioned.range-row-limit-per-driver", "100000")
                         // disable semi join to inner join rewrite to test semi join operators explicitly
                         .put("optimizer.rewrite-filtering-semi-join-to-inner-join", "false")
-                        .buildOrThrow(),
-                ImmutableSet.<TpchTable<?>>builder()
-                        .addAll(REQUIRED_TPCH_TABLES)
-                        .add(TpchTable.PART)
-                        .add(TpchTable.LINE_ITEM)
-                        .build());
+                        // enable CREATE FUNCTION
+                        .put("sql.path", "memory.functions")
+                        .put("sql.default-function-catalog", "memory")
+                        .put("sql.default-function-schema", "functions")
+                        .buildOrThrow())
+                .setInitialTables(
+                        ImmutableSet.<TpchTable<?>>builder()
+                                .addAll(REQUIRED_TPCH_TABLES)
+                                .add(TpchTable.PART)
+                                .add(TpchTable.LINE_ITEM)
+                                .build())
+                .build();
     }
 
     @Override
@@ -540,12 +545,15 @@ public class TestMemoryConnectorTest
 
         assertThat(query("SHOW SCHEMAS"))
                 .skippingTypesCheck()
-                .matches("VALUES 'default', 'information_schema', 'schema1', 'schema2'");
+                .containsAll("VALUES 'default', 'information_schema', 'schema1', 'schema2'");
         assertUpdate("CREATE TABLE schema1.nation AS SELECT * FROM tpch.tiny.nation WHERE nationkey % 2 = 0", "SELECT count(*) FROM nation WHERE MOD(nationkey, 2) = 0");
         assertUpdate("CREATE TABLE schema2.nation AS SELECT * FROM tpch.tiny.nation WHERE nationkey % 2 = 1", "SELECT count(*) FROM nation WHERE MOD(nationkey, 2) = 1");
 
         assertThat(computeScalar("SELECT count(*) FROM schema1.nation")).isEqualTo(13L);
         assertThat(computeScalar("SELECT count(*) FROM schema2.nation")).isEqualTo(12L);
+
+        assertUpdate("DROP SCHEMA schema2 CASCADE");
+        assertUpdate("DROP SCHEMA schema1 CASCADE");
     }
 
     @Test

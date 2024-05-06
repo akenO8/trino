@@ -80,7 +80,7 @@ public class BeginTableWrite
         catch (RuntimeException e) {
             try {
                 int nestLevel = 4; // so that it renders reasonably within exception stacktrace
-                String explain = textLogicalPlan(plan, context.types(), metadata, functionManager, StatsAndCosts.empty(), context.session(), nestLevel, false);
+                String explain = textLogicalPlan(plan, metadata, functionManager, StatsAndCosts.empty(), context.session(), nestLevel, false);
                 e.addSuppressed(new Exception("Current plan:\n" + explain));
             }
             catch (RuntimeException ignore) {
@@ -248,7 +248,7 @@ public class BeginTableWrite
             if (target instanceof MergeTarget merge) {
                 MergeHandle mergeHandle = metadata.beginMerge(session, merge.getHandle());
                 return new MergeTarget(
-                        mergeHandle.getTableHandle(),
+                        mergeHandle.tableHandle(),
                         Optional.of(mergeHandle),
                         merge.getSchemaTableName(),
                         merge.getMergeParadigmAndTypes());
@@ -272,7 +272,7 @@ public class BeginTableWrite
         private static List<TableHandle> findSourceTableHandles(PlanNode startNode)
         {
             return PlanNodeSearcher.searchFrom(startNode)
-                    .where(TableScanNode.class::isInstance)
+                    .where(node -> node instanceof TableScanNode tableScanNode && !tableScanNode.isUpdateTarget())
                     .findAll()
                     .stream()
                     .map(TableScanNode.class::cast)

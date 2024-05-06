@@ -70,8 +70,8 @@ public class TestAddExchangesScaledWriters
             Partitioning.create(
                     // Scale writers is disabled for optimize command
                     FIXED_HASH_DISTRIBUTION,
-                    ImmutableList.of(new Symbol("year"))),
-            ImmutableList.of(new Symbol("customer"), new Symbol("year")));
+                    ImmutableList.of(new Symbol(INTEGER, "year"))),
+            ImmutableList.of(new Symbol(INTEGER, "customer"), new Symbol(INTEGER, "year")));
     private static final PartitioningHandle MERGE_PARTITIONING_HANDLE = new PartitioningHandle(
             Optional.empty(),
             Optional.empty(),
@@ -271,6 +271,5 @@ public class TestAddExchangesScaledWriters
                                 exchange(LOCAL, GATHER, SINGLE_DISTRIBUTION,
                                         exchange(REMOTE, REPARTITION, SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION,
                                                 tableScan("source_table", ImmutableMap.of("customer", "customer", "year", "year")))))));
-
     }
 }

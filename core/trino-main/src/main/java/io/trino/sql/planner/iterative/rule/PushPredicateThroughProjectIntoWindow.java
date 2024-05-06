@@ -41,7 +41,7 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.SystemSessionProperties.isOptimizeTopNRanking;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.spi.predicate.Range.range;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.planner.iterative.rule.Util.toTopNRankingType;
 import static io.trino.sql.planner.plan.Patterns.filter;
@@ -58,19 +58,19 @@ import static java.util.Objects.requireNonNull;
  * TODO This rule should be removed as soon as WindowNode becomes capable of absorbing pruning projections (i.e. capable of pruning outputs).
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - Filter (ranking <= 5 && a > 1)
  *     - Project (a, ranking)
  *         - Window ([row_number()|rank()] OVER (ORDER BY a))
  *             - source (a, b)
- * </pre>
+ * }</pre>
  * into:
- * <pre>
+ * <pre>{@code
  * - Filter (a > 1)
  *     - Project (a, ranking)
  *         - TopNRanking (type = [ROW_NUMBER|RANK], maxRankingPerPartition = 5, order by a)
  *             - source (a, b)
- * </pre>
+ * }</pre>
  */
 public class PushPredicateThroughProjectIntoWindow
         implements Rule<FilterNode>
@@ -119,8 +119,7 @@ public class PushPredicateThroughProjectIntoWindow
         DomainTranslator.ExtractionResult extractionResult = DomainTranslator.getExtractionResult(
                 plannerContext,
                 context.getSession(),
-                filter.getPredicate(),
-                context.getSymbolAllocator().getTypes());
+                filter.getPredicate());
         TupleDomain<Symbol> tupleDomain = extractionResult.getTupleDomain();
         OptionalInt upperBound = extractUpperBound(tupleDomain, rankingSymbol);
         if (upperBound.isEmpty()) {
@@ -145,10 +144,9 @@ public class PushPredicateThroughProjectIntoWindow
         // Remove the ranking domain because it is absorbed into the node
         TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(rankingSymbol));
         Expression newPredicate = combineConjuncts(
-                plannerContext.getMetadata(),
                 extractionResult.getRemainingExpression(),
-                new DomainTranslator(plannerContext).toPredicate(newTupleDomain));
-        if (newPredicate.equals(TRUE_LITERAL)) {
+                DomainTranslator.toPredicate(newTupleDomain));
+        if (newPredicate.equals(TRUE)) {
             return Result.ofPlanNode(project);
         }
         return Result.ofPlanNode(new FilterNode(filter.getId(), project, newPredicate));

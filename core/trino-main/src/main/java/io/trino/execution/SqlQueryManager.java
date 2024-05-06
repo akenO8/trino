@@ -31,6 +31,7 @@ import io.trino.execution.QueryExecution.QueryOutputInfo;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.memory.ClusterMemoryManager;
 import io.trino.server.BasicQueryInfo;
+import io.trino.server.ResultQueryInfo;
 import io.trino.server.protocol.Slug;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
@@ -202,6 +203,13 @@ public class SqlQueryManager
     }
 
     @Override
+    public ResultQueryInfo getResultQueryInfo(QueryId queryId)
+            throws NoSuchElementException
+    {
+        return queryTracker.getQuery(queryId).getResultQueryInfo();
+    }
+
+    @Override
     public Session getQuerySession(QueryId queryId)
             throws NoSuchElementException
     {
@@ -307,6 +315,13 @@ public class SqlQueryManager
     public ThreadPoolExecutorMBean getManagementExecutor()
     {
         return queryManagementExecutorMBean;
+    }
+
+    @Managed
+    @Nested
+    public QueryTracker<QueryExecution> getQueryTracker()
+    {
+        return queryTracker;
     }
 
     /**

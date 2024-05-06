@@ -53,7 +53,6 @@ import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.client.NodeVersion.UNKNOWN;
 import static io.trino.metadata.LanguageFunctionManager.isTrinoSqlLanguageFunction;
 import static io.trino.spi.StandardErrorCode.FUNCTION_IMPLEMENTATION_ERROR;
-import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.HOURS;
@@ -101,21 +100,20 @@ public class FunctionManager
 
     private ScalarFunctionImplementation getScalarFunctionImplementationInternal(ResolvedFunction resolvedFunction, InvocationConvention invocationConvention)
     {
-        FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
-
         ScalarFunctionImplementation scalarFunctionImplementation;
-        if (isTrinoSqlLanguageFunction(resolvedFunction.getFunctionId())) {
-            scalarFunctionImplementation = languageFunctionProvider.specialize(this, resolvedFunction, functionDependencies, invocationConvention);
+        if (isTrinoSqlLanguageFunction(resolvedFunction.functionId())) {
+            scalarFunctionImplementation = languageFunctionProvider.specialize(resolvedFunction.functionId(), invocationConvention, this);
         }
         else {
+            FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
             scalarFunctionImplementation = getFunctionProvider(resolvedFunction).getScalarFunctionImplementation(
-                    resolvedFunction.getFunctionId(),
-                    resolvedFunction.getSignature(),
+                    resolvedFunction.functionId(),
+                    resolvedFunction.signature(),
                     functionDependencies,
                     invocationConvention);
         }
 
-        verifyMethodHandleSignature(resolvedFunction.getSignature(), scalarFunctionImplementation, invocationConvention);
+        verifyMethodHandleSignature(resolvedFunction.signature(), scalarFunctionImplementation, invocationConvention);
         return scalarFunctionImplementation;
     }
 
@@ -134,8 +132,8 @@ public class FunctionManager
     {
         FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
         return getFunctionProvider(resolvedFunction).getAggregationImplementation(
-                resolvedFunction.getFunctionId(),
-                resolvedFunction.getSignature(),
+                resolvedFunction.functionId(),
+                resolvedFunction.signature(),
                 functionDependencies);
     }
 
@@ -154,14 +152,14 @@ public class FunctionManager
     {
         FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
         return getFunctionProvider(resolvedFunction).getWindowFunctionSupplier(
-                resolvedFunction.getFunctionId(),
-                resolvedFunction.getSignature(),
+                resolvedFunction.functionId(),
+                resolvedFunction.signature(),
                 functionDependencies);
     }
 
     public TableFunctionProcessorProvider getTableFunctionProcessorProvider(TableFunctionHandle tableFunctionHandle)
     {
-        CatalogHandle catalogHandle = tableFunctionHandle.getCatalogHandle();
+        CatalogHandle catalogHandle = tableFunctionHandle.catalogHandle();
 
         FunctionProvider provider;
         if (catalogHandle.equals(GlobalSystemConnector.CATALOG_HANDLE)) {
@@ -172,22 +170,22 @@ public class FunctionManager
             checkArgument(provider != null, "No function provider for catalog: '%s'", catalogHandle);
         }
 
-        return provider.getTableFunctionProcessorProvider(tableFunctionHandle.getFunctionHandle());
+        return provider.getTableFunctionProcessorProvider(tableFunctionHandle.functionHandle());
     }
 
     private FunctionDependencies getFunctionDependencies(ResolvedFunction resolvedFunction)
     {
-        return new InternalFunctionDependencies(this::getScalarFunctionImplementation, resolvedFunction.getTypeDependencies(), resolvedFunction.getFunctionDependencies());
+        return new InternalFunctionDependencies(this::getScalarFunctionImplementation, resolvedFunction.typeDependencies(), resolvedFunction.functionDependencies());
     }
 
     private FunctionProvider getFunctionProvider(ResolvedFunction resolvedFunction)
     {
-        if (resolvedFunction.getCatalogHandle().equals(GlobalSystemConnector.CATALOG_HANDLE)) {
+        if (resolvedFunction.catalogHandle().equals(GlobalSystemConnector.CATALOG_HANDLE)) {
             return globalFunctionCatalog;
         }
 
-        FunctionProvider functionProvider = functionProviders.getService(resolvedFunction.getCatalogHandle());
-        checkArgument(functionProvider != null, "No function provider for catalog: '%s' (function '%s')", resolvedFunction.getCatalogHandle(), resolvedFunction.getSignature().getName());
+        FunctionProvider functionProvider = functionProviders.getService(resolvedFunction.catalogHandle());
+        checkArgument(functionProvider != null, "No function provider for catalog: '%s' (function '%s')", resolvedFunction.catalogHandle(), resolvedFunction.signature().getName());
         return functionProvider;
     }
 
@@ -329,7 +327,6 @@ public class FunctionManager
                 () -> { throw new UnsupportedOperationException(); },
                 () -> { throw new UnsupportedOperationException(); });
         functionCatalog.addFunctions(SystemFunctionBundle.create(new FeaturesConfig(), typeOperators, new BlockTypeOperators(typeOperators), UNKNOWN));
-        functionCatalog.addFunctions(new InternalFunctionBundle(new LiteralFunction(new InternalBlockEncodingSerde(new BlockEncodingManager(), TESTING_TYPE_MANAGER))));
         return new FunctionManager(CatalogServiceProvider.fail(), functionCatalog, LanguageFunctionProvider.DISABLED);
     }
 }

@@ -191,7 +191,7 @@ public class BasePlanTest
     {
         Metadata metadata = getPlanTester().getPlannerContext().getMetadata();
         List<PlanOptimizer> optimizers = ImmutableList.of(
-                new UnaliasSymbolReferences(metadata),
+                new UnaliasSymbolReferences(),
                 new IterativeOptimizer(
                         planTester.getPlannerContext(),
                         new RuleStatsRecorder(),
@@ -281,36 +281,12 @@ public class BasePlanTest
         }
     }
 
-    protected SubPlan createAdaptivePlan(@Language("SQL") String sql, List<AdaptivePlanOptimizer> optimizers, Map<PlanFragmentId, OutputStatsEstimateResult> completeStageStats)
+    protected void assertAdaptivePlan(@Language("SQL") String sql, Session session, Map<PlanFragmentId, OutputStatsEstimateResult> completeStageStats, SubPlanMatcher subPlanMatcher, boolean checkIdempotence)
     {
-        return createAdaptivePlan(sql, planTester.getDefaultSession(), optimizers, completeStageStats);
+        assertAdaptivePlan(sql, session, planTester.getAdaptivePlanOptimizers(), completeStageStats, subPlanMatcher, checkIdempotence);
     }
 
-    protected SubPlan createAdaptivePlan(@Language("SQL") String sql, Session session, List<AdaptivePlanOptimizer> optimizers, Map<PlanFragmentId, OutputStatsEstimateResult> completeStageStats)
-    {
-        try {
-            return planTester.inTransaction(session, transactionSession -> {
-                Plan plan = planTester.createPlan(transactionSession, sql, planTester.getPlanOptimizers(false), OPTIMIZED_AND_VALIDATED, WarningCollector.NOOP, createPlanOptimizersStatsCollector());
-                SubPlan subPlan = planTester.createSubPlans(transactionSession, plan, false);
-                return planTester.createAdaptivePlan(transactionSession, subPlan, optimizers, WarningCollector.NOOP, createPlanOptimizersStatsCollector(), createRuntimeInfoProvider(subPlan, completeStageStats));
-            });
-        }
-        catch (RuntimeException e) {
-            throw new AssertionError("Adaptive Planning failed for SQL: " + sql, e);
-        }
-    }
-
-    protected void assertAdaptivePlan(@Language("SQL") String sql, Map<PlanFragmentId, OutputStatsEstimateResult> completeStageStats, SubPlanMatcher subPlanMatcher)
-    {
-        assertAdaptivePlan(sql, planTester.getDefaultSession(), planTester.getAdaptivePlanOptimizers(), completeStageStats, subPlanMatcher);
-    }
-
-    protected void assertAdaptivePlan(@Language("SQL") String sql, Session session, Map<PlanFragmentId, OutputStatsEstimateResult> completeStageStats, SubPlanMatcher subPlanMatcher)
-    {
-        assertAdaptivePlan(sql, session, planTester.getAdaptivePlanOptimizers(), completeStageStats, subPlanMatcher);
-    }
-
-    protected void assertAdaptivePlan(@Language("SQL") String sql, Session session, List<AdaptivePlanOptimizer> optimizers, Map<PlanFragmentId, OutputStatsEstimateResult> completeStageStats, SubPlanMatcher subPlanMatcher)
+    protected void assertAdaptivePlan(@Language("SQL") String sql, Session session, List<AdaptivePlanOptimizer> optimizers, Map<PlanFragmentId, OutputStatsEstimateResult> completeStageStats, SubPlanMatcher subPlanMatcher, boolean checkIdempotence)
     {
         try {
             planTester.inTransaction(session, transactionSession -> {
@@ -323,6 +299,16 @@ public class BasePlanTest
                             "Adaptive plan does not match, expected [\n\n%s\n] but found [\n\n%s\n]",
                             subPlanMatcher,
                             formattedPlan));
+                }
+                if (checkIdempotence) {
+                    SubPlan idempotentPlan = planTester.createAdaptivePlan(transactionSession, adaptivePlan, optimizers, WarningCollector.NOOP, createPlanOptimizersStatsCollector(), createRuntimeInfoProvider(adaptivePlan, completeStageStats));
+                    String formattedIdempotentPlan = textDistributedPlan(idempotentPlan, planTester.getPlannerContext().getMetadata(), planTester.getPlannerContext().getFunctionManager(), transactionSession, false, UNKNOWN);
+                    if (!subPlanMatcher.matches(idempotentPlan, planTester.getStatsCalculator(), transactionSession, planTester.getPlannerContext().getMetadata())) {
+                        throw new AssertionError(format(
+                                "Adaptive plan is not idempotent, expected [\n\n%s\n] but found [\n\n%s\n]",
+                                subPlanMatcher,
+                                formattedIdempotentPlan));
+                    }
                 }
                 return null;
             });

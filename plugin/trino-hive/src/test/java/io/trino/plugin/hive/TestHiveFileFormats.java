@@ -965,7 +965,7 @@ public final class TestHiveFileFormats
                 .collect(toList());
 
         String partitionName = String.join("/", partitionKeys.stream()
-                .map(partitionKey -> format("%s=%s", partitionKey.getName(), partitionKey.getValue()))
+                .map(partitionKey -> format("%s=%s", partitionKey.name(), partitionKey.value()))
                 .collect(toImmutableList()));
 
         List<HivePageSourceProvider.ColumnMapping> columnMappings = buildColumnMappings(
@@ -1496,7 +1496,7 @@ public final class TestHiveFileFormats
         configureCompression(jobConf, compressionCodec);
 
         File file = File.createTempFile("trino_test", "data");
-        file.delete();
+        verify(file.delete());
         try {
             FileSinkOperator.RecordWriter recordWriter = outputFormat.getHiveRecordWriter(
                     jobConf,
@@ -1538,7 +1538,7 @@ public final class TestHiveFileFormats
             }
         }
         finally {
-            file.delete();
+            verify(file.delete());
         }
     }
 

@@ -16,6 +16,7 @@ package io.trino.server;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
 import com.google.inject.Inject;
+import com.google.inject.Key;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
@@ -80,6 +81,7 @@ import io.trino.execution.scheduler.faulttolerant.NoMemoryAwarePartitionMemoryEs
 import io.trino.execution.scheduler.faulttolerant.NodeAllocatorService;
 import io.trino.execution.scheduler.faulttolerant.OutputStatsEstimatorFactory;
 import io.trino.execution.scheduler.faulttolerant.PartitionMemoryEstimatorFactory;
+import io.trino.execution.scheduler.faulttolerant.StageExecutionStats;
 import io.trino.execution.scheduler.faulttolerant.TaskDescriptorStorage;
 import io.trino.execution.scheduler.policy.AllAtOnceExecutionPolicy;
 import io.trino.execution.scheduler.policy.ExecutionPolicy;
@@ -125,7 +127,6 @@ import io.trino.sql.rewrite.ShowQueriesRewrite;
 import io.trino.sql.rewrite.ShowStatsRewrite;
 import io.trino.sql.rewrite.StatementRewrite;
 import io.trino.sql.rewrite.StatementRewrite.Rewrite;
-import jakarta.annotation.PreDestroy;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -143,6 +144,7 @@ import static io.airlift.discovery.client.DiscoveryBinder.discoveryBinder;
 import static io.airlift.jaxrs.JaxrsBinder.jaxrsBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static io.trino.server.InternalCommunicationHttpClientModule.internalHttpClientModule;
 import static io.trino.util.Executors.decorateWithVersion;
 import static java.util.concurrent.Executors.newCachedThreadPool;
@@ -195,7 +197,9 @@ public class CoordinatorModule
         jaxrsBinder(binder).bind(QueryStateInfoResource.class);
         jaxrsBinder(binder).bind(ResourceGroupStateInfoResource.class);
         binder.bind(QueryIdGenerator.class).in(Scopes.SINGLETON);
-        binder.bind(QueryManager.class).to(SqlQueryManager.class).in(Scopes.SINGLETON);
+        binder.bind(SqlQueryManager.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(SqlQueryManager.class).withGeneratedName();
+        binder.bind(QueryManager.class).to(SqlQueryManager.class);
         binder.bind(QueryPreparer.class).in(Scopes.SINGLETON);
         OptionalBinder.newOptionalBinder(binder, SessionSupplier.class).setDefault().to(QuerySessionSupplier.class).in(Scopes.SINGLETON);
         binder.bind(ResourceGroupInfoProvider.class).to(ResourceGroupManager.class).in(Scopes.SINGLETON);
@@ -353,6 +357,8 @@ public class CoordinatorModule
 
         binder.bind(TaskExecutionStats.class).in(Scopes.SINGLETON);
         newExporter(binder).export(TaskExecutionStats.class).withGeneratedName();
+        binder.bind(StageExecutionStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(StageExecutionStats.class).withGeneratedName();
 
         MapBinder<String, ExecutionPolicy> executionPolicyBinder = newMapBinder(binder, String.class, ExecutionPolicy.class);
         executionPolicyBinder.addBinding("all-at-once").to(AllAtOnceExecutionPolicy.class);
@@ -361,7 +367,10 @@ public class CoordinatorModule
         install(new QueryExecutionFactoryModule());
 
         // cleanup
-        binder.bind(ExecutorCleanup.class).asEagerSingleton();
+        closingBinder(binder).registerExecutor(Key.get(ExecutorService.class, ForStatementResource.class));
+        closingBinder(binder).registerExecutor(Key.get(ScheduledExecutorService.class, ForStatementResource.class));
+        closingBinder(binder).registerExecutor(Key.get(ExecutorService.class, ForQueryExecution.class));
+        closingBinder(binder).registerExecutor(Key.get(ScheduledExecutorService.class, ForScheduler.class));
     }
 
     // working around circular dependency Metadata <-> PlannerContext
@@ -457,31 +466,5 @@ public class CoordinatorModule
                         .annotatedWith(ForTaskLowMemoryKiller.class)
                         .to(clazz)
                         .in(Scopes.SINGLETON)));
-    }
-
-    public static class ExecutorCleanup
-    {
-        private final List<ExecutorService> executors;
-
-        @Inject
-        public ExecutorCleanup(
-                @ForStatementResource ExecutorService statementResponseExecutor,
-                @ForStatementResource ScheduledExecutorService statementTimeoutExecutor,
-                @ForQueryExecution ExecutorService queryExecutionExecutor,
-                @ForScheduler ScheduledExecutorService schedulerExecutor)
-        {
-            executors = ImmutableList.<ExecutorService>builder()
-                    .add(statementResponseExecutor)
-                    .add(statementTimeoutExecutor)
-                    .add(queryExecutionExecutor)
-                    .add(schedulerExecutor)
-                    .build();
-        }
-
-        @PreDestroy
-        public void shutdown()
-        {
-            executors.forEach(ExecutorService::shutdownNow);
-        }
     }
 }

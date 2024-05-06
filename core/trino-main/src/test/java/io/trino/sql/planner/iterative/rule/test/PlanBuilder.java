@@ -40,8 +40,8 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.analyzer.TypeSignatureProvider;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.NullLiteral;
 import io.trino.sql.ir.Row;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Partitioning;
@@ -51,7 +51,6 @@ import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.TestingConnectorIndexHandle;
 import io.trino.sql.planner.TestingConnectorTransactionHandle;
 import io.trino.sql.planner.TestingWriterTarget;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.assertions.AggregationFunction;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
@@ -122,12 +121,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -136,15 +137,15 @@ import static io.trino.spi.connector.RowChangeParadigm.DELETE_ROW_AND_INSERT_ROW
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.plan.JoinType.INNER;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
-import static io.trino.util.MoreLists.nElements;
 import static java.lang.String.format;
 import static java.util.Collections.emptyList;
+import static java.util.Collections.nCopies;
 import static java.util.Objects.requireNonNull;
 import static java.util.function.Function.identity;
 
@@ -152,7 +153,7 @@ public class PlanBuilder
 {
     private final PlanNodeIdAllocator idAllocator;
     private final Session session;
-    private final Map<Symbol, Type> symbols = new HashMap<>();
+    private final Map<String, Symbol> symbolsByName = new HashMap<>();
     private final FunctionResolver functionResolver;
 
     public PlanBuilder(PlanNodeIdAllocator idAllocator, PlannerContext plannerContext, Session session)
@@ -207,7 +208,7 @@ public class PlanBuilder
 
         public OutputBuilder column(Symbol symbol)
         {
-            return column(symbol, symbol.getName());
+            return column(symbol, symbol.name());
         }
 
         public OutputBuilder column(Symbol symbol, String columnName)
@@ -240,10 +241,11 @@ public class PlanBuilder
 
     public ValuesNode values(PlanNodeId id, int rows, Symbol... columns)
     {
-        return values(
-                id,
-                ImmutableList.copyOf(columns),
-                nElements(rows, row -> nElements(columns.length, cell -> new NullLiteral())));
+        List<Expression> row = Arrays.stream(columns)
+                .map(symbol -> new Constant(symbol.type(), null))
+                .collect(Collectors.toList());
+
+        return values(id, ImmutableList.copyOf(columns), nCopies(rows, row));
     }
 
     public ValuesNode values(List<Symbol> columns, List<List<Expression>> rows)
@@ -413,7 +415,7 @@ public class PlanBuilder
     public class AggregationBuilder
     {
         private PlanNode source;
-        private final Map<Symbol, Aggregation> assignments = new HashMap<>();
+        private final Map<Symbol, Aggregation> assignments = new LinkedHashMap<>();
         private AggregationNode.GroupingSetDescriptor groupingSets;
         private List<Symbol> preGroupedSymbols = new ArrayList<>();
         private Step step = Step.SINGLE;
@@ -527,7 +529,7 @@ public class PlanBuilder
 
     public CorrelatedJoinNode correlatedJoin(List<Symbol> correlation, PlanNode input, PlanNode subquery)
     {
-        return correlatedJoin(correlation, input, JoinType.INNER, TRUE_LITERAL, subquery);
+        return correlatedJoin(correlation, input, JoinType.INNER, TRUE, subquery);
     }
 
     public CorrelatedJoinNode correlatedJoin(List<Symbol> correlation, PlanNode input, JoinType type, Expression filter, PlanNode subquery)
@@ -638,7 +640,7 @@ public class PlanBuilder
 
         public TableScanBuilder setAssignmentsForSymbols(List<Symbol> symbols)
         {
-            return setAssignments(symbols.stream().collect(toImmutableMap(identity(), symbol -> new TestingColumnHandle(symbol.getName()))));
+            return setAssignments(symbols.stream().collect(toImmutableMap(identity(), symbol -> new TestingColumnHandle(symbol.name()))));
         }
 
         public TableScanBuilder setAssignments(Map<Symbol, ColumnHandle> assignments)
@@ -865,7 +867,7 @@ public class PlanBuilder
         return new IndexSourceNode(
                 idAllocator.getNextId(),
                 new IndexHandle(
-                        tableHandle.getCatalogHandle(),
+                        tableHandle.catalogHandle(),
                         TestingConnectorTransactionHandle.INSTANCE,
                         TestingConnectorIndexHandle.INSTANCE),
                 tableHandle,
@@ -1306,6 +1308,7 @@ public class PlanBuilder
                 Optional.empty());
     }
 
+    @Deprecated
     public Symbol symbol(String name)
     {
         return symbol(name, BIGINT);
@@ -1313,15 +1316,11 @@ public class PlanBuilder
 
     public Symbol symbol(String name, Type type)
     {
-        Symbol symbol = new Symbol(name);
+        Symbol symbol = new Symbol(type, name);
 
-        Type old = symbols.put(symbol, type);
-        if (old != null && !old.equals(type)) {
-            throw new IllegalArgumentException(format("Symbol '%s' already registered with type '%s'", name, old));
-        }
-
-        if (old == null) {
-            symbols.put(symbol, type);
+        Symbol old = symbolsByName.put(symbol.name(), symbol);
+        if (old != null && !old.type().equals(type)) {
+            throw new IllegalArgumentException(format("Symbol '%s' already registered with type '%s'", name, old.type()));
         }
 
         return symbol;
@@ -1439,8 +1438,8 @@ public class PlanBuilder
         return new AggregationFunction(name, Optional.empty(), Optional.of(orderBy), false, arguments);
     }
 
-    public TypeProvider getTypes()
+    public Collection<Symbol> getSymbols()
     {
-        return TypeProvider.copyOf(symbols);
+        return symbolsByName.values();
     }
 }

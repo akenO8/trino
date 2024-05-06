@@ -20,8 +20,8 @@ import io.trino.plugin.tpch.TpchColumnHandle;
 import io.trino.plugin.tpch.TpchTableHandle;
 import io.trino.plugin.tpch.TpchTransactionHandle;
 import io.trino.spi.type.BigintType;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -31,7 +31,9 @@ import org.junit.jupiter.api.Test;
 
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCALE_FACTOR;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
@@ -87,7 +89,7 @@ public class TestPruneCountAggregationOverScalar
                                         ImmutableList.of())
                                 .step(AggregationNode.Step.SINGLE)
                                 .globalGrouping()
-                                .source(p.values(ImmutableList.of(p.symbol("orderkey")), ImmutableList.of(ImmutableList.of(new LongLiteral(1)))))))
+                                .source(p.values(ImmutableList.of(p.symbol("orderkey")), ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L)))))))
                 .matches(values(ImmutableMap.of("count_1", 0)));
     }
 
@@ -137,7 +139,7 @@ public class TestPruneCountAggregationOverScalar
                     AggregationNode inner = p.aggregation((a) -> a
                             .addAggregation(
                                     totalPrice,
-                                    PlanBuilder.aggregation("sum", ImmutableList.of(new SymbolReference("totalprice"))),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(DOUBLE, "totalprice"))),
                                     ImmutableList.of(DOUBLE))
                             .globalGrouping()
                             .source(
@@ -149,12 +151,12 @@ public class TestPruneCountAggregationOverScalar
                                                             new TpchTableHandle(TINY_SCHEMA_NAME, "orders", TINY_SCALE_FACTOR),
                                                             TpchTransactionHandle.INSTANCE),
                                                     ImmutableList.of(totalPrice),
-                                                    ImmutableMap.of(totalPrice, new TpchColumnHandle(totalPrice.getName(), DOUBLE))))));
+                                                    ImmutableMap.of(totalPrice, new TpchColumnHandle(totalPrice.name(), DOUBLE))))));
 
                     return p.aggregation((a) -> a
                             .addAggregation(
                                     p.symbol("sum_outer", DOUBLE),
-                                    PlanBuilder.aggregation("sum", ImmutableList.of(new SymbolReference("sum_inner"))),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(BIGINT, "sum_inner"))),
                                     ImmutableList.of(DOUBLE))
                             .globalGrouping()
                             .source(inner));

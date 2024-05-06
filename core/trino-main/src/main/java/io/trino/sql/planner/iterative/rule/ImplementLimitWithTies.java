@@ -21,8 +21,8 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
-import io.trino.sql.ir.ComparisonExpression;
-import io.trino.sql.ir.GenericLiteral;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -41,7 +41,7 @@ import java.util.Optional;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
 import static io.trino.sql.planner.plan.Patterns.Limit.requiresPreSortedInputs;
 import static io.trino.sql.planner.plan.Patterns.limit;
 import static io.trino.sql.planner.plan.Patterns.source;
@@ -50,17 +50,17 @@ import static java.util.Objects.requireNonNull;
 
 /**
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - Limit (row count = x, tiesResolvingScheme(a,b,c))
  *    - source
- * </pre>
+ * }</pre>
  * Into:
- * <pre>
+ * <pre>{@code
  * - Project (prune rank symbol)
  *    - Filter (rank <= x)
  *       - Window (function: rank, order by a,b,c)
  *          - source
- * </pre>
+ * }</pre>
  */
 public class ImplementLimitWithTies
         implements Rule<LimitNode>
@@ -138,9 +138,9 @@ public class ImplementLimitWithTies
         return new FilterNode(
                 idAllocator.getNextId(),
                 windowNode,
-                new ComparisonExpression(
+                new Comparison(
                         LESS_THAN_OR_EQUAL,
                         rankSymbol.toSymbolReference(),
-                        new GenericLiteral(BIGINT, Long.toString(limitNode.getCount()))));
+                        new Constant(BIGINT, limitNode.getCount())));
     }
 }

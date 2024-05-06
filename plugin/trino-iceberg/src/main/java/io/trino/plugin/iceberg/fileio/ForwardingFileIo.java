@@ -17,6 +17,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
@@ -98,6 +101,24 @@ public class ForwardingFileIo
     {
         Iterable<List<String>> partitions = Iterables.partition(pathsToDelete, DELETE_BATCH_SIZE);
         partitions.forEach(this::deleteBatch);
+    }
+
+    @Override
+    public InputFile newInputFile(ManifestFile manifest)
+    {
+        return SupportsBulkOperations.super.newInputFile(manifest);
+    }
+
+    @Override
+    public InputFile newInputFile(DataFile file)
+    {
+        return SupportsBulkOperations.super.newInputFile(file);
+    }
+
+    @Override
+    public InputFile newInputFile(DeleteFile file)
+    {
+        return SupportsBulkOperations.super.newInputFile(file);
     }
 
     private void deleteBatch(List<String> filesToDelete)

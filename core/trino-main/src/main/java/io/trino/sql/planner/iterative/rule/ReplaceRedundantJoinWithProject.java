@@ -15,11 +15,9 @@ package io.trino.sql.planner.iterative.rule;
 
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
-import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.SymbolAllocator;
 import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
@@ -63,16 +61,16 @@ public class ReplaceRedundantJoinWithProject
                             left,
                             node.getLeftOutputSymbols(),
                             node.getRightOutputSymbols(),
-                            context.getIdAllocator(),
-                            context.getSymbolAllocator())) :
+                            context.getIdAllocator()
+                    )) :
                     Result.empty();
             case RIGHT -> isEmpty(left, lookup) && !isEmpty(right, lookup) ?
                     Result.ofPlanNode(appendNulls(
                             right,
                             node.getRightOutputSymbols(),
                             node.getLeftOutputSymbols(),
-                            context.getIdAllocator(),
-                            context.getSymbolAllocator())) :
+                            context.getIdAllocator()
+                    )) :
                     Result.empty();
             case FULL -> {
                 if (isEmpty(left, lookup) && !isEmpty(right, lookup)) {
@@ -80,28 +78,26 @@ public class ReplaceRedundantJoinWithProject
                             right,
                             node.getRightOutputSymbols(),
                             node.getLeftOutputSymbols(),
-                            context.getIdAllocator(),
-                            context.getSymbolAllocator()));
+                            context.getIdAllocator()));
                 }
                 if (!isEmpty(left, lookup) && isEmpty(right, lookup)) {
                     yield Result.ofPlanNode(appendNulls(
                             left,
                             node.getLeftOutputSymbols(),
                             node.getRightOutputSymbols(),
-                            context.getIdAllocator(),
-                            context.getSymbolAllocator()));
+                            context.getIdAllocator()));
                 }
                 yield Result.empty();
             }
         };
     }
 
-    private static ProjectNode appendNulls(PlanNode source, List<Symbol> sourceOutputs, List<Symbol> nullSymbols, PlanNodeIdAllocator idAllocator, SymbolAllocator symbolAllocator)
+    private static ProjectNode appendNulls(PlanNode source, List<Symbol> sourceOutputs, List<Symbol> nullSymbols, PlanNodeIdAllocator idAllocator)
     {
         Assignments.Builder assignments = Assignments.builder()
                 .putIdentities(sourceOutputs);
         nullSymbols
-                .forEach(symbol -> assignments.put(symbol, new Cast(new NullLiteral(), symbolAllocator.getTypes().get(symbol))));
+                .forEach(symbol -> assignments.put(symbol, new Constant(symbol.type(), null)));
 
         return new ProjectNode(idAllocator.getNextId(), source, assignments.build());
     }

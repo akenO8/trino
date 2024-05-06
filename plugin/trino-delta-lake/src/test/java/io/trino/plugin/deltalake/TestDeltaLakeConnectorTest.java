@@ -59,8 +59,13 @@ import static com.google.common.collect.Sets.union;
 import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.plugin.deltalake.DeltaLakeCdfPageSink.CHANGE_DATA_FOLDER_NAME;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.CHANGE_DATA_FEED_COLUMN_NAMES;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_OR_REPLACE_TABLE_AS_OPERATION;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_OR_REPLACE_TABLE_OPERATION;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_TABLE_OPERATION;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
+import static io.trino.plugin.hive.TableType.EXTERNAL_TABLE;
+import static io.trino.plugin.hive.TableType.MANAGED_TABLE;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.spi.type.TimeZoneKey.getTimeZoneKey;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -74,6 +79,7 @@ import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_SCHEMA;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
+import static io.trino.testing.containers.Minio.MINIO_REGION;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -113,17 +119,22 @@ public class TestDeltaLakeConnectorTest
                     .put("hive.metastore", "file")
                     .put("hive.metastore.catalog.dir", queryRunner.getCoordinator().getBaseDataDir().resolve("file-metastore").toString())
                     .put("hive.metastore.disable-location-checks", "true")
-                    .put("hive.s3.aws-access-key", MINIO_ACCESS_KEY)
-                    .put("hive.s3.aws-secret-key", MINIO_SECRET_KEY)
-                    .put("hive.s3.endpoint", minio.getMinioAddress())
-                    .put("hive.s3.path-style-access", "true")
+                    // required by the file metastore
+                    .put("fs.hadoop.enabled", "true")
+                    .put("fs.native-s3.enabled", "true")
+                    .put("s3.aws-access-key", MINIO_ACCESS_KEY)
+                    .put("s3.aws-secret-key", MINIO_SECRET_KEY)
+                    .put("s3.region", MINIO_REGION)
+                    .put("s3.endpoint", minio.getMinioAddress())
+                    .put("s3.path-style-access", "true")
+                    .put("s3.streaming.part-size", "5MB") // minimize memory usage
                     .put("delta.enable-non-concurrent-writes", "true")
                     .put("delta.register-table-procedure.enabled", "true")
                     .buildOrThrow());
 
             queryRunner.execute("CREATE SCHEMA " + SCHEMA + " WITH (location = 's3://" + bucketName + "/" + SCHEMA + "')");
             queryRunner.execute("CREATE SCHEMA schemawithoutunderscore WITH (location = 's3://" + bucketName + "/schemawithoutunderscore')");
-            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, queryRunner.getDefaultSession(), REQUIRED_TPCH_TABLES);
+            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, REQUIRED_TPCH_TABLES);
         }
         catch (Throwable e) {
             closeAllSuppress(e, queryRunner);
@@ -137,7 +148,8 @@ public class TestDeltaLakeConnectorTest
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
         return switch (connectorBehavior) {
-            case SUPPORTS_REPORTING_WRITTEN_BYTES -> true;
+            case SUPPORTS_CREATE_OR_REPLACE_TABLE,
+                    SUPPORTS_REPORTING_WRITTEN_BYTES -> true;
             case SUPPORTS_ADD_FIELD,
                     SUPPORTS_AGGREGATION_PUSHDOWN,
                     SUPPORTS_CREATE_MATERIALIZED_VIEW,
@@ -211,7 +223,6 @@ public class TestDeltaLakeConnectorTest
         String typeName = dataMappingTestSetup.getTrinoTypeName();
         if (typeName.equals("time") ||
                 typeName.equals("time(6)") ||
-                typeName.equals("timestamp") ||
                 typeName.equals("timestamp(6) with time zone") ||
                 typeName.equals("char(3)")) {
             return Optional.of(dataMappingTestSetup.asUnsupported());
@@ -295,6 +306,36 @@ public class TestDeltaLakeConnectorTest
 
         assertUpdate("INSERT INTO " + tableName + " (data) VALUES (4)", 1);
         assertQuery("SELECT * FROM " + tableName, "VALUES (1, 'first#1', 'second#1'), (2, 'first#2', NULL), (3, NULL, 'second#3'), (4, NULL, NULL)");
+    }
+
+    @Test
+    public void testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition()
+    {
+        testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode.ID);
+        testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode.NAME);
+        testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode.NONE);
+    }
+
+    private void testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode columnMappingMode)
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_delete_with_partial_filter_composed_partition",
+                "(_bigint BIGINT, _date DATE, _varchar VARCHAR) WITH (column_mapping_mode='" + columnMappingMode + "', partitioned_by = ARRAY['_varchar', '_date'])")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES  (1, CAST('2019-09-10' AS DATE), 'a'), (2, CAST('2019-09-10' AS DATE), 'a')", 2);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (3, null, 'c'), (4, CAST('2019-09-08' AS DATE), 'd')", 2);
+            assertUpdate("UPDATE " + table.getName() + " SET _bigint = 10 WHERE _bigint =  BIGINT '1'", 1);
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE _date =  DATE '2019-09-08'", 1);
+
+            assertQuery(
+                    "SELECT * FROM " + table.getName(),
+                    """
+                    VALUES
+                        (10, DATE '2019-09-10', 'a'),
+                        (2, DATE '2019-09-10', 'a'),
+                        (3, null, 'c')
+                    """);
+        }
     }
 
     @Test
@@ -1740,6 +1781,410 @@ public class TestDeltaLakeConnectorTest
         testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_none", false);
     }
 
+    @Test
+    public void testCreateOrReplaceTableOnNonExistingTable()
+    {
+        String tableName = "create_or_replace_table" + randomNameSuffix();
+        try {
+            assertUpdate("CREATE OR REPLACE TABLE " + tableName + " (id BIGINT)");
+            assertLatestTableOperation(tableName, CREATE_OR_REPLACE_TABLE_OPERATION);
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsSelectOnNonExistingTable()
+    {
+        String tableName = "create_or_replace_table_as_select_" + randomNameSuffix();
+        try {
+            assertUpdate("CREATE OR REPLACE TABLE " + tableName + " AS SELECT 1 as colA", 1);
+            assertLatestTableOperation(tableName, CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsSelectWithSwappedColumns()
+    {
+        testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode.ID);
+        testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode.NAME);
+        testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode.NONE);
+    }
+
+    private void testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode columnMappingMode)
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_with_column",
+                "AS SELECT 'abc' colA, BIGINT '1' colB")) {
+            assertThat(query("SELECT colA, colB FROM " + table.getName()))
+                    .matches("VALUES (CAST('abc' AS VARCHAR), BIGINT '1')");
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (column_mapping_mode='" + columnMappingMode.name() + "') AS SELECT BIGINT '42' colA, 'def' colB", 1);
+
+            assertThat(query("SELECT colA, colB FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', CAST('def' AS VARCHAR))");
+
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableChangeUnpartitionedTableIntoPartitioned()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", " AS SELECT BIGINT '22' a, CAST('some data' AS VARCHAR) b")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (partitioned_by=ARRAY['a']) AS SELECT BIGINT '42' a, 'some data' b UNION ALL SELECT BIGINT '43' a, 'another data' b", 2);
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', CAST('some data' AS VARCHAR)), (BIGINT '43', CAST('another data' AS VARCHAR))");
+
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .contains("partitioned_by = ARRAY['a']");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableChangePartitionedTableIntoUnpartitioned()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_",
+                "  WITH (partitioned_by=ARRAY['a']) AS SELECT BIGINT '42' a, 'some data' b UNION ALL SELECT BIGINT '43' a, 'another data' b")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT BIGINT '42' a, 'some data' b UNION ALL SELECT BIGINT '43' a, 'another data' b", 2);
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', CAST('some data' AS VARCHAR)), (BIGINT '43', CAST('another data' AS VARCHAR))");
+
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .matches("CREATE TABLE delta.test_schema.%s \\(\n".formatted(table.getName()) +
+                            "   a bigint,\n" +
+                            "   b varchar\n" +
+                            "\\)\n" +
+                            "WITH \\(\n" +
+                            "   location = '.*'\n" +
+                            "\\)");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableTableCommentIsRemoved()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", " (a BIGINT) COMMENT 'This is a table'")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT COMMENT 'This is a column')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName());
+
+            assertThat(getColumnComment(table.getName(), "a"))
+                    .isEqualTo("This is a column");
+            assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName()))
+                    .isNull();
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithEnablingCdcProperty()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (c BIGINT) WITH (change_data_feed_enabled = true)",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithEnablingCdcProperty()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (change_data_feed_enabled = true) AS SELECT 1 new_column",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceOnCdcEnabledTables()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT) WITH (change_data_feed_enabled = true)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (d BIGINT)",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsOnCdcEnabledTables()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT) WITH (change_data_feed_enabled = true)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 1 new_column",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithSameLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_with_same_location_",
+                " (a BIGINT)")) {
+            HiveMetastore metastore = TestingDeltaLakeUtils.getConnectorService(getDistributedQueryRunner(), HiveMetastoreFactory.class)
+                    .createMetastore(Optional.empty());
+            String location = metastore.getTable("test_schema", table.getName()).orElseThrow().getStorage().getLocation();
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (d BIGINT) WITH (location = '" + location + "')");
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (d BIGINT) WITH (location = '" + location + "/')");
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithSameLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_with_same_location_",
+                " (a BIGINT)")) {
+            HiveMetastore metastore = TestingDeltaLakeUtils.getConnectorService(getDistributedQueryRunner(), HiveMetastoreFactory.class)
+                    .createMetastore(Optional.empty());
+            String location = metastore.getTable("test_schema", table.getName()).orElseThrow().getStorage().getLocation();
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '" + location + "') AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '" + location + "/') AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_change_location_", " (a BIGINT) ")) {
+            String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT) WITH (location = '%s')".formatted(location),
+                    "The provided location '%s' does not match the existing table location '.*'".formatted(location));
+
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT) WITH (location = '%s/')".formatted(location),
+                    "The provided location '%s/' does not match the existing table location '.*'".formatted(location));
+
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceAsTableWithChangeInLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_change_location_", " (a BIGINT) ")) {
+            String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '%s') AS SELECT 'a' colA".formatted(location),
+                    "The provided location '%s' does not match the existing table location '.*'".formatted(location));
+
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '%s/')  AS SELECT 'a' colA".formatted(location),
+                    "The provided location '%s/' does not match the existing table location '.*'".formatted(location));
+
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInLocationForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_change_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT) WITH (location = '%s_2')".formatted(location),
+                    "The provided location '%1$s_2' does not match the existing table location '%1$s'".formatted(location));
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .contains("location = '%s'".formatted(location));
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithChangeInLocationForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_change_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '%s_2') AS SELECT 'a' colA".formatted(location),
+                    "The provided location '%1$s_2' does not match the existing table location '%1$s'".formatted(location));
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .contains("location = '%s'".formatted(location));
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithNoLocationSpecifiedForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (colA VARCHAR)");
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithNoLocationSpecifiedForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithNoLocationSpecifiedForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT)")) {
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (colA VARCHAR)");
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithNoLocationSpecifiedForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT)")) {
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithStatsUpdated()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_for_stats_",
+                " AS SELECT 1 as colA")) {
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', null, 1.0, 0.0, null, '1', '1')," +
+                            "(null, null, null, null, 1.0, null, null)");
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (colA BIGINT) ");
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', 0.0, 0.0, 1.0, null, null, null)," +
+                            "(null, null, null, null, 0.0, null, null)");
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES null", 1);
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', 0.0, 0.0, 1.0, null, null, null)," +
+                            "(null, null, null, null, 1.0, null, null)");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithStatsUpdated()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_for_stats_",
+                " AS SELECT 1 as colA")) {
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', null, 1.0, 0.0, null, '1', '1')," +
+                            "(null, null, null, null, 1.0, null, null)");
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 25 colb ", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (null)", 1);
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('colb', null, 1.0, 0.5, null, '25', '25')," +
+                            "(null, null, null, null, 2.0, null, null)");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInColumnMappingToId()
+    {
+        testTableOperationWithChangeInColumnMappingMode("id");
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInColumnMappingToName()
+    {
+        testTableOperationWithChangeInColumnMappingMode("name");
+    }
+
+    public void testTableOperationWithChangeInColumnMappingMode(String columnMappingMode)
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_change_column_mapping_",
+                " AS SELECT 1 as colA, 'B' as colB")) {
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " DROP COLUMN colA",
+                    "Cannot drop column from table using column mapping mode NONE");
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " RENAME COLUMN colA TO renamed_column",
+                    "Cannot rename column in table using column mapping mode NONE");
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (column_mapping_mode = '" + columnMappingMode + "') AS SELECT 25 colc, 'D' cold ", 1);
+            assertQuery("SELECT colc FROM " + table.getName(), "VALUES 25");
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN colc");
+            assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN cold TO colc");
+            assertQuery("SELECT colc FROM " + table.getName(), "VALUES 'D'");
+        }
+    }
+
+    private void assertLatestTableOperation(String tableName, String operation)
+    {
+        assertQuery("SELECT operation FROM \"%s$history\" ORDER BY version DESC LIMIT 1".formatted(tableName),
+                "VALUES '%s'".formatted(operation));
+    }
+
+    private void assertTableType(String schemaName, String tableName, String tableType)
+    {
+        HiveMetastore metastore = TestingDeltaLakeUtils.getConnectorService(getDistributedQueryRunner(), HiveMetastoreFactory.class)
+                .createMetastore(Optional.empty());
+        assertThat(metastore.getTable(schemaName, tableName).orElseThrow().getTableType()).isEqualTo(tableType);
+    }
+
     private void testSupportedNonPartitionedColumnMappingWrites(String resourceName, boolean statsAsJsonEnabled)
             throws Exception
     {
@@ -1753,7 +2198,7 @@ public class TestDeltaLakeConnectorTest
         minioClient.putObject(bucketName, entry.getBytes(UTF_8), targetPath);
         String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
 
-        assertUpdate("CALL system.register_table('%s', '%s', '%s')".formatted(SCHEMA, tableName, tableLocation));
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation));
         assertQueryReturnsEmptyResult("SELECT * FROM " + tableName);
 
         assertUpdate(
@@ -1865,7 +2310,7 @@ public class TestDeltaLakeConnectorTest
         minioClient.putObject(bucketName, entry.getBytes(UTF_8), targetPath);
         String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
 
-        assertUpdate("CALL system.register_table('%s', '%s', '%s')".formatted(SCHEMA, tableName, tableLocation));
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation));
         assertQueryReturnsEmptyResult("SELECT * FROM " + tableName);
 
         assertUpdate(
@@ -2097,7 +2542,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')");
 
         assertQueryFails(format("CREATE TABLE %s (dummy int) with (location = '%s')", tableName, tableLocation),
-                ".*Using CREATE TABLE with an existing table content is disallowed.*");
+                ".*Using CREATE \\[OR REPLACE] TABLE with an existing table content is disallowed.*");
     }
 
     @Test
@@ -2153,7 +2598,7 @@ public class TestDeltaLakeConnectorTest
         assertExplain(
                 "EXPLAIN SELECT root.f2 FROM " + tableName,
                 "TableScan\\[table = (.*)]",
-                "root#f2 := root#f2:bigint:REGULAR");
+                "(.*) := (.*):bigint:REGULAR");
 
         Session sessionWithoutPushdown = Session.builder(getSession())
                 .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "projection_pushdown_enabled", "false")
@@ -2162,7 +2607,7 @@ public class TestDeltaLakeConnectorTest
                 sessionWithoutPushdown,
                 "EXPLAIN SELECT root.f2 FROM " + tableName,
                 "ScanProject\\[table = (.*)]",
-                "expr := root\\[2]",
+                "expr := root.1",
                 "root := root:row\\(f1 bigint, f2 bigint\\):REGULAR");
 
         assertUpdate("DROP TABLE " + tableName);
@@ -2179,12 +2624,12 @@ public class TestDeltaLakeConnectorTest
         assertExplain(
                 "EXPLAIN SELECT id, _row.child, _array[1].child, _map[1] FROM " + tableName,
                 "ScanProject\\[table = (.*)]",
-                "expr(.*) := _array(.*)\\[bigint '1']\\[1]",
+                "expr(.*) := .*\\$subscript\\(.*, bigint '1'\\).0",
                 "id(.*) := id:bigint:REGULAR",
                 // _array:array\\(row\\(child bigint\\)\\) is a symbol name, not a dereference expression.
-                "_array(.*) := _array:array\\(row\\(child bigint\\)\\):REGULAR",
-                "_map(.*) := _map:map\\(bigint, bigint\\):REGULAR",
-                "_row#child := _row#child:bigint:REGULAR");
+                "(.*) := _array:array\\(row\\(child bigint\\)\\):REGULAR",
+                "(.*) := _map:map\\(bigint, bigint\\):REGULAR",
+                "(.*) := _row#child:bigint:REGULAR");
     }
 
     @Test
@@ -2204,7 +2649,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url4', 'domain4', 4), ('url5', 'domain5', 2), ('url6', 'domain6', 6)", 3);
 
         assertUpdate("UPDATE " + tableName + " SET page_url = 'url22' WHERE views = 2", 2);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2220,14 +2665,14 @@ public class TestDeltaLakeConnectorTest
                         """);
 
         assertUpdate("DELETE FROM " + tableName + " WHERE views = 2", 2);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url22', 'domain2', 2, 'delete', BIGINT '4'),
                             ('url22', 'domain5', 2, 'delete', BIGINT '4')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "')) ORDER BY _commit_version, _change_type, domain",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "')) ORDER BY _commit_version, _change_type, domain",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2273,7 +2718,7 @@ public class TestDeltaLakeConnectorTest
                                 ('url6', 'domain4', 2)
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2297,7 +2742,7 @@ public class TestDeltaLakeConnectorTest
                                 ('url4', 'domain1', 400),
                                 ('url5', 'domain2', 500)
                         """);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url2', 'domain4', 2, 'delete', BIGINT '4'),
@@ -2332,7 +2777,7 @@ public class TestDeltaLakeConnectorTest
 
         assertUpdate("INSERT INTO " + tableName + " VALUES('url5', 5)", 1);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 1, 'insert', BIGINT '1'),
@@ -2380,7 +2825,7 @@ public class TestDeltaLakeConnectorTest
                                 ('url4', 'domain4', 44),
                                 ('url5', 'domain5', 50)
                         """);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName1 + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName1 + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2433,7 +2878,7 @@ public class TestDeltaLakeConnectorTest
                             ('url5', 'domain3', 5)
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + targetTable + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + targetTable + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', 1),
@@ -2469,7 +2914,7 @@ public class TestDeltaLakeConnectorTest
                            ('url6', 'domain1', 600)
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + targetTable + "', 2))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + targetTable + "', 2))",
                 """
                         VALUES
                             ('url3', 'domain3', 3, 'delete', BIGINT '3'),
@@ -2496,7 +2941,7 @@ public class TestDeltaLakeConnectorTest
                 "WITH (change_data_feed_enabled = true, column_mapping_mode = '" + mode + "')");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url1', 'domain1', 1)", 1);
         ZonedDateTime historyCommitTimestamp = (ZonedDateTime) computeScalar("SELECT timestamp FROM \"" + tableName + "$history\" WHERE version = 1");
-        ZonedDateTime tableChangesCommitTimestamp = (ZonedDateTime) computeScalar("SELECT _commit_timestamp FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0)) WHERE _commit_Version = 1");
+        ZonedDateTime tableChangesCommitTimestamp = (ZonedDateTime) computeScalar("SELECT _commit_timestamp FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0)) WHERE _commit_Version = 1");
         assertThat(historyCommitTimestamp).isEqualTo(tableChangesCommitTimestamp);
     }
 
@@ -2513,11 +2958,11 @@ public class TestDeltaLakeConnectorTest
         String tableName = "test_reading_ranges_of_changes_on_table_with_cdf_enabled_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
                 "WITH (change_data_feed_enabled = true, column_mapping_mode = '" + mode + "')");
-        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))");
+        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url1', 'domain1', 1)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', 'domain2', 2)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url3', 'domain3', 3)", 1);
-        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))");
+        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))");
 
         assertUpdate("UPDATE " + tableName + " SET page_url = 'url22' WHERE domain = 'domain2'", 1);
         assertUpdate("UPDATE " + tableName + " SET page_url = 'url33' WHERE views = 3", 1);
@@ -2530,9 +2975,9 @@ public class TestDeltaLakeConnectorTest
                            ('url33', 'domain3', 3)
                         """);
 
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 1000))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 1000))",
                 "since_version: 1000 is higher then current table version: 6");
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2545,7 +2990,7 @@ public class TestDeltaLakeConnectorTest
                             ('url1', 'domain1', 1, 'delete', BIGINT '6')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2558,7 +3003,7 @@ public class TestDeltaLakeConnectorTest
                             ('url1', 'domain1', 1, 'delete', BIGINT '6')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url2', 'domain2', 2, 'update_preimage', BIGINT '4'),
@@ -2568,9 +3013,9 @@ public class TestDeltaLakeConnectorTest
                             ('url1', 'domain1', 1, 'delete', BIGINT '6')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 5))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 5))",
                 "VALUES ('url1', 'domain1', 1, 'delete', BIGINT '6')");
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 10))", "since_version: 10 is higher then current table version: 6");
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 10))", "since_version: 10 is higher then current table version: 6");
     }
 
     @Test
@@ -2590,7 +3035,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN company VARCHAR");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', 'domain2', 2, 'starburst')", 1);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, null, 'insert', BIGINT '1'),
@@ -2615,7 +3060,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', ROW('02', 19))", 1);
         assertUpdate("UPDATE " + tableName + " SET costs = ROW('02', 37) WHERE costs.month = '02'", 1);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', ROW('01', BIGINT '11') , 'insert', BIGINT '1'),
@@ -2624,7 +3069,7 @@ public class TestDeltaLakeConnectorTest
                             ('url2', ROW('02', BIGINT '37') , 'update_postimage', BIGINT '3')
                         """);
 
-        assertThat(query("SELECT costs.month, costs.amount, _commit_version FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))"))
+        assertThat(query("SELECT costs.month, costs.amount, _commit_version FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))"))
                 .matches("""
                         VALUES
                             (VARCHAR '01', BIGINT '11', BIGINT '1'),
@@ -2650,7 +3095,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url1', 'domain1', 1)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', 'domain2', 2)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url3', 'domain3', 3)", 1);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2670,11 +3115,11 @@ public class TestDeltaLakeConnectorTest
                            ('url33', 'domain3', 3)
                         """);
 
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 "Change Data Feed is not enabled at version 4. Version contains 'remove' entries without 'cdc' entries");
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 "Change Data Feed is not enabled at version 4. Version contains 'remove' entries without 'cdc' entries");
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 5))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 5))",
                 """
                         VALUES
                             ('url3', 'domain3', 3, 'update_preimage', BIGINT '6'),
@@ -2700,7 +3145,7 @@ public class TestDeltaLakeConnectorTest
                         "('url2', 'domain2', 2)) t(page_url, domain, views)",
                 2);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '0'),
@@ -2735,11 +3180,11 @@ public class TestDeltaLakeConnectorTest
         Set<String> allFilesFromCdfDirectory = getAllFilesFromCdfDirectory(tableName);
         assertThat(allFilesFromCdfDirectory).hasSizeGreaterThanOrEqualTo(3);
         long retention = timeSinceUpdate.elapsed().getSeconds();
-        getQueryRunner().execute(sessionWithShortRetentionUnlocked, "CALL delta.system.vacuum('test_schema', '" + tableName + "', '" + retention + "s')");
+        getQueryRunner().execute(sessionWithShortRetentionUnlocked, "CALL system.vacuum(CURRENT_SCHEMA, '" + tableName + "', '" + retention + "s')");
         allFilesFromCdfDirectory = getAllFilesFromCdfDirectory(tableName);
         assertThat(allFilesFromCdfDirectory).hasSizeBetween(1, 2);
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 2))", "Error opening Hive split.*/_change_data/.*The specified key does not exist.*");
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 2))", "Error opening Hive split.*/_change_data/.*");
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url3', 'domain3', 3, 'update_preimage', BIGINT '4'),
@@ -2766,7 +3211,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("UPDATE " + tableName + " SET views = views * 30 WHERE views = 3", 1);
         computeActual("ALTER TABLE " + tableName + " EXECUTE OPTIMIZE");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url10', 'domain10', 10)", 1);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2788,12 +3233,12 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url3', 'domain3', 3)", 1);
 
         assertAccessDenied(
-                "SELECT * FROM TABLE(system.table_changes('" + SCHEMA + "', '" + tableName + "', 0))",
+                "SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 "Cannot execute function .*",
                 privilege("delta.system.table_changes", EXECUTE_FUNCTION));
 
         assertAccessDenied(
-                "SELECT * FROM TABLE(system.table_changes('" + SCHEMA + "', '" + tableName + "', 0))",
+                "SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 "Cannot select from columns .*",
                 privilege(tableName, SELECT_COLUMN));
 
@@ -2899,7 +3344,7 @@ public class TestDeltaLakeConnectorTest
                                 .isTrue();
                     }
                     else {
-                        TableFinishNode finishNode = searchFrom(plan.getRoot())
+                        TableFinishNode finishNode = (TableFinishNode) searchFrom(plan.getRoot())
                                 .where(TableFinishNode.class::isInstance)
                                 .findOnlyElement();
                         assertThat(finishNode.getTarget() instanceof TableWriterNode.MergeTarget)
@@ -3346,7 +3791,7 @@ public class TestDeltaLakeConnectorTest
             assertQueryFails(session, "UPDATE " + table.getName() + " SET x = 10 WHERE x = 1", expectedMessageRegExp);
             assertUpdate(session, "UPDATE " + table.getName() + " SET x = 20 WHERE part = 22", 1);
             // TODO (https://github.com/trinodb/trino/issues/18498) Check for partition filter for table_changes when the following issue will be completed https://github.com/trinodb/trino/pull/17928
-            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + table.getName() + "'))",
+            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + table.getName() + "'))",
                     """
                             VALUES
                                 (1,   11,  'insert',           BIGINT '1'),
@@ -3358,13 +3803,13 @@ public class TestDeltaLakeConnectorTest
 
             assertQueryFails(session, "DELETE FROM " + table.getName() + " WHERE x = 3", expectedMessageRegExp);
             assertUpdate(session, "DELETE FROM " + table.getName() + " WHERE part = 33 and x = 3", 1);
-            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + table.getName() + "', 4))",
+            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + table.getName() + "', 4))",
                     """
                             VALUES
                                 (3, 33, 'delete', BIGINT '5')
                             """);
 
-            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + table.getName() + "')) ORDER BY _commit_version, _change_type, part",
+            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + table.getName() + "')) ORDER BY _commit_version, _change_type, part",
                     """
                             VALUES
                                 (1,   11,  'insert',           BIGINT '1'),
@@ -3490,5 +3935,592 @@ public class TestDeltaLakeConnectorTest
         assertQuery(session, "SELECT * FROM " + tableName, "VALUES 1, 2, 44, 5");
 
         assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testTimestampCoercionOnCreateTable()
+    {
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.9'", "TIMESTAMP '1970-01-01 00:00:00.900000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.56'", "TIMESTAMP '1970-01-01 00:00:00.560000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.4896'", "TIMESTAMP '1970-01-01 00:00:00.489600'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.89356'", "TIMESTAMP '1970-01-01 00:00:00.893560'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.999'", "TIMESTAMP '1970-01-01 00:00:00.999000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.1'", "TIMESTAMP '2020-09-27 12:34:56.100000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.9'", "TIMESTAMP '2020-09-27 12:34:56.900000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.123'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.999'", "TIMESTAMP '2020-09-27 12:34:56.999000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.1234561'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456499'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456999999'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.1234565'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.9999995'", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 23:59:59.9999995'", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1969-12-31 23:59:59.9999995'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1969-12-31 23:59:59.9999994'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+    }
+
+    private void testTimestampCoercionOnCreateTable(String actualValue, String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table",
+                "(ts TIMESTAMP)")) {
+            assertUpdate("INSERT INTO " + testTable.getName() + " VALUES (" + actualValue + ")", 1);
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("timestamp(6)");
+            assertQuery("SELECT * FROM " + testTable.getName(), "VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    @Test
+    public void testTimestampCoercionOnCreateTableAsSelect()
+    {
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.9'", "TIMESTAMP '1970-01-01 00:00:00.900000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.56'", "TIMESTAMP '1970-01-01 00:00:00.560000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.4896'", "TIMESTAMP '1970-01-01 00:00:00.489600'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.89356'", "TIMESTAMP '1970-01-01 00:00:00.893560'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.999'", "TIMESTAMP '1970-01-01 00:00:00.999000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.1'", "TIMESTAMP '2020-09-27 12:34:56.100000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.9'", "TIMESTAMP '2020-09-27 12:34:56.900000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.999'", "TIMESTAMP '2020-09-27 12:34:56.999000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.1234561'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456499'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456999999'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.1234565'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.9999995'", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 23:59:59.9999995'", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.9999995'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.9999994'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsSelect(String actualValue, String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_select",
+                "AS SELECT %s ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("timestamp(6)");
+            assertQuery("SELECT * FROM " + testTable.getName(), "VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    @Test
+    public void testTimestampCoercionOnCreateTableAsSelectWithNoData()
+    {
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.9'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.56'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.4896'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.89356'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.1'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.9'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.1234561'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456499'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456499999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456999999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.1234565'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.111222333444'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.9999995'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 23:59:59.9999995'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.9999995'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.999999499999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.9999994'");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsSelectWithNoData(String actualValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_select_with_no_data",
+                "AS SELECT %s ts WITH NO DATA".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("timestamp(6)");
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    @Test
+    public void testTimestampCoercionOnCreateTableAsWithRowType()
+    {
+        // TODO structure type coercion is not supported yet https://github.com/trinodb/trino/pull/21055
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00'", ".*Unsupported type: timestamp\\(0\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.9'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.56'", ".*Unsupported type: timestamp\\(2\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.4896'", ".*Unsupported type: timestamp\\(4\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.89356'", ".*Unsupported type: timestamp\\(5\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.999'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '2020-09-27 12:34:56.1'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '2020-09-27 12:34:56.9'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '2020-09-27 12:34:56.123'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '2020-09-27 12:34:56.999'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.1234561'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456499'", ".*Unsupported type: timestamp\\(9\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456499999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456999999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.1234565'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.111222333444'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 00:00:00.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1970-01-01 23:59:59.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1969-12-31 23:59:59.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1969-12-31 23:59:59.999999499999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithRowTypeFailure("TIMESTAMP '1969-12-31 23:59:59.9999994'", ".*Unsupported type: timestamp\\(7\\).*");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithRowType(String actualValue, String expectedValue)
+    {
+        // TODO remove precision from timestamp once https://github.com/trinodb/trino/pull/21055 is merged
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_with_row_type",
+                "AS SELECT CAST(row(%s) AS row(value timestamp(6))) ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("row(value timestamp(6))");
+            assertThat(query("SELECT ts.value FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithRowTypeFailure(String actualValue, @Language("RegExp") String expectedMessage)
+    {
+        assertQueryFails(
+                "CREATE TABLE test_timestamp_coercion_on_create_table_as_with_row_type AS SELECT row(%s) ts".formatted( actualValue),
+                expectedMessage);
+    }
+
+    @Test
+    public void testTimestampCoercionOnCreateTableAsWithArrayType()
+    {
+        // TODO structure type coercion is not supported yet https://github.com/trinodb/trino/pull/21055
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00'", ".*Unsupported type: timestamp\\(0\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.9'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.56'", ".*Unsupported type: timestamp\\(2\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.4896'", ".*Unsupported type: timestamp\\(4\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.89356'", ".*Unsupported type: timestamp\\(5\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.999'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '2020-09-27 12:34:56.1'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '2020-09-27 12:34:56.9'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '2020-09-27 12:34:56.123'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '2020-09-27 12:34:56.999'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.1234561'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456499'", ".*Unsupported type: timestamp\\(9\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456499999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456999999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.1234565'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.111222333444'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 00:00:00.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1970-01-01 23:59:59.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1969-12-31 23:59:59.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1969-12-31 23:59:59.999999499999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithArrayTypeFailure("TIMESTAMP '1969-12-31 23:59:59.9999994'", ".*Unsupported type: timestamp\\(7\\).*");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithArrayType(String actualValue, String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_with_array_type",
+                "AS SELECT array[%s] ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("array(timestamp(6))");
+            assertThat(query("SELECT ts[1] FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithArrayTypeFailure(String actualValue, @Language("RegExp") String expectedMessage)
+    {
+        assertQueryFails(
+                "CREATE TABLE test_timestamp_coercion_on_create_table_as_with_array_type AS SELECT array[%s] ts".formatted(actualValue),
+                expectedMessage);
+    }
+
+    @Test
+    public void testTimestampCoercionOnCreateTableAsWithMapType()
+    {
+        // TODO structure type coercion is not supported yet https://github.com/trinodb/trino/pull/21055
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00'", ".*Unsupported type: timestamp\\(0\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.9'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.56'", ".*Unsupported type: timestamp\\(2\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.4896'", ".*Unsupported type: timestamp\\(4\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.89356'", ".*Unsupported type: timestamp\\(5\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.999'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '2020-09-27 12:34:56.1'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '2020-09-27 12:34:56.9'", ".*Unsupported type: timestamp\\(1\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '2020-09-27 12:34:56.123'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '2020-09-27 12:34:56.999'", ".*Unsupported type: timestamp\\(3\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.1234561'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456499'", ".*Unsupported type: timestamp\\(9\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456499999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.123456999999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.1234565'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.111222333444'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 00:00:00.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1970-01-01 23:59:59.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1969-12-31 23:59:59.9999995'", ".*Unsupported type: timestamp\\(7\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1969-12-31 23:59:59.999999499999'", ".*Unsupported type: timestamp\\(12\\).*");
+        testTimestampCoercionOnCreateTableAsWithMapTypeFailure("TIMESTAMP '1969-12-31 23:59:59.9999994'", ".*Unsupported type: timestamp\\(7\\).*");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithMapType(String actualValue, String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_with_map_type",
+                "AS SELECT map(array['key'], array[%s]) ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("map(varchar, timestamp(6))");
+            assertThat(query("SELECT ts['key'] FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithMapTypeFailure(String actualValue, @Language("RegExp") String expectedMessage)
+    {
+        assertQueryFails(
+                "CREATE TABLE test_timestamp_coercion_on_create_table_as_with_map_type AS SELECT map(array['key'], array[%s]) ts".formatted(actualValue),
+                expectedMessage);
+    }
+
+    private void assertTimestampNtzFeature(String tableName)
+    {
+        assertThat(query("SELECT * FROM \"" + tableName + "$properties\""))
+                .skippingTypesCheck()
+                .containsAll("VALUES ('delta.minReaderVersion', '3'), ('delta.minWriterVersion', '7'), ('delta.feature.timestampNtz', 'supported')");
+    }
+
+    @Test
+    public void testSelectTableUsingVersion()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_select_table_using_version",
+                "(id INT, country VARCHAR)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (1, 'India')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (2, 'Germany')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (3, 'United States')", 1);
+
+            assertThat(query("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0"))
+                    .returnsEmptyResult();
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1, 'India'), (2, 'Germany'), (3, 'United States')");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES (1, 'India')");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "VALUES (1, 'India'), (2, 'Germany'), (3, 'United States')");
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 4", "Delta Lake snapshot ID does not exists: 4");
+
+            // Dummy delete to increase transaction logs and generate checkpoint file
+            for (int i = 0; i < 20; i++) {
+                assertUpdate("DELETE FROM " + table.getName() + " WHERE id  = 10", 0);
+            }
+
+            // DML operations to create new transaction log
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (4, 'Austria')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (5, 'Poland')", 1);
+            assertUpdate("UPDATE " + table.getName() + " SET country = 'USA' WHERE id  = 3", 1);
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE id  = 2", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (6, 'Japan')", 1);
+
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1, 'India'), (3, 'USA'), (4, 'Austria'), (5, 'Poland'), (6, 'Japan')");
+
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 4", "VALUES (1, 'India'), (2, 'Germany'), (3, 'United States')");
+
+            // After Update
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 26", "VALUES (1, 'India'), (2, 'Germany'), (3, 'USA'), (4, 'Austria'), (5, 'Poland')");
+
+            // After Delete
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 27", "VALUES (1, 'India'), (3, 'USA'), (4, 'Austria'), (5, 'Poland')");
+
+            // Recover data from last version after deleting whole table
+            assertUpdate("DELETE FROM " + table.getName(), 5);
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .returnsEmptyResult();
+            assertUpdate("INSERT INTO " + table.getName() + " (id, country) SELECT * FROM " + table.getName() + " FOR VERSION AS OF 27", 4);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1, 'India'), (3, 'USA'), (4, 'Austria'), (5, 'Poland')");
+        }
+    }
+
+    @Test
+    public void testReadMultipleVersions()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_multiple_versions", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertQuery(
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0 " +
+                            "UNION ALL " +
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1",
+                    "VALUES 1, 1, 2");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithOptimize()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_optimize", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+
+            Set<String> beforeActiveFiles = getActiveFiles(table.getName());
+            computeActual("ALTER TABLE " + table.getName() + " EXECUTE OPTIMIZE");
+            assertThat(getActiveFiles(table.getName())).isNotEqualTo(beforeActiveFiles);
+
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "VALUES 1, 2");
+
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 3", 1);
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "VALUES 1, 2, 3");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithVacuum()
+            throws Exception
+    {
+        Session sessionWithShortRetentionUnlocked = Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "vacuum_min_retention", "0s")
+                .build();
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_column_and_vacuum", "(x VARCHAR)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT 'first'", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT 'second'", 1);
+
+            Set<String> initialFiles = getActiveFiles(table.getName());
+            assertThat(initialFiles).hasSize(2);
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN a varchar(50)");
+
+            assertUpdate("UPDATE " + table.getName() + " SET a = 'new column'", 2);
+            Stopwatch timeSinceUpdate = Stopwatch.createStarted();
+            Set<String> updatedFiles = getActiveFiles(table.getName());
+            assertThat(updatedFiles)
+                    .hasSizeGreaterThanOrEqualTo(1)
+                    .hasSizeLessThanOrEqualTo(2)
+                    .doesNotContainAnyElementsOf(initialFiles);
+            assertThat(getAllDataFilesFromTableDirectory(table.getName())).isEqualTo(union(initialFiles, updatedFiles));
+
+            assertQuery("SELECT x, a FROM " + table.getName(), "VALUES ('first', 'new column'), ('second', 'new column')");
+
+            MILLISECONDS.sleep(1_000 - timeSinceUpdate.elapsed(MILLISECONDS) + 1);
+            assertUpdate(sessionWithShortRetentionUnlocked, "CALL system.vacuum(schema_name => CURRENT_SCHEMA, table_name => '" + table.getName() + "', retention => '1s')");
+
+            // Verify VACUUM happened, but table data didn't change
+            assertThat(getAllDataFilesFromTableDirectory(table.getName())).isEqualTo(updatedFiles);
+
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0");
+
+            // Failure is the expected behavior because the data file doesn't exist
+            // TODO: Improve error message
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "Error opening Hive split.*");
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "Error opening Hive split.*");
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "Error opening Hive split.*");
+
+            assertQuery("SELECT x, a FROM " + table.getName() + " FOR VERSION AS OF 4", "VALUES ('first', 'new column'), ('second', 'new column')");
+        }
+    }
+
+    @Test
+    public void testInsertFromVersionedTable()
+    {
+        try (TestTable targetTable = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "(col int)");
+                TestTable sourceTable = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "AS SELECT 1 col")) {
+            assertUpdate("INSERT INTO " + sourceTable.getName() + " VALUES 2", 1);
+            assertUpdate("INSERT INTO " + sourceTable.getName() + " VALUES 3", 1);
+
+            assertUpdate("INSERT INTO " + targetTable.getName() + " SELECT * FROM " + sourceTable.getName() + " FOR VERSION AS OF 0", 1);
+            assertQuery("SELECT * FROM " + targetTable.getName(), "VALUES 1");
+
+            assertUpdate("INSERT INTO " + targetTable.getName() + " SELECT * FROM " + sourceTable.getName() + " FOR VERSION AS OF 1", 2);
+            assertQuery("SELECT * FROM " + targetTable.getName(), "VALUES 1, 1, 2");
+        }
+    }
+
+    @Test
+    public void testInsertFromVersionedSameTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2, 1");
+
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", 2);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2, 1, 2, 1");
+
+            assertQuery(
+                    "SELECT version, operation, read_version, is_blind_append FROM \"" + table.getName() + "$history\"",
+                            """
+                            VALUES
+                                (0, 'CREATE TABLE AS SELECT', 0, true),
+                                (1, 'WRITE', 0, true),
+                                (2, 'WRITE', 1, true),
+                                (3, 'WRITE', 2, true)
+                            """);
+        }
+    }
+
+    @Test
+    public void testInsertFromMultipleVersionedSameTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2");
+
+            assertUpdate(
+                    "INSERT INTO " + table.getName() + " " +
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0 " +
+                            "UNION ALL " +
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1",
+                    3);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2, 1, 1, 2");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithChangeDataFeed()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_cdf", "WITH (change_data_feed_enabled=true) AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertUpdate("UPDATE " + table.getName() + " SET id = -2 WHERE id = 2", 1);
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE id = 1", 1);
+
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "VALUES 1, -2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "VALUES -2");
+        }
+    }
+
+    @Test
+    public void testSelectTableUsingVersionSchemaEvolution()
+    {
+        // Delta Lake respects the old schema unlike Iceberg connector
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_select_table_using_version", "AS SELECT 1 id")) {
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN new_col VARCHAR");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES (1, NULL)");
+        }
+    }
+
+    @Test
+    public void testSelectTableUsingVersionDeletedCheckpoints()
+    {
+        String tableName = "test_time_travel_" + randomNameSuffix();
+        String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
+        String deltaLog = "%s/%s/_delta_log".formatted(SCHEMA, tableName);
+
+        assertUpdate("CREATE TABLE " + tableName + " WITH (location = '" + tableLocation + "', checkpoint_interval = 1) AS SELECT 1 id", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES 2", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES 3", 1);
+
+        // Remove 0 and 1 versions
+        assertThat(minioClient.listObjects(bucketName, deltaLog)).hasSize(7);
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000000.json");
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000001.json");
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000001.checkpoint.parquet");
+        assertThat(minioClient.listObjects(bucketName, deltaLog)).hasSize(4);
+
+        assertThat(computeActual("SELECT version FROM \"" + tableName + "$history\"").getOnlyColumnAsSet())
+                .containsExactly(2L);
+
+        assertQuery("SELECT * FROM " + tableName, "VALUES 1, 2, 3");
+
+        assertQueryFails("SELECT * FROM " + tableName + " FOR VERSION AS OF 0", "Delta Lake snapshot ID does not exists: 0");
+        assertQueryFails("SELECT * FROM " + tableName + " FOR VERSION AS OF 1", "Delta Lake snapshot ID does not exists: 1");
+
+        assertQuery("SELECT * FROM " + tableName + " FOR VERSION AS OF 2", "VALUES 1, 2, 3");
+    }
+
+    @Test
+    public void testSelectAfterReadVersionedTable()
+    {
+        // Run normal SELECT after reading from versioned table
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_select_after_version", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithoutCheckpointFiltering()
+    {
+        String tableName = "test_without_checkpoint_filtering_" + randomNameSuffix();
+
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty("delta", "checkpoint_filtering_enabled", "false")
+                .build();
+
+        assertUpdate("CREATE TABLE " + tableName + "(col INT) WITH (checkpoint_interval = 3)");
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 1", 1);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 2, 3", 2);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 4, 5", 2);
+
+        assertQueryReturnsEmptyResult(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 0");
+        assertQuery(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 1", "VALUES 1");
+        assertQuery(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 2", "VALUES 1, 2, 3");
+        assertQuery(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 3", "VALUES 1, 2, 3, 4, 5");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testReadVersionedSystemTables()
+    {
+        // TODO https://github.com/trinodb/trino/issues/12920 System tables not accessible with AS OF syntax
+        assertQueryFails("SELECT * FROM \"region$history\" FOR VERSION AS OF 0", "This connector does not support versioned tables");
+    }
+
+    @Override
+    protected void verifyVersionedQueryFailurePermissible(Exception e)
+    {
+        assertThat(e)
+                .hasMessageMatching("This connector does not support reading tables with TIMESTAMP AS OF|" +
+                        "Delta Lake snapshot ID does not exists: .*|" +
+                        "Unsupported type for table version: .*");
     }
 }

@@ -18,12 +18,13 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 import com.google.errorprone.annotations.Immutable;
 import io.trino.cost.PlanNodeStatsAndCostSummary;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.NullLiteral;
 import io.trino.sql.planner.Symbol;
+import io.trino.sql.planner.SymbolsExtractor;
 
 import java.util.List;
 import java.util.Map;
@@ -94,9 +95,6 @@ public class JoinNode
         requireNonNull(leftOutputSymbols, "leftOutputSymbols is null");
         requireNonNull(rightOutputSymbols, "rightOutputSymbols is null");
         requireNonNull(filter, "filter is null");
-        // The condition doesn't guarantee that filter is of type boolean, but was found to be a practical way to identify
-        // places where JoinNode could be created without appropriate coercions.
-        checkArgument(filter.isEmpty() || !(filter.get() instanceof NullLiteral), "Filter must be an expression of boolean type: %s", filter);
         requireNonNull(leftHashSymbol, "leftHashSymbol is null");
         requireNonNull(rightHashSymbol, "rightHashSymbol is null");
         requireNonNull(distributionType, "distributionType is null");
@@ -122,6 +120,15 @@ public class JoinNode
 
         checkArgument(leftSymbols.containsAll(leftOutputSymbols), "Left source inputs do not contain all left output symbols");
         checkArgument(rightSymbols.containsAll(rightOutputSymbols), "Right source inputs do not contain all right output symbols");
+
+        filter.ifPresent(expression -> {
+            checkArgument(
+                    Sets.union(leftSymbols, rightSymbols).containsAll(SymbolsExtractor.extractAll(expression)),
+                    "Some filter inputs missing from left/right: %s, left = %s, right = %s",
+                    expression,
+                    leftSymbols,
+                    rightSymbols);
+        });
 
         checkArgument(!(criteria.isEmpty() && leftHashSymbol.isPresent()), "Left hash symbol is only valid in an equijoin");
         checkArgument(!(criteria.isEmpty() && rightHashSymbol.isPresent()), "Right hash symbol is only valid in an equijoin");
@@ -349,9 +356,9 @@ public class JoinNode
             return right;
         }
 
-        public ComparisonExpression toExpression()
+        public Comparison toExpression()
         {
-            return new ComparisonExpression(ComparisonExpression.Operator.EQUAL, left.toSymbolReference(), right.toSymbolReference());
+            return new Comparison(Comparison.Operator.EQUAL, left.toSymbolReference(), right.toSymbolReference());
         }
 
         public EquiJoinClause flip()

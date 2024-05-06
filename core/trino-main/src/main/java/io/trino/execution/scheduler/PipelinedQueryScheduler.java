@@ -31,6 +31,7 @@ import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.trino.Session;
 import io.trino.exchange.DirectExchangeInput;
+import io.trino.execution.BasicStageInfo;
 import io.trino.execution.BasicStageStats;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.NodeTaskMap;
@@ -311,14 +312,12 @@ public class PipelinedQueryScheduler
         if (queryStateMachine.isDone()) {
             return Optional.empty();
         }
-        DistributedStagesScheduler distributedStagesScheduler;
-        switch (retryPolicy) {
-            case QUERY:
-            case NONE:
+        DistributedStagesScheduler distributedStagesScheduler = switch (retryPolicy) {
+            case QUERY, NONE -> {
                 if (attempt > 0) {
                     dynamicFilterService.registerQueryRetry(queryStateMachine.getQueryId(), attempt);
                 }
-                distributedStagesScheduler = DistributedStagesScheduler.create(
+                yield DistributedStagesScheduler.create(
                         queryStateMachine,
                         schedulerStats,
                         nodeScheduler,
@@ -334,10 +333,9 @@ public class PipelinedQueryScheduler
                         tableExecuteContextManager,
                         retryPolicy,
                         attempt);
-                break;
-            default:
-                throw new IllegalArgumentException("Unexpected retry policy: " + retryPolicy);
-        }
+            }
+            default -> throw new IllegalArgumentException("Unexpected retry policy: " + retryPolicy);
+        };
 
         this.distributedStagesScheduler.set(distributedStagesScheduler);
         distributedStagesScheduler.addStateChangeListener(state -> {
@@ -455,6 +453,12 @@ public class PipelinedQueryScheduler
     public StageInfo getStageInfo()
     {
         return stageManager.getStageInfo();
+    }
+
+    @Override
+    public BasicStageInfo getBasicStageInfo()
+    {
+        return stageManager.getBasicStageInfo();
     }
 
     @Override

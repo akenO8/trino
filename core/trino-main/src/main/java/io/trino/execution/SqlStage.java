@@ -217,7 +217,7 @@ public final class SqlStage
     public Duration getTotalCpuTime()
     {
         long millis = tasks.values().stream()
-                .mapToLong(task -> task.getTaskInfo().getStats().getTotalCpuTime().toMillis())
+                .mapToLong(task -> task.getTaskInfo().stats().getTotalCpuTime().toMillis())
                 .sum();
         return new Duration(millis, TimeUnit.MILLISECONDS);
     }
@@ -230,6 +230,11 @@ public final class SqlStage
     public StageInfo getStageInfo()
     {
         return stateMachine.getStageInfo(this::getAllTaskInfo);
+    }
+
+    public BasicStageInfo getBasicStageInfo()
+    {
+        return stateMachine.getBasicStageInfo(this::getAllTaskInfo);
     }
 
     private Iterable<TaskInfo> getAllTaskInfo()
@@ -311,7 +316,7 @@ public final class SqlStage
 
     private synchronized void updateFinalTaskInfo(TaskInfo finalTaskInfo)
     {
-        tasksWithFinalInfo.add(finalTaskInfo.getTaskStatus().getTaskId());
+        tasksWithFinalInfo.add(finalTaskInfo.taskStatus().getTaskId());
         checkAllTaskFinal();
     }
 

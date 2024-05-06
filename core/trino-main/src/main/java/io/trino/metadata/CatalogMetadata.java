@@ -16,6 +16,7 @@ package io.trino.metadata;
 import com.google.common.collect.ImmutableList;
 import io.airlift.log.Logger;
 import io.trino.Session;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogHandle.CatalogHandleType;
 import io.trino.spi.connector.CatalogSchemaName;
@@ -31,7 +32,7 @@ import static java.util.Objects.requireNonNull;
 
 public class CatalogMetadata
 {
-    private final String catalogName;
+    private final CatalogName catalogName;
 
     public enum SecurityManagement
     {
@@ -49,7 +50,7 @@ public class CatalogMetadata
     private final Set<ConnectorCapabilities> connectorCapabilities;
 
     public CatalogMetadata(
-            String catalogName,
+            CatalogName catalogName,
             CatalogTransaction catalogTransaction,
             CatalogTransaction informationSchemaTransaction,
             CatalogTransaction systemTransaction,
@@ -64,7 +65,7 @@ public class CatalogMetadata
         this.connectorCapabilities = requireNonNull(connectorCapabilities, "connectorCapabilities is null");
     }
 
-    public String getCatalogName()
+    public CatalogName getCatalogName()
     {
         return catalogName;
     }
@@ -100,16 +101,11 @@ public class CatalogMetadata
 
     public ConnectorTransactionHandle getTransactionHandleFor(CatalogHandleType catalogHandleType)
     {
-        switch (catalogHandleType) {
-            case NORMAL:
-                return catalogTransaction.getTransactionHandle();
-            case INFORMATION_SCHEMA:
-                return informationSchemaTransaction.getTransactionHandle();
-            case SYSTEM:
-                return systemTransaction.getTransactionHandle();
-            default:
-                throw new IllegalArgumentException("Unknown catalog handle: " + catalogHandleType);
-        }
+        return switch (catalogHandleType) {
+            case NORMAL -> catalogTransaction.getTransactionHandle();
+            case INFORMATION_SCHEMA -> informationSchemaTransaction.getTransactionHandle();
+            case SYSTEM -> systemTransaction.getTransactionHandle();
+        };
     }
 
     public ConnectorTransactionHandle getTransactionHandleFor(CatalogHandle catalogHandle)
@@ -136,7 +132,7 @@ public class CatalogMetadata
 
     public CatalogHandle getCatalogHandle(Session session, QualifiedObjectName table)
     {
-        if (table.getSchemaName().equals(INFORMATION_SCHEMA_NAME)) {
+        if (table.schemaName().equals(INFORMATION_SCHEMA_NAME)) {
             return informationSchemaTransaction.getCatalogHandle();
         }
 

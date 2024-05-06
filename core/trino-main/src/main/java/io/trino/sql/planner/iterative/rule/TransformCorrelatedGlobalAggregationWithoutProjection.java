@@ -44,7 +44,7 @@ import static io.trino.matching.Pattern.empty;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.planner.iterative.rule.AggregationDecorrelation.isDistinctOperator;
 import static io.trino.sql.planner.iterative.rule.AggregationDecorrelation.restoreDistinctAggregation;
@@ -69,16 +69,16 @@ import static java.util.Objects.requireNonNull;
  * It is similar to TransformCorrelatedGlobalAggregationWithProjection rule, but does not support projection over aggregation in the subquery
  * <p>
  * In the case of single aggregation, it transforms:
- * <pre>
+ * <pre>{@code
  * - CorrelatedJoin LEFT or INNER (correlation: [c], filter: true, output: a, count, agg)
  *      - Input (a, c)
  *      - Aggregation global
  *        count <- count(*)
  *        agg <- agg(b)
  *           - Source (b) with correlated filter (b > c)
- * </pre>
+ * }</pre>
  * Into:
- * <pre>
+ * <pre>{@code
  * - Project (a <- a, count <- count, agg <- agg)
  *      - Aggregation (group by [a, c, unique])
  *        count <- count(*) mask(non_null)
@@ -88,10 +88,10 @@ import static java.util.Objects.requireNonNull;
  *                     - Input (a, c)
  *                - Project (non_null <- TRUE)
  *                     - Source (b) decorrelated
- * </pre>
+ * }</pre>
  * <p>
  * In the case of global aggregation over distinct operator, it transforms:
- * <pre>
+ * <pre>{@code
  * - CorrelatedJoin LEFT or INNER (correlation: [c], filter: true, output: a, count, agg)
  *      - Input (a, c)
  *      - Aggregation global
@@ -99,9 +99,9 @@ import static java.util.Objects.requireNonNull;
  *        agg <- agg(b)
  *           - Aggregation "distinct operator" group by [b]
  *                - Source (b) with correlated filter (b > c)
- * </pre>
+ * }</pre>
  * Into:
- * <pre>
+ * <pre>{@code
  * - Project (a <- a, count <- count, agg <- agg)
  *      - Aggregation (group by [a, c, unique])
  *        count <- count(*) mask(non_null)
@@ -112,7 +112,7 @@ import static java.util.Objects.requireNonNull;
  *                          - Input (a, c)
  *                     - Project (non_null <- TRUE)
  *                          - Source (b) decorrelated
- * </pre>
+ * }</pre>
  */
 public class TransformCorrelatedGlobalAggregationWithoutProjection
         implements Rule<CorrelatedJoinNode>
@@ -122,7 +122,7 @@ public class TransformCorrelatedGlobalAggregationWithoutProjection
 
     private static final Pattern<CorrelatedJoinNode> PATTERN = correlatedJoin()
             .with(nonEmpty(Patterns.CorrelatedJoin.correlation()))
-            .with(filter().equalTo(TRUE_LITERAL)) // todo non-trivial join filter: adding filter/project on top of aggregation
+            .with(filter().equalTo(TRUE)) // todo non-trivial join filter: adding filter/project on top of aggregation
             .with(subquery().matching(aggregation()
                     .with(empty(groupingColumns()))
                     .with(source().capturedAs(SOURCE))
@@ -175,7 +175,7 @@ public class TransformCorrelatedGlobalAggregationWithoutProjection
                 source,
                 Assignments.builder()
                         .putIdentities(source.getOutputSymbols())
-                        .put(nonNull, TRUE_LITERAL)
+                        .put(nonNull, TRUE)
                         .build());
 
         // assign unique id on correlated join's input. It will be used to distinguish between original input rows after join

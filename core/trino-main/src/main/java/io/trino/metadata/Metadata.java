@@ -74,7 +74,6 @@ import io.trino.spi.statistics.TableStatisticsMetadata;
 import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.planner.PartitioningHandle;
-import io.trino.sql.tree.QualifiedName;
 
 import java.util.Collection;
 import java.util.List;
@@ -494,6 +493,11 @@ public interface Metadata
     Optional<ViewDefinition> getView(Session session, QualifiedObjectName viewName);
 
     /**
+     * Returns the view definition for the specified view name.
+     */
+    Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName);
+
+    /**
      * Gets the schema properties for the specified schema.
      */
     Map<String, Object> getSchemaProperties(Session session, CatalogSchemaName schemaName);
@@ -506,7 +510,7 @@ public interface Metadata
     /**
      * Creates the specified view with the specified view definition.
      */
-    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace);
+    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> properties, boolean replace);
 
     /**
      * Rename the specified view.
@@ -722,8 +726,6 @@ public interface Metadata
     Collection<FunctionMetadata> listGlobalFunctions(Session session);
 
     Collection<FunctionMetadata> listFunctions(Session session, CatalogSchemaName schema);
-
-    ResolvedFunction decodeFunction(QualifiedName name);
 
     Collection<CatalogFunctionMetadata> getFunctions(Session session, CatalogSchemaFunctionName catalogSchemaFunctionName);
 

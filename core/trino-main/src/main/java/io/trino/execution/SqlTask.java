@@ -108,6 +108,7 @@ public class SqlTask
     private final AtomicReference<Span> taskSpan = new AtomicReference<>(Span.getInvalid());
     private final AtomicReference<String> traceToken = new AtomicReference<>();
     private final AtomicReference<Set<CatalogHandle>> catalogs = new AtomicReference<>();
+    private final AtomicBoolean catalogsLoaded = new AtomicBoolean(false);
 
     public static SqlTask createSqlTask(
             TaskId taskId,
@@ -218,12 +219,9 @@ public class SqlTask
                     switch (newState) {
                         // don't close buffers for a failed query
                         // closed buffers signal to upstream tasks that everything finished cleanly
-                        case FAILED, FAILING, ABORTED, ABORTING ->
-                                outputBuffer.abort();
-                        case FINISHED, CANCELED, CANCELING ->
-                                outputBuffer.destroy();
-                        default ->
-                                throw new IllegalStateException(format("Invalid state for output buffer destruction: %s", newState));
+                        case FAILED, FAILING, ABORTED, ABORTING -> outputBuffer.abort();
+                        case FINISHED, CANCELED, CANCELING -> outputBuffer.destroy();
+                        default -> throw new IllegalStateException(format("Invalid state for output buffer destruction: %s", newState));
                     }
                 }
             }
@@ -294,6 +292,16 @@ public class SqlTask
         return this.catalogs.compareAndSet(null, requireNonNull(catalogs, "catalogs is null"));
     }
 
+    public boolean catalogsLoaded()
+    {
+        return catalogsLoaded.get();
+    }
+
+    public boolean setCatalogsLoaded()
+    {
+        return catalogsLoaded.compareAndSet(false, true);
+    }
+
     public VersionedDynamicFilterDomains acknowledgeAndGetNewDynamicFilterDomains(long callersDynamicFiltersVersion)
     {
         return taskHolderReference.get().acknowledgeAndGetNewDynamicFilterDomains(callersDynamicFiltersVersion);
@@ -334,7 +342,7 @@ public class SqlTask
         long dynamicFiltersVersion = INITIAL_DYNAMIC_FILTERS_VERSION;
         if (taskHolder.getFinalTaskInfo() != null) {
             TaskInfo taskInfo = taskHolder.getFinalTaskInfo();
-            TaskStats taskStats = taskInfo.getStats();
+            TaskStats taskStats = taskInfo.stats();
             queuedPartitionedDrivers = taskStats.getQueuedPartitionedDrivers();
             queuedPartitionedSplitsWeight = taskStats.getQueuedPartitionedSplitsWeight();
             runningPartitionedDrivers = taskStats.getRunningPartitionedDrivers();
@@ -372,15 +380,13 @@ public class SqlTask
             fullGcTime = taskContext.getFullGcTime();
             dynamicFiltersVersion = taskContext.getDynamicFiltersVersion();
         }
-        else {
-            if (state == FINISHED) {
-                // if task FINISHED successfully but taskHolder is not yet updated with SqlTaskExecution or FinalTaskInfo
-                // we are masking the state and return RUNNING. This is important so coordinator would not consider incomplete
-                // task information (e.g. missing proper dynamicFiltersVersion as final).
-                // This covers only short time window between call to SqlTaskExecution.start() and updating taskHolder reference in tryCreateSqlTaskExecution,
-                // so it will not add any noticable delays.
-                state = RUNNING;
-            }
+        else if (state == FINISHED) {
+            // if task FINISHED successfully but taskHolder is not yet updated with SqlTaskExecution or FinalTaskInfo
+            // we are masking the state and return RUNNING. This is important so coordinator would not consider incomplete
+            // task information (e.g. missing proper dynamicFiltersVersion as final).
+            // This covers only short time window between call to SqlTaskExecution.start() and updating taskHolder reference in tryCreateSqlTaskExecution,
+            // so it will not add any noticable delays.
+            state = RUNNING;
         }
 
         return new TaskStatus(
@@ -413,7 +419,7 @@ public class SqlTask
     {
         TaskInfo finalTaskInfo = taskHolder.getFinalTaskInfo();
         if (finalTaskInfo != null) {
-            return finalTaskInfo.getStats();
+            return finalTaskInfo.stats();
         }
         SqlTaskExecution taskExecution = taskHolder.getTaskExecution();
         if (taskExecution != null) {
@@ -428,7 +434,7 @@ public class SqlTask
     {
         TaskInfo finalTaskInfo = taskHolder.getFinalTaskInfo();
         if (finalTaskInfo != null) {
-            return finalTaskInfo.getNoMoreSplits();
+            return finalTaskInfo.noMoreSplits();
         }
         SqlTaskExecution taskExecution = taskHolder.getTaskExecution();
         if (taskExecution != null) {

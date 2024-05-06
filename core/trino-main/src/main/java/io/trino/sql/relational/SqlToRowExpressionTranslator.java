@@ -14,89 +14,54 @@
 package io.trino.sql.relational;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import io.trino.Session;
-import io.trino.metadata.FunctionManager;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
-import io.trino.spi.type.CharType;
-import io.trino.spi.type.DecimalParseResult;
-import io.trino.spi.type.Decimals;
-import io.trino.spi.type.RowType;
-import io.trino.spi.type.TimeType;
-import io.trino.spi.type.TimeWithTimeZoneType;
-import io.trino.spi.type.TimestampType;
-import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
-import io.trino.sql.ir.ArithmeticUnaryExpression;
-import io.trino.sql.ir.BetweenPredicate;
-import io.trino.sql.ir.BinaryLiteral;
-import io.trino.sql.ir.BindExpression;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Array;
+import io.trino.sql.ir.Between;
+import io.trino.sql.ir.Bind;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Case;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.CoalesceExpression;
-import io.trino.sql.ir.ComparisonExpression;
-import io.trino.sql.ir.ComparisonExpression.Operator;
-import io.trino.sql.ir.DecimalLiteral;
-import io.trino.sql.ir.DoubleLiteral;
+import io.trino.sql.ir.Coalesce;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Comparison.Operator;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.GenericLiteral;
-import io.trino.sql.ir.IfExpression;
-import io.trino.sql.ir.InPredicate;
-import io.trino.sql.ir.IntervalLiteral;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.In;
 import io.trino.sql.ir.IrVisitor;
-import io.trino.sql.ir.IsNotNullPredicate;
-import io.trino.sql.ir.IsNullPredicate;
-import io.trino.sql.ir.LambdaExpression;
-import io.trino.sql.ir.LogicalExpression;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.NodeRef;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.ir.NullIfExpression;
-import io.trino.sql.ir.NullLiteral;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Lambda;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.Not;
+import io.trino.sql.ir.NullIf;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
-import io.trino.sql.ir.SearchedCaseExpression;
-import io.trino.sql.ir.SimpleCaseExpression;
-import io.trino.sql.ir.StringLiteral;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Switch;
 import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.relational.SpecialForm.Form;
-import io.trino.sql.relational.optimizer.ExpressionOptimizer;
-import io.trino.type.JsonType;
 import io.trino.type.TypeCoercion;
-import io.trino.type.UnknownType;
 
 import java.util.List;
 import java.util.Map;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.airlift.slice.Slices.utf8Slice;
-import static io.airlift.slice.Slices.wrappedBuffer;
 import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
-import static io.trino.spi.function.OperatorType.NEGATION;
-import static io.trino.spi.function.OperatorType.SUBSCRIPT;
-import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
-import static io.trino.spi.type.VarbinaryType.VARBINARY;
-import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.sql.relational.Expressions.call;
 import static io.trino.sql.relational.Expressions.constant;
-import static io.trino.sql.relational.Expressions.constantNull;
 import static io.trino.sql.relational.Expressions.field;
 import static io.trino.sql.relational.SpecialForm.Form.AND;
+import static io.trino.sql.relational.SpecialForm.Form.ARRAY_CONSTRUCTOR;
 import static io.trino.sql.relational.SpecialForm.Form.BETWEEN;
 import static io.trino.sql.relational.SpecialForm.Form.BIND;
 import static io.trino.sql.relational.SpecialForm.Form.COALESCE;
@@ -109,12 +74,6 @@ import static io.trino.sql.relational.SpecialForm.Form.OR;
 import static io.trino.sql.relational.SpecialForm.Form.ROW_CONSTRUCTOR;
 import static io.trino.sql.relational.SpecialForm.Form.SWITCH;
 import static io.trino.sql.relational.SpecialForm.Form.WHEN;
-import static io.trino.type.DateTimes.parseTime;
-import static io.trino.type.DateTimes.parseTimeWithTimeZone;
-import static io.trino.type.DateTimes.parseTimestamp;
-import static io.trino.type.DateTimes.parseTimestampWithTimeZone;
-import static io.trino.util.DateTimeUtils.parseDayTimeInterval;
-import static io.trino.util.DateTimeUtils.parseYearMonthInterval;
 import static java.util.Objects.requireNonNull;
 
 public final class SqlToRowExpressionTranslator
@@ -123,23 +82,14 @@ public final class SqlToRowExpressionTranslator
 
     public static RowExpression translate(
             Expression expression,
-            Map<NodeRef<Expression>, Type> types,
             Map<Symbol, Integer> layout,
             Metadata metadata,
-            FunctionManager functionManager,
-            TypeManager typeManager,
-            Session session,
-            boolean optimize)
+            TypeManager typeManager)
     {
-        Visitor visitor = new Visitor(metadata, typeManager, types, layout);
+        Visitor visitor = new Visitor(metadata, typeManager, layout);
         RowExpression result = visitor.process(expression, null);
 
         requireNonNull(result, "result is null");
-
-        if (optimize) {
-            ExpressionOptimizer optimizer = new ExpressionOptimizer(metadata, functionManager, session);
-            return optimizer.optimize(result);
-        }
 
         return result;
     }
@@ -149,26 +99,18 @@ public final class SqlToRowExpressionTranslator
     {
         private final Metadata metadata;
         private final TypeCoercion typeCoercion;
-        private final Map<NodeRef<Expression>, Type> types;
         private final Map<Symbol, Integer> layout;
         private final StandardFunctionResolution standardFunctionResolution;
 
         protected Visitor(
                 Metadata metadata,
                 TypeManager typeManager,
-                Map<NodeRef<Expression>, Type> types,
                 Map<Symbol, Integer> layout)
         {
             this.metadata = metadata;
             this.typeCoercion = new TypeCoercion(typeManager::getType);
-            this.types = ImmutableMap.copyOf(requireNonNull(types, "types is null"));
             this.layout = layout;
             standardFunctionResolution = new StandardFunctionResolution(metadata);
-        }
-
-        private Type getType(Expression node)
-        {
-            return types.get(NodeRef.of(node));
         }
 
         @Override
@@ -178,230 +120,116 @@ public final class SqlToRowExpressionTranslator
         }
 
         @Override
-        protected RowExpression visitNullLiteral(NullLiteral node, Void context)
+        protected RowExpression visitConstant(Constant node, Void context)
         {
-            return constantNull(UnknownType.UNKNOWN);
+            return constant(node.value(), node.type());
         }
 
         @Override
-        protected RowExpression visitBooleanLiteral(BooleanLiteral node, Void context)
+        protected RowExpression visitComparison(Comparison node, Void context)
         {
-            return constant(node.getValue(), BOOLEAN);
-        }
+            RowExpression left = process(node.left(), context);
+            RowExpression right = process(node.right(), context);
+            Operator operator = node.operator();
 
-        @Override
-        protected RowExpression visitLongLiteral(LongLiteral node, Void context)
-        {
-            if (node.getValue() >= Integer.MIN_VALUE && node.getValue() <= Integer.MAX_VALUE) {
-                return constant(node.getValue(), INTEGER);
-            }
-            return constant(node.getValue(), BIGINT);
-        }
-
-        @Override
-        protected RowExpression visitDoubleLiteral(DoubleLiteral node, Void context)
-        {
-            return constant(node.getValue(), DOUBLE);
-        }
-
-        @Override
-        protected RowExpression visitDecimalLiteral(DecimalLiteral node, Void context)
-        {
-            DecimalParseResult parseResult = Decimals.parse(node.getValue());
-            return constant(parseResult.getObject(), parseResult.getType());
-        }
-
-        @Override
-        protected RowExpression visitStringLiteral(StringLiteral node, Void context)
-        {
-            return constant(utf8Slice(node.getValue()), createVarcharType(node.length()));
-        }
-
-        @Override
-        protected RowExpression visitBinaryLiteral(BinaryLiteral node, Void context)
-        {
-            return constant(wrappedBuffer(node.getValue()), VARBINARY);
-        }
-
-        @Override
-        protected RowExpression visitGenericLiteral(GenericLiteral node, Void context)
-        {
-            return switch (getType(node)) {
-                case CharType type -> constant(utf8Slice(node.getValue()), type);
-                case TimeType type -> constant(parseTime(node.getValue()), type);
-                case TimeWithTimeZoneType type -> constant(parseTimeWithTimeZone(type.getPrecision(), node.getValue()), type);
-                case TimestampType type -> constant(parseTimestamp(type.getPrecision(), node.getValue()), type);
-                case TimestampWithTimeZoneType type -> constant(parseTimestampWithTimeZone(type.getPrecision(), node.getValue()), type);
-                case JsonType unused -> call(
-                        metadata.resolveBuiltinFunction("json_parse", fromTypes(VARCHAR)),
-                        constant(utf8Slice(node.getValue()), VARCHAR));
-                case Type type -> call(
-                        metadata.getCoercion(VARCHAR, type),
-                        constant(utf8Slice(node.getValue()), VARCHAR));
+            return switch (node.operator()) {
+                case NOT_EQUAL -> new CallExpression(
+                        metadata.resolveBuiltinFunction("not", fromTypes(BOOLEAN)),
+                        ImmutableList.of(visitComparisonExpression(Operator.EQUAL, left, right)));
+                case GREATER_THAN -> visitComparisonExpression(Operator.LESS_THAN, right, left);
+                case GREATER_THAN_OR_EQUAL -> visitComparisonExpression(Operator.LESS_THAN_OR_EQUAL, right, left);
+                default -> visitComparisonExpression(operator, left, right);
             };
-        }
-
-        @Override
-        protected RowExpression visitIntervalLiteral(IntervalLiteral node, Void context)
-        {
-            long value;
-            if (node.isYearToMonth()) {
-                value = node.getSign().multiplier() * parseYearMonthInterval(node.getValue(), node.getStartField(), node.getEndField());
-            }
-            else {
-                value = node.getSign().multiplier() * parseDayTimeInterval(node.getValue(), node.getStartField(), node.getEndField());
-            }
-            return constant(value, getType(node));
-        }
-
-        @Override
-        protected RowExpression visitComparisonExpression(ComparisonExpression node, Void context)
-        {
-            RowExpression left = process(node.getLeft(), context);
-            RowExpression right = process(node.getRight(), context);
-            Operator operator = node.getOperator();
-
-            switch (node.getOperator()) {
-                case NOT_EQUAL:
-                    return new CallExpression(
-                            metadata.resolveBuiltinFunction("not", fromTypes(BOOLEAN)),
-                            ImmutableList.of(visitComparisonExpression(Operator.EQUAL, left, right)));
-                case GREATER_THAN:
-                    return visitComparisonExpression(Operator.LESS_THAN, right, left);
-                case GREATER_THAN_OR_EQUAL:
-                    return visitComparisonExpression(Operator.LESS_THAN_OR_EQUAL, right, left);
-                default:
-                    return visitComparisonExpression(operator, left, right);
-            }
         }
 
         private RowExpression visitComparisonExpression(Operator operator, RowExpression left, RowExpression right)
         {
             return call(
-                    standardFunctionResolution.comparisonFunction(operator, left.getType(), right.getType()),
+                    standardFunctionResolution.comparisonFunction(operator, left.type(), right.type()),
                     left,
                     right);
         }
 
         @Override
-        protected RowExpression visitFunctionCall(FunctionCall node, Void context)
+        protected RowExpression visitCall(Call node, Void context)
         {
-            List<RowExpression> arguments = node.getArguments().stream()
+            List<RowExpression> arguments = node.arguments().stream()
                     .map(value -> process(value, context))
                     .collect(toImmutableList());
 
-            return new CallExpression(metadata.decodeFunction(node.getName()), arguments);
+            return new CallExpression(node.function(), arguments);
         }
 
         @Override
-        protected RowExpression visitSymbolReference(SymbolReference node, Void context)
+        protected RowExpression visitReference(Reference node, Void context)
         {
             Integer field = layout.get(Symbol.from(node));
             if (field != null) {
-                return field(field, getType(node));
+                return field(field, ((Expression) node).type());
             }
 
-            return new VariableReferenceExpression(node.getName(), getType(node));
+            return new VariableReferenceExpression(node.name(), ((Expression) node).type());
         }
 
         @Override
-        protected RowExpression visitLambdaExpression(LambdaExpression node, Void context)
+        protected RowExpression visitLambda(Lambda node, Void context)
         {
-            RowExpression body = process(node.getBody(), context);
-
-            Type type = getType(node);
-            List<Type> typeParameters = type.getTypeParameters();
-            List<Type> argumentTypes = typeParameters.subList(0, typeParameters.size() - 1);
-            List<String> argumentNames = node.getArguments();
-
-            return new LambdaDefinitionExpression(argumentTypes, argumentNames, body);
+            return new LambdaDefinitionExpression(
+                    node.arguments(),
+                    process(node.body(), context));
         }
 
         @Override
-        protected RowExpression visitBindExpression(BindExpression node, Void context)
+        protected RowExpression visitBind(Bind node, Void context)
         {
             ImmutableList.Builder<Type> valueTypesBuilder = ImmutableList.builder();
             ImmutableList.Builder<RowExpression> argumentsBuilder = ImmutableList.builder();
-            for (Expression value : node.getValues()) {
+            for (Expression value : node.values()) {
                 RowExpression valueRowExpression = process(value, context);
-                valueTypesBuilder.add(valueRowExpression.getType());
+                valueTypesBuilder.add(valueRowExpression.type());
                 argumentsBuilder.add(valueRowExpression);
             }
-            RowExpression function = process(node.getFunction(), context);
+            RowExpression function = process(node.function(), context);
             argumentsBuilder.add(function);
 
-            return new SpecialForm(BIND, getType(node), argumentsBuilder.build());
+            return new SpecialForm(BIND, ((Expression) node).type(), argumentsBuilder.build(), ImmutableList.of());
         }
 
         @Override
-        protected RowExpression visitArithmeticBinary(ArithmeticBinaryExpression node, Void context)
+        protected RowExpression visitLogical(Logical node, Void context)
         {
-            RowExpression left = process(node.getLeft(), context);
-            RowExpression right = process(node.getRight(), context);
+            Form form = switch (node.operator()) {
+                case AND -> AND;
+                case OR -> OR;
+            };
 
-            return call(
-                    standardFunctionResolution.arithmeticFunction(node.getOperator(), left.getType(), right.getType()),
-                    left,
-                    right);
-        }
-
-        @Override
-        protected RowExpression visitArithmeticUnary(ArithmeticUnaryExpression node, Void context)
-        {
-            RowExpression expression = process(node.getValue(), context);
-
-            switch (node.getSign()) {
-                case PLUS:
-                    return expression;
-                case MINUS:
-                    return call(
-                            metadata.resolveOperator(NEGATION, ImmutableList.of(expression.getType())),
-                            expression);
-            }
-
-            throw new UnsupportedOperationException("Unsupported unary operator: " + node.getSign());
-        }
-
-        @Override
-        protected RowExpression visitLogicalExpression(LogicalExpression node, Void context)
-        {
-            Form form;
-            switch (node.getOperator()) {
-                case AND:
-                    form = AND;
-                    break;
-                case OR:
-                    form = OR;
-                    break;
-                default:
-                    throw new IllegalStateException("Unknown logical operator: " + node.getOperator());
-            }
             return new SpecialForm(
                     form,
                     BOOLEAN,
-                    node.getTerms().stream()
+                    node.terms().stream()
                             .map(term -> process(term, context))
-                            .collect(toImmutableList()));
+                            .collect(toImmutableList()),
+                    ImmutableList.of());
         }
 
         @Override
         protected RowExpression visitCast(Cast node, Void context)
         {
-            RowExpression value = process(node.getExpression(), context);
+            RowExpression value = process(node.expression(), context);
 
-            Type returnType = getType(node);
-            if (typeCoercion.isTypeOnlyCoercion(value.getType(), returnType)) {
+            Type returnType = ((Expression) node).type();
+            if (typeCoercion.isTypeOnlyCoercion(value.type(), returnType)) {
                 return changeType(value, returnType);
             }
 
-            if (node.isSafe()) {
+            if (node.safe()) {
                 return call(
-                        metadata.getCoercion(builtinFunctionName("TRY_CAST"), value.getType(), returnType),
+                        metadata.getCoercion(builtinFunctionName("TRY_CAST"), value.type(), returnType),
                         value);
             }
 
             return call(
-                    metadata.getCoercion(value.getType(), returnType),
+                    metadata.getCoercion(value.type(), returnType),
                     value);
         }
 
@@ -424,25 +252,25 @@ public final class SqlToRowExpressionTranslator
             @Override
             public RowExpression visitCall(CallExpression call, Void context)
             {
-                return new CallExpression(call.getResolvedFunction(), call.getArguments());
+                return new CallExpression(call.resolvedFunction(), call.arguments());
             }
 
             @Override
             public RowExpression visitSpecialForm(SpecialForm specialForm, Void context)
             {
-                return new SpecialForm(specialForm.getForm(), targetType, specialForm.getArguments(), specialForm.getFunctionDependencies());
+                return new SpecialForm(specialForm.form(), targetType, specialForm.arguments(), specialForm.functionDependencies());
             }
 
             @Override
             public RowExpression visitInputReference(InputReferenceExpression reference, Void context)
             {
-                return field(reference.getField(), targetType);
+                return field(reference.field(), targetType);
             }
 
             @Override
             public RowExpression visitConstant(ConstantExpression literal, Void context)
             {
-                return constant(literal.getValue(), targetType);
+                return constant(literal.value(), targetType);
             }
 
             @Override
@@ -454,53 +282,51 @@ public final class SqlToRowExpressionTranslator
             @Override
             public RowExpression visitVariableReference(VariableReferenceExpression reference, Void context)
             {
-                return new VariableReferenceExpression(reference.getName(), targetType);
+                return new VariableReferenceExpression(reference.name(), targetType);
             }
         }
 
         @Override
-        protected RowExpression visitCoalesceExpression(CoalesceExpression node, Void context)
+        protected RowExpression visitCoalesce(Coalesce node, Void context)
         {
-            List<RowExpression> arguments = node.getOperands().stream()
+            List<RowExpression> arguments = node.operands().stream()
                     .map(value -> process(value, context))
                     .collect(toImmutableList());
 
-            return new SpecialForm(COALESCE, getType(node), arguments);
+            return new SpecialForm(COALESCE, ((Expression) node).type(), arguments, ImmutableList.of());
         }
 
         @Override
-        protected RowExpression visitSimpleCaseExpression(SimpleCaseExpression node, Void context)
+        protected RowExpression visitSwitch(Switch node, Void context)
         {
             ImmutableList.Builder<RowExpression> arguments = ImmutableList.builder();
 
-            RowExpression value = process(node.getOperand(), context);
+            RowExpression value = process(node.operand(), context);
             arguments.add(value);
 
             ImmutableList.Builder<ResolvedFunction> functionDependencies = ImmutableList.builder();
-            for (WhenClause clause : node.getWhenClauses()) {
+            for (WhenClause clause : node.whenClauses()) {
                 RowExpression operand = process(clause.getOperand(), context);
                 RowExpression result = process(clause.getResult(), context);
 
-                functionDependencies.add(metadata.resolveOperator(EQUAL, ImmutableList.of(value.getType(), operand.getType())));
+                functionDependencies.add(metadata.resolveOperator(EQUAL, ImmutableList.of(value.type(), operand.type())));
 
                 arguments.add(new SpecialForm(
                         WHEN,
-                        getType(clause),
-                        operand,
-                        result));
+                        clause.getResult().type(),
+                        ImmutableList.of(operand, result),
+                        ImmutableList.of()));
             }
 
-            Type returnType = getType(node);
+            Type returnType = ((Expression) node).type();
 
-            arguments.add(node.getDefaultValue()
-                    .map(defaultValue -> process(defaultValue, context))
-                    .orElse(constantNull(returnType)));
+            arguments.add(process(node.defaultValue(), context));
 
             return new SpecialForm(SWITCH, returnType, arguments.build(), functionDependencies.build());
         }
 
         @Override
-        protected RowExpression visitSearchedCaseExpression(SearchedCaseExpression node, Void context)
+        protected RowExpression visitCase(Case node, Void context)
         {
             /*
                 Translates an expression like:
@@ -522,79 +348,53 @@ public final class SqlToRowExpressionTranslator
                                     value4)))
 
              */
-            RowExpression expression = node.getDefaultValue()
-                    .map(value -> process(value, context))
-                    .orElse(constantNull(getType(node)));
+            RowExpression expression = process(node.defaultValue(), context);
 
-            for (WhenClause clause : node.getWhenClauses().reversed()) {
+            for (WhenClause clause : node.whenClauses().reversed()) {
                 expression = new SpecialForm(
                         IF,
-                        getType(node),
-                        process(clause.getOperand(), context),
-                        process(clause.getResult(), context),
-                        expression);
+                        ((Expression) node).type(),
+                        ImmutableList.of(
+                                process(clause.getOperand(), context),
+                                process(clause.getResult(), context),
+                                expression),
+                        ImmutableList.of());
             }
 
             return expression;
         }
 
         @Override
-        protected RowExpression visitIfExpression(IfExpression node, Void context)
+        protected RowExpression visitIn(In node, Void context)
         {
             ImmutableList.Builder<RowExpression> arguments = ImmutableList.builder();
-
-            arguments.add(process(node.getCondition(), context))
-                    .add(process(node.getTrueValue(), context));
-
-            if (node.getFalseValue().isPresent()) {
-                arguments.add(process(node.getFalseValue().get(), context));
-            }
-            else {
-                arguments.add(constantNull(getType(node)));
-            }
-
-            return new SpecialForm(IF, getType(node), arguments.build());
-        }
-
-        @Override
-        protected RowExpression visitInPredicate(InPredicate node, Void context)
-        {
-            ImmutableList.Builder<RowExpression> arguments = ImmutableList.builder();
-            RowExpression value = process(node.getValue(), context);
+            RowExpression value = process(node.value(), context);
             arguments.add(value);
-            for (Expression testValue : node.getValueList()) {
+            for (Expression testValue : node.valueList()) {
                 arguments.add(process(testValue, context));
             }
 
             List<ResolvedFunction> functionDependencies = ImmutableList.<ResolvedFunction>builder()
-                    .add(metadata.resolveOperator(EQUAL, ImmutableList.of(value.getType(), value.getType())))
-                    .add(metadata.resolveOperator(HASH_CODE, ImmutableList.of(value.getType())))
-                    .add(metadata.resolveOperator(INDETERMINATE, ImmutableList.of(value.getType())))
+                    .add(metadata.resolveOperator(EQUAL, ImmutableList.of(value.type(), value.type())))
+                    .add(metadata.resolveOperator(HASH_CODE, ImmutableList.of(value.type())))
+                    .add(metadata.resolveOperator(INDETERMINATE, ImmutableList.of(value.type())))
                     .build();
 
             return new SpecialForm(IN, BOOLEAN, arguments.build(), functionDependencies);
         }
 
         @Override
-        protected RowExpression visitIsNotNullPredicate(IsNotNullPredicate node, Void context)
+        protected RowExpression visitIsNull(IsNull node, Void context)
         {
-            RowExpression expression = process(node.getValue(), context);
+            RowExpression expression = process(node.value(), context);
 
-            return notExpression(new SpecialForm(IS_NULL, BOOLEAN, ImmutableList.of(expression)));
+            return new SpecialForm(IS_NULL, BOOLEAN, ImmutableList.of(expression), ImmutableList.of());
         }
 
         @Override
-        protected RowExpression visitIsNullPredicate(IsNullPredicate node, Void context)
+        protected RowExpression visitNot(Not node, Void context)
         {
-            RowExpression expression = process(node.getValue(), context);
-
-            return new SpecialForm(IS_NULL, BOOLEAN, expression);
-        }
-
-        @Override
-        protected RowExpression visitNotExpression(NotExpression node, Void context)
-        {
-            return notExpression(process(node.getValue(), context));
+            return notExpression(process(node.value(), context));
         }
 
         private RowExpression notExpression(RowExpression value)
@@ -605,34 +405,34 @@ public final class SqlToRowExpressionTranslator
         }
 
         @Override
-        protected RowExpression visitNullIfExpression(NullIfExpression node, Void context)
+        protected RowExpression visitNullIf(NullIf node, Void context)
         {
-            RowExpression first = process(node.getFirst(), context);
-            RowExpression second = process(node.getSecond(), context);
+            RowExpression first = process(node.first(), context);
+            RowExpression second = process(node.second(), context);
 
-            ResolvedFunction resolvedFunction = metadata.resolveOperator(EQUAL, ImmutableList.of(first.getType(), second.getType()));
+            ResolvedFunction resolvedFunction = metadata.resolveOperator(EQUAL, ImmutableList.of(first.type(), second.type()));
             List<ResolvedFunction> functionDependencies = ImmutableList.<ResolvedFunction>builder()
                     .add(resolvedFunction)
-                    .add(metadata.getCoercion(first.getType(), resolvedFunction.getSignature().getArgumentTypes().get(0)))
-                    .add(metadata.getCoercion(second.getType(), resolvedFunction.getSignature().getArgumentTypes().get(0)))
+                    .add(metadata.getCoercion(first.type(), resolvedFunction.signature().getArgumentTypes().get(0)))
+                    .add(metadata.getCoercion(second.type(), resolvedFunction.signature().getArgumentTypes().get(0)))
                     .build();
 
             return new SpecialForm(
                     NULL_IF,
-                    getType(node),
+                    ((Expression) node).type(),
                     ImmutableList.of(first, second),
                     functionDependencies);
         }
 
         @Override
-        protected RowExpression visitBetweenPredicate(BetweenPredicate node, Void context)
+        protected RowExpression visitBetween(Between node, Void context)
         {
-            RowExpression value = process(node.getValue(), context);
-            RowExpression min = process(node.getMin(), context);
-            RowExpression max = process(node.getMax(), context);
+            RowExpression value = process(node.value(), context);
+            RowExpression min = process(node.min(), context);
+            RowExpression max = process(node.max(), context);
 
             List<ResolvedFunction> functionDependencies = ImmutableList.of(
-                    metadata.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(value.getType(), max.getType())));
+                    metadata.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(value.type(), max.type())));
 
             return new SpecialForm(
                     BETWEEN,
@@ -642,30 +442,32 @@ public final class SqlToRowExpressionTranslator
         }
 
         @Override
-        protected RowExpression visitSubscriptExpression(SubscriptExpression node, Void context)
+        protected RowExpression visitFieldReference(FieldReference node, Void context)
         {
-            RowExpression base = process(node.getBase(), context);
-            RowExpression index = process(node.getIndex(), context);
-
-            if (getType(node.getBase()) instanceof RowType) {
-                long value = (Long) ((ConstantExpression) index).getValue();
-                return new SpecialForm(DEREFERENCE, getType(node), base, constant(value - 1, INTEGER));
-            }
-
-            return call(
-                    metadata.resolveOperator(SUBSCRIPT, ImmutableList.of(base.getType(), index.getType())),
-                    base,
-                    index);
+            RowExpression base = process(node.base(), context);
+            return new SpecialForm(DEREFERENCE, node.type(), ImmutableList.of(base, constant((long) node.field(), INTEGER)), ImmutableList.of());
         }
 
         @Override
         protected RowExpression visitRow(Row node, Void context)
         {
-            List<RowExpression> arguments = node.getItems().stream()
+            List<RowExpression> arguments = node.items().stream()
                     .map(value -> process(value, context))
                     .collect(toImmutableList());
-            Type returnType = getType(node);
-            return new SpecialForm(ROW_CONSTRUCTOR, returnType, arguments);
+            Type returnType = ((Expression) node).type();
+            return new SpecialForm(ROW_CONSTRUCTOR, returnType, arguments, ImmutableList.of());
+        }
+
+        @Override
+        protected RowExpression visitArray(Array node, Void context)
+        {
+            return new SpecialForm(
+                    ARRAY_CONSTRUCTOR,
+                    node.type(),
+                    node.elements().stream()
+                            .map(value -> process(value, context))
+                            .collect(toImmutableList()),
+                    ImmutableList.of());
         }
     }
 }

@@ -17,8 +17,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.sql.ir.DefaultTraversalVisitor;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.LambdaExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Lambda;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.PlanNode;
@@ -99,7 +99,7 @@ public final class SymbolsExtractor
             builder.addAll(extractAll(argument));
         }
         aggregation.getFilter().ifPresent(builder::add);
-        aggregation.getOrderingScheme().ifPresent(orderBy -> builder.addAll(orderBy.getOrderBy()));
+        aggregation.getOrderingScheme().ifPresent(orderBy -> builder.addAll(orderBy.orderBy()));
         aggregation.getMask().ifPresent(builder::add);
         return builder.build();
     }
@@ -135,14 +135,14 @@ public final class SymbolsExtractor
             extends DefaultTraversalVisitor<ImmutableList.Builder<Symbol>>
     {
         @Override
-        protected Void visitSymbolReference(SymbolReference node, ImmutableList.Builder<Symbol> builder)
+        protected Void visitReference(Reference node, ImmutableList.Builder<Symbol> builder)
         {
             builder.add(Symbol.from(node));
             return null;
         }
 
         @Override
-        protected Void visitLambdaExpression(LambdaExpression node, ImmutableList.Builder<Symbol> context)
+        protected Void visitLambda(Lambda node, ImmutableList.Builder<Symbol> context)
         {
             // Symbols in lambda expression are bound to lambda arguments, so no need to extract them
             return null;

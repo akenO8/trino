@@ -18,11 +18,11 @@ import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.spi.function.OperatorType;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.GenericLiteral;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.ExceptNode;
@@ -32,8 +32,7 @@ import io.trino.sql.planner.plan.ProjectNode;
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.SUBTRACT;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
 import static io.trino.sql.planner.plan.Patterns.Except.distinct;
 import static io.trino.sql.planner.plan.Patterns.except;
 import static java.util.Objects.requireNonNull;
@@ -42,15 +41,15 @@ import static java.util.Objects.requireNonNull;
  * Implement EXCEPT ALL using union, window and filter.
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - Except all
  *   output: a, b
  *     - Source1 (a1, b1)
  *     - Source2 (a2, b2)
  *     - Source3 (a3, b3)
- * </pre>
+ * }</pre>
  * Into:
- * <pre>
+ * <pre>{@code
  * - Project (prune helper symbols)
  *   output: a, b
  *     - Filter (row_number <= greatest(greatest(count1 - count2, 0) - count3, 0))
@@ -67,7 +66,7 @@ import static java.util.Objects.requireNonNull;
  *                       - Source2 (a2, b2)
  *                   - Project (marker1 <- null, marker2 <- null, marker3 <- true)
  *                       - Source3 (a3, b3)
- * </pre>
+ * }</pre>
  */
 public class ImplementExceptAll
         implements Rule<ExceptNode>
@@ -100,15 +99,17 @@ public class ImplementExceptAll
 
         Expression count = result.getCountSymbols().get(0).toSymbolReference();
         for (int i = 1; i < result.getCountSymbols().size(); i++) {
-            count = new FunctionCall(
-                    greatest.toQualifiedName(),
+            count = new Call(
+                    greatest,
                     ImmutableList.of(
-                            new ArithmeticBinaryExpression(SUBTRACT, count, result.getCountSymbols().get(i).toSymbolReference()),
-                            new GenericLiteral(BIGINT, "0")));
+                            new Call(
+                                    metadata.resolveOperator(OperatorType.SUBTRACT, ImmutableList.of(BIGINT, BIGINT)),
+                                    ImmutableList.of(count, result.getCountSymbols().get(i).toSymbolReference())),
+                            new Constant(BIGINT, 0L)));
         }
 
         // filter rows so that expected number of rows remains
-        Expression removeExtraRows = new ComparisonExpression(LESS_THAN_OR_EQUAL, result.getRowNumberSymbol().toSymbolReference(), count);
+        Expression removeExtraRows = new Comparison(LESS_THAN_OR_EQUAL, result.getRowNumberSymbol().toSymbolReference(), count);
         FilterNode filter = new FilterNode(
                 context.getIdAllocator().getNextId(),
                 result.getPlanNode(),

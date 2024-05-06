@@ -19,7 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.tpch.TpchColumnHandle;
 import io.trino.spi.connector.ColumnHandle;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -31,6 +31,7 @@ import java.util.function.Predicate;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.constrainedIndexSource;
@@ -44,10 +45,10 @@ public class TestPruneIndexSourceColumns
     public void testNotAllOutputsReferenced()
     {
         tester().assertThat(new PruneIndexSourceColumns())
-                .on(p -> buildProjectedIndexSource(p, symbol -> symbol.getName().equals("orderkey")))
+                .on(p -> buildProjectedIndexSource(p, symbol -> symbol.name().equals("orderkey")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("x", expression(new SymbolReference("orderkey"))),
+                                ImmutableMap.of("x", expression(new Reference(BIGINT, "orderkey"))),
                                 constrainedIndexSource(
                                         "orders",
                                         ImmutableMap.of("orderkey", "orderkey"))));
@@ -66,9 +67,9 @@ public class TestPruneIndexSourceColumns
         Symbol orderkey = p.symbol("orderkey", INTEGER);
         Symbol custkey = p.symbol("custkey", INTEGER);
         Symbol totalprice = p.symbol("totalprice", DOUBLE);
-        ColumnHandle orderkeyHandle = new TpchColumnHandle(orderkey.getName(), INTEGER);
-        ColumnHandle custkeyHandle = new TpchColumnHandle(custkey.getName(), INTEGER);
-        ColumnHandle totalpriceHandle = new TpchColumnHandle(totalprice.getName(), DOUBLE);
+        ColumnHandle orderkeyHandle = new TpchColumnHandle(orderkey.name(), INTEGER);
+        ColumnHandle custkeyHandle = new TpchColumnHandle(custkey.name(), INTEGER);
+        ColumnHandle totalpriceHandle = new TpchColumnHandle(totalprice.name(), DOUBLE);
 
         return p.project(
                 Assignments.identity(

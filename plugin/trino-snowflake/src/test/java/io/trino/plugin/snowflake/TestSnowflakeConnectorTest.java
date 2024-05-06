@@ -20,6 +20,7 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -66,16 +67,13 @@ public class TestSnowflakeConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN,
                     SUPPORTS_ARRAY,
                     SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_COMMENT_ON_TABLE,
                     SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
-                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
-                    SUPPORTS_LIMIT_PUSHDOWN,
+                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
                     SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN -> false;
+                    SUPPORTS_SET_COLUMN_TYPE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -113,9 +111,7 @@ public class TestSnowflakeConnectorTest
             return Optional.empty();
         }
         // Error: Failed to insert data: SQL compilation error: error line 1 at position 130
-        if (typeName.equals("time")
-                || typeName.equals("time(6)")
-                || typeName.equals("timestamp(6)")) {
+        if (typeName.equals("timestamp(6)")) {
             return Optional.empty();
         }
         // Error: not equal
@@ -183,13 +179,10 @@ public class TestSnowflakeConnectorTest
                         ")");
     }
 
-    @Test
     @Override
-    public void testAddNotNullColumn()
+    protected void verifyAddNotNullColumnToNonEmptyTableFailurePermissible(Throwable e)
     {
-        assertThatThrownBy(super::testAddNotNullColumn)
-                .isInstanceOf(AssertionError.class)
-                .hasMessage("Unexpected failure when adding not null column");
+        assertThat(e).hasMessageMatching("SQL compilation error: Non-nullable column .* cannot be added to non-empty table .* unless it has a non-null default value.");
     }
 
     @Test
@@ -202,47 +195,10 @@ public class TestSnowflakeConnectorTest
                 .hasMessageContaining("Expected rows");
     }
 
-    @Test
     @Override
-    public void testCountDistinctWithStringTypes()
+    protected String errorMessageForInsertIntoNotNullColumn(String columnName)
     {
-        abort("TODO");
-    }
-
-    @Test
-    @Override
-    public void testAggregationPushdown()
-    {
-        abort("TODO");
-    }
-
-    @Test
-    @Override
-    public void testDistinctAggregationPushdown()
-    {
-        abort("TODO");
-    }
-
-    @Test
-    @Override
-    public void testNumericAggregationPushdown()
-    {
-        abort("TODO");
-    }
-
-    @Test
-    @Override
-    public void testLimitPushdown()
-    {
-        abort("TODO");
-    }
-
-    @Test
-    @Override
-    public void testInsertIntoNotNullColumn()
-    {
-        // TODO: java.lang.UnsupportedOperationException: This method should be overridden
-        assertThatThrownBy(super::testInsertIntoNotNullColumn);
+        return "NULL result in a non-nullable column";
     }
 
     @Test
@@ -358,17 +314,17 @@ public class TestSnowflakeConnectorTest
 
     @Test
     @Override
-    public void testInsertArray()
-    {
-        // Snowflake does not support this feature.
-        abort("Not supported");
-    }
-
-    @Test
-    @Override
     public void testInsertRowConcurrently()
     {
         abort("TODO: Connection is already closed");
+    }
+
+    @Test
+    @Disabled
+    @Override
+    public void testAddColumnConcurrently()
+    {
+        // TODO: Enable this test after finding the failure cause
     }
 
     @Test
@@ -396,9 +352,29 @@ public class TestSnowflakeConnectorTest
     @Override
     public void testCharTrailingSpace()
     {
-        assertThatThrownBy(super::testCharVarcharComparison)
+        assertThatThrownBy(super::testCharTrailingSpace)
                 .hasMessageContaining("For query")
                 .hasMessageContaining("Actual rows")
                 .hasMessageContaining("Expected rows");
+    }
+
+    @Test
+    @Override // Override to specify the schema name in WHERE condition because listing tables in all schemas is too slow
+    public void testInformationSchemaFiltering()
+    {
+        assertQuery(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'tpch' AND table_name = 'orders' LIMIT 1",
+                "SELECT 'orders' table_name");
+        assertQuery(
+                "SELECT table_name FROM information_schema.columns WHERE data_type = 'bigint' AND table_schema = 'tpch' AND table_name = 'nation' and column_name = 'nationkey' LIMIT 1",
+                "SELECT 'nation' table_name");
+    }
+
+    @Test
+    @Disabled
+    @Override
+    public void testSelectInformationSchemaColumns()
+    {
+        // TODO https://github.com/trinodb/trino/issues/21157 Enable this test after fixing the timeout issue
     }
 }

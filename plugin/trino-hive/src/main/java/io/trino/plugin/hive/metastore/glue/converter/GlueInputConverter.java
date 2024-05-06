@@ -45,9 +45,9 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.trino.plugin.hive.ViewReaderUtil.isTrinoMaterializedView;
 import static io.trino.plugin.hive.ViewReaderUtil.isTrinoView;
-import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.metastoreFunctionName;
-import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toResourceUris;
-import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
+import static io.trino.plugin.hive.metastore.MetastoreUtil.metastoreFunctionName;
+import static io.trino.plugin.hive.metastore.MetastoreUtil.toResourceUris;
+import static io.trino.plugin.hive.metastore.MetastoreUtil.updateStatisticsParameters;
 
 public final class GlueInputConverter
 {
@@ -93,7 +93,7 @@ public final class GlueInputConverter
     {
         PartitionInput input = convertPartition(partitionWithStatistics.getPartition());
         PartitionStatistics statistics = partitionWithStatistics.getStatistics();
-        input.setParameters(updateStatisticsParameters(input.getParameters(), statistics.getBasicStatistics()));
+        input.setParameters(updateStatisticsParameters(input.getParameters(), statistics.basicStatistics()));
         return input;
     }
 
@@ -125,10 +125,10 @@ public final class GlueInputConverter
 
         Optional<HiveBucketProperty> bucketProperty = storage.getBucketProperty();
         if (bucketProperty.isPresent()) {
-            sd.setNumberOfBuckets(bucketProperty.get().getBucketCount());
-            sd.setBucketColumns(bucketProperty.get().getBucketedBy());
-            if (!bucketProperty.get().getSortedBy().isEmpty()) {
-                sd.setSortColumns(bucketProperty.get().getSortedBy().stream()
+            sd.setNumberOfBuckets(bucketProperty.get().bucketCount());
+            sd.setBucketColumns(bucketProperty.get().bucketedBy());
+            if (!bucketProperty.get().sortedBy().isEmpty()) {
+                sd.setSortColumns(bucketProperty.get().sortedBy().stream()
                         .map(column -> new Order().withColumn(column.getColumnName()).withSortOrder(column.getOrder().getHiveOrder()))
                         .collect(toImmutableList()));
             }

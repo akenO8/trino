@@ -46,7 +46,7 @@ import java.util.LinkedHashSet;
 import java.util.Optional;
 
 import static io.airlift.testing.Closeables.closeAllRuntimeException;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.iterative.Lookup.noLookup;
 import static io.trino.sql.planner.iterative.rule.ReorderJoins.JoinEnumerator.generatePartitions;
 import static io.trino.testing.TestingSession.testSessionBuilder;
@@ -100,15 +100,15 @@ public class TestJoinEnumerator
         Symbol b1 = p.symbol("B1");
         MultiJoinNode multiJoinNode = new MultiJoinNode(
                 new LinkedHashSet<>(ImmutableList.of(p.values(a1), p.values(b1))),
-                TRUE_LITERAL,
+                TRUE,
                 ImmutableList.of(a1, b1),
                 false);
         JoinEnumerator joinEnumerator = new JoinEnumerator(
-                planTester.getPlannerContext().getMetadata(),
                 new CostComparator(1, 1, 1),
                 multiJoinNode.getFilter(),
-                createContext());
-        JoinEnumerationResult actual = joinEnumerator.createJoinAccordingToPartitioning(multiJoinNode.getSources(), multiJoinNode.getOutputSymbols(), ImmutableSet.of(0));
+                createContext(),
+                planTester.getPlannerContext());
+        JoinEnumerationResult actual = joinEnumerator.createJoinAccordingToPartitioning(multiJoinNode.getSources(), ImmutableSet.copyOf(multiJoinNode.getOutputSymbols()), ImmutableSet.of(0));
         assertThat(actual.getPlanNode().isPresent()).isFalse();
         assertThat(actual.getCost()).isEqualTo(PlanCostEstimate.infinite());
     }
@@ -122,15 +122,13 @@ public class TestJoinEnumerator
                 Optional.empty(),
                 noLookup(),
                 planTester.getDefaultSession(),
-                symbolAllocator.getTypes(),
                 new CachingTableStatsProvider(planTester.getPlannerContext().getMetadata(), planTester.getDefaultSession()),
                 RuntimeInfoProvider.noImplementation());
         CachingCostProvider costProvider = new CachingCostProvider(
                 planTester.getCostCalculator(),
                 statsProvider,
                 Optional.empty(),
-                planTester.getDefaultSession(),
-                symbolAllocator.getTypes());
+                planTester.getDefaultSession());
 
         return new Rule.Context()
         {

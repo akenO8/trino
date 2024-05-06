@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
-import io.trino.metadata.Metadata;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
@@ -31,7 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.ir.IrUtils.combineDisjunctsWithDefault;
 import static io.trino.sql.planner.plan.Patterns.aggregation;
@@ -65,13 +64,6 @@ public class ImplementFilteredAggregations
 {
     private static final Pattern<AggregationNode> PATTERN = aggregation()
             .matching(ImplementFilteredAggregations::hasFilters);
-
-    private final Metadata metadata;
-
-    public ImplementFilteredAggregations(Metadata metadata)
-    {
-        this.metadata = metadata;
-    }
 
     private static boolean hasFilters(AggregationNode aggregation)
     {
@@ -131,9 +123,9 @@ public class ImplementFilteredAggregations
                     mask));
         }
 
-        Expression predicate = TRUE_LITERAL;
+        Expression predicate = TRUE;
         if (!aggregationNode.hasNonEmptyGroupingSet() && !aggregateWithoutFilterOrMaskPresent) {
-            predicate = combineDisjunctsWithDefault(metadata, maskSymbols.build(), TRUE_LITERAL);
+            predicate = combineDisjunctsWithDefault(maskSymbols.build(), TRUE);
         }
 
         // identity projection for all existing inputs

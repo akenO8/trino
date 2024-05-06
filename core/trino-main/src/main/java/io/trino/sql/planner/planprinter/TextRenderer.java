@@ -75,7 +75,7 @@ public class TextRenderer
                 .append("\n");
 
         String columns = node.getOutputs().stream()
-                .map(s -> s.getSymbol() + ":" + s.getType())
+                .map(s -> s.name() + ":" + s.type())
                 .collect(joining(", "));
 
         output.append(indentMultilineString("Layout: [" + columns + "]\n", indent.detailIndent()));

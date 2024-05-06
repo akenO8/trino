@@ -36,7 +36,6 @@ import io.trino.operator.table.json.JsonTableValueColumn;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.function.table.TableArgument;
 import io.trino.spi.type.RowType;
-import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.analyzer.Analysis;
@@ -54,14 +53,13 @@ import io.trino.sql.analyzer.PatternRecognitionAnalysis.PatternInputAnalysis;
 import io.trino.sql.analyzer.PatternRecognitionAnalysis.ScalarInputDescriptor;
 import io.trino.sql.analyzer.RelationType;
 import io.trino.sql.analyzer.Scope;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Booleans;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.CoalesceExpression;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Coalesce;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.GenericLiteral;
-import io.trino.sql.ir.IfExpression;
 import io.trino.sql.ir.IrUtils;
 import io.trino.sql.ir.Row;
 import io.trino.sql.planner.QueryPlanner.PlanAndMappings;
@@ -173,12 +171,13 @@ import static io.trino.spi.StandardErrorCode.CONSTRAINT_VIOLATION;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.NodeUtils.getSortItemsFromOrderBy;
 import static io.trino.sql.analyzer.PatternRecognitionAnalysis.NavigationAnchor.LAST;
 import static io.trino.sql.analyzer.PatternRecognitionAnalysis.NavigationMode.RUNNING;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.IrExpressions.ifExpression;
 import static io.trino.sql.planner.LogicalPlanner.failFunction;
 import static io.trino.sql.planner.PlanBuilder.newPlanBuilder;
 import static io.trino.sql.planner.QueryPlanner.coerce;
@@ -204,7 +203,6 @@ import static io.trino.sql.tree.PatternRecognitionRelation.RowsPerMatch.ONE;
 import static io.trino.sql.tree.PatternSearchMode.Mode.INITIAL;
 import static io.trino.sql.tree.SkipTo.Position.PAST_LAST;
 import static io.trino.type.Json2016Type.JSON_2016;
-import static java.lang.Boolean.TRUE;
 import static java.util.Objects.requireNonNull;
 
 class RelationPlanner
@@ -260,16 +258,16 @@ class RelationPlanner
         };
     }
 
-    private ComparisonExpression.Operator mapComparisonOperator(io.trino.sql.tree.ComparisonExpression.Operator operator)
+    private Comparison.Operator mapComparisonOperator(io.trino.sql.tree.ComparisonExpression.Operator operator)
     {
         return switch (operator) {
-            case EQUAL -> ComparisonExpression.Operator.EQUAL;
-            case NOT_EQUAL -> ComparisonExpression.Operator.NOT_EQUAL;
-            case LESS_THAN -> ComparisonExpression.Operator.LESS_THAN;
-            case LESS_THAN_OR_EQUAL -> ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-            case GREATER_THAN -> ComparisonExpression.Operator.GREATER_THAN;
-            case GREATER_THAN_OR_EQUAL -> ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-            case IS_DISTINCT_FROM -> ComparisonExpression.Operator.IS_DISTINCT_FROM;
+            case EQUAL -> Comparison.Operator.EQUAL;
+            case NOT_EQUAL -> Comparison.Operator.NOT_EQUAL;
+            case LESS_THAN -> Comparison.Operator.LESS_THAN;
+            case LESS_THAN_OR_EQUAL -> Comparison.Operator.LESS_THAN_OR_EQUAL;
+            case GREATER_THAN -> Comparison.Operator.GREATER_THAN;
+            case GREATER_THAN_OR_EQUAL -> Comparison.Operator.GREATER_THAN_OR_EQUAL;
+            case IS_DISTINCT_FROM -> Comparison.Operator.IS_DISTINCT_FROM;
         };
     }
 
@@ -410,10 +408,10 @@ class RelationPlanner
         for (io.trino.sql.tree.Expression constraint : constraints) {
             planBuilder = subqueryPlanner.handleSubqueries(planBuilder, constraint, analysis.getSubqueries(constraint));
 
-            Expression predicate = new IfExpression(
+            Expression predicate = ifExpression(
                     // When predicate evaluates to UNKNOWN (e.g. NULL > 100), it should not violate the check constraint.
-                    new CoalesceExpression(coerceIfNecessary(analysis, constraint, planBuilder.rewrite(constraint)), TRUE_LITERAL),
-                    TRUE_LITERAL,
+                    new Coalesce(coerceIfNecessary(analysis, constraint, planBuilder.rewrite(constraint)), Booleans.TRUE),
+                    Booleans.TRUE,
                     new Cast(failFunction(plannerContext.getMetadata(), CONSTRAINT_VIOLATION, "Check constraint violation: " + constraint), BOOLEAN));
 
             planBuilder = planBuilder.withNewRoot(new FilterNode(
@@ -539,7 +537,7 @@ class RelationPlanner
                 // note: hidden columns are included. They are present in sourcePlan.fieldMappings
                 outputSymbols.addAll(sourcePlan.getFieldMappings());
                 Set<Symbol> partitionBy = specification
-                        .map(DataOrganizationSpecification::getPartitionBy)
+                        .map(DataOrganizationSpecification::partitionBy)
                         .map(ImmutableSet::copyOf)
                         .orElse(ImmutableSet.of());
                 sourcePlan.getFieldMappings().stream()
@@ -630,7 +628,7 @@ class RelationPlanner
         boolean oneRowOutput = rowsPerMatch.isOneRow();
 
         DataOrganizationSpecification specification = planWindowSpecification(node.getPartitionBy(), node.getOrderBy(), planBuilder::translate);
-        outputLayout.addAll(specification.getPartitionBy());
+        outputLayout.addAll(specification.partitionBy());
         if (!oneRowOutput) {
             getSortItemsFromOrderBy(node.getOrderBy()).stream()
                     .map(SortItem::getSortKey)
@@ -753,7 +751,7 @@ class RelationPlanner
                 measureOutputs.build(),
                 skipToLabels,
                 mapSkipToPosition(skipTo.map(SkipTo::getPosition).orElse(PAST_LAST)),
-                searchMode.map(mode -> mode.getMode() == INITIAL).orElse(TRUE),
+                searchMode.map(mode -> mode.getMode() == INITIAL).orElse(Boolean.TRUE),
                 RowPatternToIrRewriter.rewrite(pattern, analysis),
                 rewrittenVariableDefinitions.buildOrThrow());
     }
@@ -997,7 +995,7 @@ class RelationPlanner
                 }
                 else {
                     postInnerJoinConditions.add(
-                            new ComparisonExpression(mapComparisonOperator(joinConditionComparisonOperators.get(i)),
+                            new Comparison(mapComparisonOperator(joinConditionComparisonOperators.get(i)),
                                     leftCoercions.get(leftComparisonExpressions.get(i)).toSymbolReference(),
                                     rightCoercions.get(rightComparisonExpressions.get(i)).toSymbolReference()));
                 }
@@ -1177,7 +1175,7 @@ class RelationPlanner
         for (Identifier column : joinColumns) {
             Symbol output = symbolAllocator.newSymbol(column.getValue(), analysis.getType(column));
             outputs.add(output);
-            assignments.put(output, new CoalesceExpression(
+            assignments.put(output, new Coalesce(
                     leftJoinColumns.get(column).toSymbolReference(),
                     rightJoinColumns.get(column).toSymbolReference()));
         }
@@ -1253,7 +1251,7 @@ class RelationPlanner
 
         Expression rewrittenFilterCondition;
         if (join.getCriteria().isEmpty()) {
-            rewrittenFilterCondition = TRUE_LITERAL;
+            rewrittenFilterCondition = Booleans.TRUE;
         }
         else {
             JoinCriteria criteria = join.getCriteria().get();
@@ -1366,9 +1364,9 @@ class RelationPlanner
         planBuilder = coerced.getSubPlan();
 
         // apply the input function to the input expression
-        BooleanLiteral failOnError = new BooleanLiteral(jsonTable.getErrorBehavior().orElse(JsonTable.ErrorBehavior.EMPTY) == JsonTable.ErrorBehavior.ERROR);
+        Constant failOnError = new Constant(BOOLEAN, jsonTable.getErrorBehavior().orElse(JsonTable.ErrorBehavior.EMPTY) == JsonTable.ErrorBehavior.ERROR);
         ResolvedFunction inputToJson = analysis.getJsonInputFunction(inputExpression);
-        Expression inputJson = new FunctionCall(inputToJson.toQualifiedName(), ImmutableList.of(coerced.get(inputExpression).toSymbolReference(), failOnError));
+        Expression inputJson = new Call(inputToJson, ImmutableList.of(coerced.get(inputExpression).toSymbolReference(), failOnError));
 
         // apply the input functions to the JSON path parameters having FORMAT,
         // and collect all JSON path parameters in a Row
@@ -1462,7 +1460,7 @@ class RelationPlanner
                 defaultErrorOnError,
                 parametersType,
                 properOutputs.stream()
-                        .map(symbolAllocator.getTypes()::get)
+                        .map(Symbol::type)
                         .toArray(Type[]::new));
 
         TableFunctionNode tableFunctionNode = new TableFunctionNode(
@@ -1496,19 +1494,19 @@ class RelationPlanner
             Symbol properOutput = properOutputs.get(i);
             if (orderedColumns.get(i).getNode() instanceof QueryColumn queryColumn) {
                 // apply output function
-                GenericLiteral errorBehavior = new GenericLiteral(TinyintType.TINYINT, String.valueOf(queryColumn.getErrorBehavior().orElse(defaultErrorOnError ? ERROR : NULL).ordinal()));
-                BooleanLiteral omitQuotes = new BooleanLiteral(queryColumn.getQuotesBehavior().orElse(KEEP) == OMIT);
+                Constant errorBehavior = new Constant(TINYINT, (long) queryColumn.getErrorBehavior().orElse(defaultErrorOnError ? ERROR : NULL).ordinal());
+                Constant omitQuotes = new Constant(BOOLEAN, queryColumn.getQuotesBehavior().orElse(KEEP) == OMIT);
                 ResolvedFunction outputFunction = analysis.getJsonOutputFunction(queryColumn);
-                Expression result = new FunctionCall(outputFunction.toQualifiedName(), ImmutableList.of(properOutput.toSymbolReference(), errorBehavior, omitQuotes));
+                Expression result = new Call(outputFunction, ImmutableList.of(properOutput.toSymbolReference(), errorBehavior, omitQuotes));
 
                 // cast to declared returned type
                 Type expectedType = jsonTableRelationType.getFieldByIndex(i).getType();
-                Type resultType = outputFunction.getSignature().getReturnType();
+                Type resultType = outputFunction.signature().getReturnType();
                 if (!resultType.equals(expectedType)) {
                     result = new Cast(result, expectedType);
                 }
 
-                Symbol output = symbolAllocator.newSymbol(result, expectedType);
+                Symbol output = symbolAllocator.newSymbol(result);
                 outputLayout.add(output);
                 assignments.put(output, result);
             }
@@ -1717,7 +1715,7 @@ class RelationPlanner
         // The node is an intermediate stage of planning json_table. There's no recorded relation type available for this node.
         // The returned RowType is only used in plan printer
         return RowType.from(node.getOutputSymbols().stream()
-                .map(symbol -> new RowType.Field(Optional.of(symbol.getName()), symbolAllocator.getTypes().get(symbol)))
+                .map(symbol -> new RowType.Field(Optional.of(symbol.name()), symbol.type()))
                 .collect(toImmutableList()));
     }
 

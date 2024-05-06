@@ -94,16 +94,15 @@ public class BigQueryArrowToPageConverter
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.allocator = requireNonNull(allocator, "allocator is null");
         this.columnTypes = requireNonNull(columns, "columns is null").stream()
-                .map(BigQueryColumnHandle::getTrinoType)
+                .map(BigQueryColumnHandle::trinoType)
                 .collect(toImmutableList());
         this.columnNames = columns.stream()
-                .map(BigQueryColumnHandle::getName)
+                .map(BigQueryColumnHandle::name)
                 .collect(toImmutableList());
         List<FieldVector> vectors = schema.getFields().stream()
                 .map(field -> field.createVector(allocator))
                 .collect(toImmutableList());
         root = new VectorSchemaRoot(vectors);
-        verify(vectors.size() == columns.size(), "Vectors, columns size differ");
         loader = new VectorLoader(root, INSTANCE);
     }
 

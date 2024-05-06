@@ -27,7 +27,6 @@ import io.trino.metadata.InternalNode;
 import io.trino.metadata.Split;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.QueryId;
-import io.trino.spi.type.Type;
 import io.trino.sql.planner.Partitioning;
 import io.trino.sql.planner.PartitioningScheme;
 import io.trino.sql.planner.PlanFragment;
@@ -61,11 +60,11 @@ import static io.airlift.tracing.Tracing.noopTracer;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.execution.SqlStage.createSqlStage;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.ARBITRARY;
-import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
+import static io.trino.type.UnknownType.UNKNOWN;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -192,8 +191,8 @@ public class TestSqlStage
             // Tasks can race with the stage finish operation and be cancelled fully before
             // starting any splits running. These can report either cancelling or fully cancelled
             // depending on the timing of TaskInfo being created
-            TaskState taskState = info.getTaskStatus().getState();
-            int runningSplits = info.getTaskStatus().getRunningPartitionedDrivers();
+            TaskState taskState = info.taskStatus().getState();
+            int runningSplits = info.taskStatus().getRunningPartitionedDrivers();
             if (runningSplits == 0) {
                 assertThat(taskState == TaskState.CANCELING || taskState == TaskState.CANCELED)
                         .describedAs("unexpected task state: " + taskState)
@@ -232,26 +231,22 @@ public class TestSqlStage
         PlanNode planNode = new RemoteSourceNode(
                 new PlanNodeId("exchange"),
                 ImmutableList.of(new PlanFragmentId("source")),
-                ImmutableList.of(new Symbol("column")),
+                ImmutableList.of(new Symbol(UNKNOWN, "column")),
                 Optional.empty(),
                 REPARTITION,
                 RetryPolicy.NONE);
 
-        ImmutableMap.Builder<Symbol, Type> types = ImmutableMap.builder();
-        for (Symbol symbol : planNode.getOutputSymbols()) {
-            types.put(symbol, VARCHAR);
-        }
         return new PlanFragment(
                 new PlanFragmentId("exchange_fragment_id"),
                 planNode,
-                types.buildOrThrow(),
+                ImmutableSet.copyOf(planNode.getOutputSymbols()),
                 SOURCE_DISTRIBUTION,
                 Optional.empty(),
                 ImmutableList.of(planNode.getId()),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), planNode.getOutputSymbols()),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
-                ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
     }
 }

@@ -477,7 +477,7 @@ public final class Session
     {
         requireNonNull(catalogHandle, "catalogHandle is null");
 
-        String catalogName = catalogHandle.getCatalogName();
+        String catalogName = catalogHandle.getCatalogName().toString();
         return new FullConnectorSession(
                 this,
                 identity.toConnectorIdentity(catalogName),
@@ -580,7 +580,7 @@ public final class Session
     {
         for (Entry<String, String> property : systemProperties.entrySet()) {
             // verify permissions
-            accessControl.checkCanSetSystemSessionProperty(identity, property.getKey());
+            accessControl.checkCanSetSystemSessionProperty(identity, queryId, property.getKey());
 
             // validate session property value
             sessionPropertyManager.validateSystemSessionProperty(property.getKey(), property.getValue());

@@ -41,10 +41,14 @@ public class TestBigQueryAvroConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return BigQueryQueryRunner.createQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of("bigquery.job.label-name", "trino_query", "bigquery.job.label-format", "q_$QUERY_ID__t_$TRACE_TOKEN"),
-                REQUIRED_TPCH_TABLES);
+        return BigQueryQueryRunner.builder()
+                .setConnectorProperties(ImmutableMap.<String, String>builder()
+                        .put("bigquery.arrow-serialization.enabled", "false")
+                        .put("bigquery.job.label-name", "trino_query")
+                        .put("bigquery.job.label-format", "q_$QUERY_ID__t_$TRACE_TOKEN")
+                        .buildOrThrow())
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override

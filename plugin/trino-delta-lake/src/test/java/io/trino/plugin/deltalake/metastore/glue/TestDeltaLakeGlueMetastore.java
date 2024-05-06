@@ -25,7 +25,6 @@ import io.airlift.json.JsonModule;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.filesystem.manager.FileSystemModule;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.plugin.deltalake.DeltaLakeMetadata;
 import io.trino.plugin.deltalake.DeltaLakeMetadataFactory;
@@ -41,6 +40,7 @@ import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore;
 import io.trino.spi.NodeManager;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
@@ -202,10 +202,10 @@ public class TestDeltaLakeGlueMetastore
         DeltaLakeMetadata metadata = metadataFactory.create(SESSION.getIdentity());
 
         // Verify the tables were created as non Delta Lake tables
-        assertThatThrownBy(() -> metadata.getTableHandle(session, nonDeltaLakeTable1))
+        assertThatThrownBy(() -> metadata.getTableHandle(session, nonDeltaLakeTable1, Optional.empty(), Optional.empty()))
                 .isInstanceOf(TrinoException.class)
                 .hasMessage(format("%s is not a Delta Lake table", nonDeltaLakeTable1));
-        assertThatThrownBy(() -> metadata.getTableHandle(session, nonDeltaLakeTable2))
+        assertThatThrownBy(() -> metadata.getTableHandle(session, nonDeltaLakeTable2, Optional.empty(), Optional.empty()))
                 .isInstanceOf(TrinoException.class)
                 .hasMessage(format("%s is not a Delta Lake table", nonDeltaLakeTable2));
 

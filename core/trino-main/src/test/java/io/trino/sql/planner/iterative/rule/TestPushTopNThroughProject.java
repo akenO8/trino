@@ -15,12 +15,14 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.type.RowType;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
-import io.trino.sql.ir.BooleanLiteral;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Booleans;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -30,7 +32,6 @@ import org.junit.jupiter.api.Test;
 import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.sort;
@@ -42,6 +43,9 @@ import static io.trino.sql.tree.SortItem.Ordering.ASCENDING;
 public class TestPushTopNThroughProject
         extends BaseRuleTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
+
     private static final RowType rowType = RowType.from(ImmutableList.of(
             new RowType.Field(Optional.of("x"), BIGINT),
             new RowType.Field(Optional.of("y"), BIGINT)));
@@ -49,7 +53,7 @@ public class TestPushTopNThroughProject
     @Test
     public void testPushdownTopNNonIdentityProjection()
     {
-        tester().assertThat(new PushTopNThroughProject(tester().getTypeAnalyzer()))
+        tester().assertThat(new PushTopNThroughProject())
                 .on(p -> {
                     Symbol projectedA = p.symbol("projectedA");
                     Symbol a = p.symbol("a");
@@ -59,19 +63,19 @@ public class TestPushTopNThroughProject
                             1,
                             ImmutableList.of(projectedA),
                             p.project(
-                                    Assignments.of(projectedA, new SymbolReference("a"), projectedB, new SymbolReference("b")),
+                                    Assignments.of(projectedA, new Reference(BIGINT, "a"), projectedB, new Reference(BIGINT, "b")),
                                     p.values(a, b)));
                 })
                 .matches(
                         project(
-                                ImmutableMap.of("projectedA", expression(new SymbolReference("a")), "projectedB", expression(new SymbolReference("b"))),
+                                ImmutableMap.of("projectedA", expression(new Reference(BIGINT, "a")), "projectedB", expression(new Reference(BIGINT, "b"))),
                                 topN(1, ImmutableList.of(sort("a", ASCENDING, FIRST)), values("a", "b"))));
     }
 
     @Test
     public void testPushdownTopNNonIdentityProjectionWithExpression()
     {
-        tester().assertThat(new PushTopNThroughProject(tester().getTypeAnalyzer()))
+        tester().assertThat(new PushTopNThroughProject())
                 .on(p -> {
                     Symbol projectedA = p.symbol("projectedA");
                     Symbol a = p.symbol("a");
@@ -82,22 +86,22 @@ public class TestPushTopNThroughProject
                             ImmutableList.of(projectedA),
                             p.project(
                                     Assignments.of(
-                                            projectedA, new SymbolReference("a"),
-                                            projectedC, new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("b"))),
+                                            projectedA, new Reference(BIGINT, "a"),
+                                            projectedC, new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b")))),
                                     p.values(a, b)));
                 })
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "projectedA", expression(new SymbolReference("a")),
-                                        "projectedC", expression(new ArithmeticBinaryExpression(ADD, new SymbolReference("a"), new SymbolReference("b")))),
+                                        "projectedA", expression(new Reference(BIGINT, "a")),
+                                        "projectedC", expression(new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "a"), new Reference(BIGINT, "b"))))),
                                 topN(1, ImmutableList.of(sort("a", ASCENDING, FIRST)), values("a", "b"))));
     }
 
     @Test
     public void testDoNotPushdownTopNThroughIdentityProjection()
     {
-        tester().assertThat(new PushTopNThroughProject(tester().getTypeAnalyzer()))
+        tester().assertThat(new PushTopNThroughProject())
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     return p.topN(1,
@@ -111,16 +115,16 @@ public class TestPushTopNThroughProject
     @Test
     public void testDoNotPushdownTopNThroughProjectionOverFilterOverTableScan()
     {
-        tester().assertThat(new PushTopNThroughProject(tester().getTypeAnalyzer()))
+        tester().assertThat(new PushTopNThroughProject())
                 .on(p -> {
                     Symbol projectedA = p.symbol("projectedA");
                     return p.topN(
                             1,
                             ImmutableList.of(projectedA),
                             p.project(
-                                    Assignments.of(projectedA, new SymbolReference("a")),
+                                    Assignments.of(projectedA, new Reference(BIGINT, "a")),
                                     p.filter(
-                                            BooleanLiteral.TRUE_LITERAL,
+                                            Booleans.TRUE,
                                             p.tableScan(ImmutableList.of(), ImmutableMap.of()))));
                 }).doesNotFire();
     }
@@ -128,7 +132,7 @@ public class TestPushTopNThroughProject
     @Test
     public void testDoNotPushdownTopNThroughProjectionOverTableScan()
     {
-        tester().assertThat(new PushTopNThroughProject(tester().getTypeAnalyzer()))
+        tester().assertThat(new PushTopNThroughProject())
                 .on(p -> {
                     Symbol projectedA = p.symbol("projectedA");
                     Symbol a = p.symbol("a");
@@ -136,7 +140,7 @@ public class TestPushTopNThroughProject
                             1,
                             ImmutableList.of(projectedA),
                             p.project(
-                                    Assignments.of(projectedA, new SymbolReference("a")),
+                                    Assignments.of(projectedA, new Reference(BIGINT, "a")),
                                     p.tableScan(
                                             ImmutableList.of(a),
                                             ImmutableMap.of(a, new TestingMetadata.TestingColumnHandle("a")))));
@@ -146,7 +150,7 @@ public class TestPushTopNThroughProject
     @Test
     public void testDoesntPushDownTopNThroughExclusiveDereferences()
     {
-        tester().assertThat(new PushTopNThroughProject(tester().getTypeAnalyzer()))
+        tester().assertThat(new PushTopNThroughProject())
                 .on(p -> {
                     Symbol a = p.symbol("a", rowType);
                     return p.topN(
@@ -154,8 +158,8 @@ public class TestPushTopNThroughProject
                             ImmutableList.of(p.symbol("c")),
                             p.project(
                                     Assignments.builder()
-                                            .put(p.symbol("b"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral(1)))
-                                            .put(p.symbol("c"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral(2)))
+                                            .put(p.symbol("b"), new FieldReference(a.toSymbolReference(), 0))
+                                            .put(p.symbol("c"), new FieldReference(a.toSymbolReference(), 1))
                                             .build(),
                                     p.values(a)));
                 }).doesNotFire();
@@ -164,7 +168,7 @@ public class TestPushTopNThroughProject
     @Test
     public void testPushTopNThroughOverlappingDereferences()
     {
-        tester().assertThat(new PushTopNThroughProject(tester().getTypeAnalyzer()))
+        tester().assertThat(new PushTopNThroughProject())
                 .on(p -> {
                     Symbol a = p.symbol("a", rowType);
                     Symbol d = p.symbol("d");
@@ -173,7 +177,7 @@ public class TestPushTopNThroughProject
                             ImmutableList.of(d),
                             p.project(
                                     Assignments.builder()
-                                            .put(p.symbol("b"), new SubscriptExpression(a.toSymbolReference(), new LongLiteral(1)))
+                                            .put(p.symbol("b"), new FieldReference(a.toSymbolReference(), 0))
                                             .put(p.symbol("c", rowType), a.toSymbolReference())
                                             .putIdentity(d)
                                             .build(),
@@ -181,7 +185,7 @@ public class TestPushTopNThroughProject
                 })
                 .matches(
                         project(
-                                ImmutableMap.of("b", io.trino.sql.planner.assertions.PlanMatchPattern.expression(new SubscriptExpression(new SymbolReference("a"), new LongLiteral(1))), "c", expression(new SymbolReference("a")), "d", expression(new SymbolReference("d"))),
+                                ImmutableMap.of("b", expression(new FieldReference(new Reference(rowType, "a"), 0)), "c", expression(new Reference(BIGINT, "a")), "d", expression(new Reference(BIGINT, "d"))),
                                 topN(
                                         1,
                                         ImmutableList.of(sort("d", ASCENDING, FIRST)),

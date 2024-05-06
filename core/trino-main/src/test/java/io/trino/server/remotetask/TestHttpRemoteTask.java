@@ -75,9 +75,10 @@ import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
 import io.trino.spi.type.TypeSignature;
 import io.trino.sql.DynamicFilters;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
+import io.trino.sql.planner.SymbolKeyDeserializer;
 import io.trino.sql.planner.plan.DynamicFilterId;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.testing.TestingSplit;
@@ -214,7 +215,7 @@ public class TestHttpRemoteTask
 
         remoteTask.cancel();
         poll(() -> remoteTask.getTaskStatus().getState().isDone());
-        poll(() -> remoteTask.getTaskInfo().getTaskStatus().getState().isDone());
+        poll(() -> remoteTask.getTaskInfo().taskStatus().getState().isDone());
 
         httpRemoteTaskFactory.stop();
     }
@@ -229,8 +230,8 @@ public class TestHttpRemoteTask
         SymbolAllocator symbolAllocator = new SymbolAllocator();
         Symbol symbol1 = symbolAllocator.newSymbol("DF_SYMBOL1", BIGINT);
         Symbol symbol2 = symbolAllocator.newSymbol("DF_SYMBOL2", BIGINT);
-        SymbolReference df1 = symbol1.toSymbolReference();
-        SymbolReference df2 = symbol2.toSymbolReference();
+        Reference df1 = symbol1.toSymbolReference();
+        Reference df2 = symbol2.toSymbolReference();
         ColumnHandle handle1 = new TestingColumnHandle("column1");
         ColumnHandle handle2 = new TestingColumnHandle("column2");
         QueryId queryId = new QueryId("test");
@@ -264,8 +265,7 @@ public class TestHttpRemoteTask
                         new DynamicFilters.Descriptor(filterId2, df2)),
                 ImmutableMap.of(
                         symbol1, handle1,
-                        symbol2, handle2),
-                symbolAllocator.getTypes());
+                        symbol2, handle2));
 
         // make sure initial dynamic filters are collected
         CompletableFuture<?> future = dynamicFilter.isBlocked();
@@ -310,8 +310,8 @@ public class TestHttpRemoteTask
         SymbolAllocator symbolAllocator = new SymbolAllocator();
         Symbol symbol1 = symbolAllocator.newSymbol("DF_SYMBOL1", BIGINT);
         Symbol symbol2 = symbolAllocator.newSymbol("DF_SYMBOL2", BIGINT);
-        SymbolReference df1 = symbol1.toSymbolReference();
-        SymbolReference df2 = symbol2.toSymbolReference();
+        Reference df1 = symbol1.toSymbolReference();
+        Reference df2 = symbol2.toSymbolReference();
         ColumnHandle handle1 = new TestingColumnHandle("column1");
         ColumnHandle handle2 = new TestingColumnHandle("column2");
         QueryId queryId = new QueryId("test");
@@ -337,8 +337,7 @@ public class TestHttpRemoteTask
                         new DynamicFilters.Descriptor(filterId2, df2)),
                 ImmutableMap.of(
                         symbol1, handle1,
-                        symbol2, handle2),
-                symbolAllocator.getTypes());
+                        symbol2, handle2));
 
         // make sure initial dynamic filter is collected
         CompletableFuture<?> future = dynamicFilter.isBlocked();
@@ -426,7 +425,7 @@ public class TestHttpRemoteTask
 
         remoteTask.cancel();
         poll(() -> remoteTask.getTaskStatus().getState().isDone());
-        poll(() -> remoteTask.getTaskInfo().getTaskStatus().getState().isDone());
+        poll(() -> remoteTask.getTaskInfo().taskStatus().getState().isDone());
 
         httpRemoteTaskFactory.stop();
     }
@@ -488,7 +487,7 @@ public class TestHttpRemoteTask
         switch (failureScenario) {
             case TASK_MISMATCH:
             case TASK_MISMATCH_WHEN_VERSION_IS_HIGH:
-                assertThat(remoteTask.getTaskInfo().getTaskStatus().getState().isDone())
+                assertThat(remoteTask.getTaskInfo().taskStatus().getState().isDone())
                         .describedAs(format("TaskInfo is not in a done state: %s", remoteTask.getTaskInfo()))
                         .isTrue();
                 assertThat(actualErrorCode).isEqualTo(REMOTE_TASK_MISMATCH.toErrorCode());
@@ -557,6 +556,7 @@ public class TestHttpRemoteTask
                         jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
                         jsonBinder(binder).addDeserializerBinding(TypeSignature.class).to(TypeSignatureDeserializer.class);
                         jsonBinder(binder).addKeyDeserializerBinding(TypeSignature.class).to(TypeSignatureKeyDeserializer.class);
+                        jsonBinder(binder).addKeyDeserializerBinding(Symbol.class).to(SymbolKeyDeserializer.class);
                         jsonCodecBinder(binder).bindJsonCodec(TaskStatus.class);
                         jsonCodecBinder(binder).bindJsonCodec(VersionedDynamicFilterDomains.class);
                         jsonBinder(binder).addSerializerBinding(Block.class).to(BlockJsonSerde.Serializer.class);
@@ -710,12 +710,12 @@ public class TestHttpRemoteTask
                 TaskUpdateRequest taskUpdateRequest,
                 @Context UriInfo uriInfo)
         {
-            for (SplitAssignment splitAssignment : taskUpdateRequest.getSplitAssignments()) {
+            for (SplitAssignment splitAssignment : taskUpdateRequest.splitAssignments()) {
                 taskSplitAssignmentMap.compute(splitAssignment.getPlanNodeId(), (planNodeId, taskSplitAssignment) -> taskSplitAssignment == null ? splitAssignment : taskSplitAssignment.update(splitAssignment));
             }
-            if (!taskUpdateRequest.getDynamicFilterDomains().isEmpty()) {
+            if (!taskUpdateRequest.dynamicFilterDomains().isEmpty()) {
                 dynamicFiltersSentCounter++;
-                latestDynamicFilterFromCoordinator = taskUpdateRequest.getDynamicFilterDomains();
+                latestDynamicFilterFromCoordinator = taskUpdateRequest.dynamicFilterDomains();
             }
             createOrUpdateCounter++;
             lastActivityNanos.set(System.nanoTime());
@@ -784,7 +784,7 @@ public class TestHttpRemoteTask
         public void setInitialTaskInfo(TaskInfo initialTaskInfo)
         {
             this.initialTaskInfo = initialTaskInfo;
-            this.initialTaskStatus = initialTaskInfo.getTaskStatus();
+            this.initialTaskStatus = initialTaskInfo.taskStatus();
             this.taskState = initialTaskStatus.getState();
             this.version = initialTaskStatus.getVersion();
             switch (failureScenario) {
@@ -841,12 +841,12 @@ public class TestHttpRemoteTask
         {
             return new TaskInfo(
                     buildTaskStatus(),
-                    initialTaskInfo.getLastHeartbeat(),
-                    initialTaskInfo.getOutputBuffers(),
-                    initialTaskInfo.getNoMoreSplits(),
-                    initialTaskInfo.getStats(),
-                    initialTaskInfo.getEstimatedMemory(),
-                    initialTaskInfo.isNeedsPlan());
+                    initialTaskInfo.lastHeartbeat(),
+                    initialTaskInfo.outputBuffers(),
+                    initialTaskInfo.noMoreSplits(),
+                    initialTaskInfo.stats(),
+                    initialTaskInfo.estimatedMemory(),
+                    initialTaskInfo.needsPlan());
         }
 
         private TaskStatus buildTaskStatus()

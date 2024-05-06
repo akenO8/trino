@@ -17,6 +17,7 @@ import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.util.concurrent.Futures;
 import io.airlift.concurrent.MoreFutures;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -45,15 +46,19 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.function.BiConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -63,13 +68,16 @@ import static com.google.common.collect.Sets.union;
 import static io.trino.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.plugin.base.util.Closables.closeAllSuppress;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_OR_REPLACE_TABLE_AS_OPERATION;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_OR_REPLACE_TABLE_OPERATION;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createDockerizedDeltaLakeQueryRunner;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.EXTENDED_STATISTICS_COLLECT_ON_WRITE;
 import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.getConnectorService;
 import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.getTableActiveFiles;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
 import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
+import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
+import static io.trino.testing.QueryAssertions.getTrinoExceptionCause;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.DELETE_TABLE;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.DROP_TABLE;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.INSERT_TABLE;
@@ -86,6 +94,7 @@ import static java.util.Comparator.comparing;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.stream.Collectors.joining;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -167,8 +176,6 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         try {
             this.transactionLogAccess = getConnectorService(queryRunner, TransactionLogAccess.class);
 
-            queryRunner.execute(format("CREATE SCHEMA %s WITH (location = '%s')", SCHEMA, getLocationForTable(bucketName, SCHEMA)));
-
             REQUIRED_TPCH_TABLES.forEach(table -> queryRunner.execute(format(
                     "CREATE TABLE %s WITH (location = '%s') AS SELECT * FROM tpch.tiny.%1$s",
                     table.getTableName(),
@@ -216,21 +223,18 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     private QueryRunner createDeltaLakeQueryRunner()
             throws Exception
     {
-        return createDockerizedDeltaLakeQueryRunner(
-                DELTA_CATALOG,
-                SCHEMA,
-                Map.of(),
-                Map.of(),
-                ImmutableMap.<String, String>builder()
+        return DeltaLakeQueryRunner.builder(SCHEMA)
+                .setDeltaProperties(ImmutableMap.<String, String>builder()
+                        .put("hive.metastore.uri", hiveHadoop.getHiveMetastoreEndpoint().toString())
                         .put("delta.metadata.cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("delta.metadata.live-files.cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("hive.metastore-cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("delta.register-table-procedure.enabled", "true")
                         .put("hive.metastore.thrift.client.read-timeout", "1m") // read timed out sometimes happens with the default timeout
                         .putAll(deltaStorageConfiguration())
-                        .buildOrThrow(),
-                hiveHadoop,
-                queryRunner -> {});
+                        .buildOrThrow())
+                .setSchemaLocation(getLocationForTable(bucketName, SCHEMA))
+                .build();
     }
 
     @AfterAll
@@ -566,11 +570,11 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     public void testDropAndRecreateTable()
     {
         String tableName = "testDropAndRecreate_" + randomNameSuffix();
-        assertUpdate(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, getLocationForTable(bucketName, "nation")));
+        assertUpdate(format("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')", tableName, getLocationForTable(bucketName, "nation")));
         assertQuery("SELECT * FROM " + tableName, "SELECT * FROM nation");
 
         assertUpdate("DROP TABLE " + tableName);
-        assertUpdate(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, getLocationForTable(bucketName, "customer")));
+        assertUpdate(format("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')", tableName, getLocationForTable(bucketName, "customer")));
         assertQuery("SELECT * FROM " + tableName, "SELECT * FROM customer");
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -1945,7 +1949,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         Set<?> activeFiles = computeActual("SELECT \"$path\" FROM " + tableName).getOnlyColumnAsSet();
         String location = (String) computeScalar(format("SELECT DISTINCT regexp_replace(\"$path\", '/[^/]*$', '') FROM %s", tableName));
         assertUpdate("DROP TABLE " + tableName);
-        assertUpdate(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, location));
+        assertUpdate(format("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')", tableName, location));
         // sanity check
         assertThat(computeActual("SELECT \"$path\" FROM " + tableName).getOnlyColumnAsSet()).as("active files after table recreated")
                 .isEqualTo(activeFiles);
@@ -2123,7 +2127,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         assertThat(getTableLocation(tableName)).isEqualTo(tableLocationWithTrailingSpace);
 
         String registeredTableName = "test_register_table_with_trailing_space_" + randomNameSuffix();
-        assertQuerySucceeds(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, registeredTableName, tableLocationWithTrailingSpace));
+        assertQuerySucceeds(format("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')", registeredTableName, tableLocationWithTrailingSpace));
         assertQuery("SELECT * FROM " + registeredTableName, "VALUES (1, 'INDIA', true)");
 
         assertThat(getTableLocation(registeredTableName)).isEqualTo(tableLocationWithTrailingSpace);
@@ -2280,6 +2284,142 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         }
     }
 
+    @Test
+    public void testCreateOrReplaceTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_table", " AS SELECT BIGINT '42' a, DOUBLE '-38.5' b")) {
+            assertThat(query("SELECT CAST(a AS bigint), b FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', -385e-1)");
+
+            assertUpdate("CREATE OR REPLACE TABLE %s (a bigint, b double)".formatted(table.getName()));
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName());
+
+            assertTableVersion(table.getName(), 1L);
+            assertTableOperation(table.getName(), 1, CREATE_OR_REPLACE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAs()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_table", " AS SELECT BIGINT '42' a, DOUBLE '-38.5' b")) {
+            assertThat(query("SELECT CAST(a AS bigint), b FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', -385e-1)");
+
+            assertUpdate("CREATE OR REPLACE TABLE %s AS SELECT BIGINT '-53' a, DOUBLE '49.6' b".formatted(table.getName()), 1);
+            assertThat(query("SELECT CAST(a AS bigint), b FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '-53', 496e-1)");
+
+            assertTableVersion(table.getName(), 1L);
+            assertTableOperation(table.getName(), 1, CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableChangeColumnNamesAndTypes()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_table", " AS SELECT BIGINT '42' a, DOUBLE '-38.5' b")) {
+            assertThat(query("SELECT CAST(a AS bigint), b FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', -385e-1)");
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT VARCHAR 'test' c, VARCHAR 'test2' d", 1);
+            assertThat(query("SELECT c, d FROM " + table.getName()))
+                    .matches("VALUES (VARCHAR 'test', VARCHAR 'test2')");
+
+            assertTableVersion(table.getName(), 1L);
+            assertTableOperation(table.getName(), 1, CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+        }
+    }
+
+    @RepeatedTest(3)
+    // Test from BaseConnectorTest
+    public void testCreateOrReplaceTableConcurrently()
+            throws Exception
+    {
+        int threads = 4;
+        int numOfCreateOrReplaceStatements = 4;
+        int numOfReads = 16;
+        CyclicBarrier barrier = new CyclicBarrier(threads + 1);
+        ExecutorService executor = newFixedThreadPool(threads + 1);
+        List<Future<?>> futures = new ArrayList<>();
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace", "(col integer)")) {
+            String tableName = table.getName();
+
+            getQueryRunner().execute("CREATE OR REPLACE TABLE " + tableName + " AS SELECT 1 a");
+            assertThat(query("SELECT * FROM " + tableName)).matches("VALUES 1");
+
+            // One thread submits some CREATE OR REPLACE statements
+            futures.add(executor.submit(() -> {
+                barrier.await(30, SECONDS);
+                IntStream.range(0, numOfCreateOrReplaceStatements).forEach(index -> {
+                    try {
+                        getQueryRunner().execute("CREATE OR REPLACE TABLE " + tableName + " AS SELECT * FROM (VALUES (1), (2)) AS t(a) ");
+                    }
+                    catch (Exception e) {
+                        RuntimeException trinoException = getTrinoExceptionCause(e);
+                        try {
+                            throw new AssertionError("Unexpected concurrent CREATE OR REPLACE failure", trinoException);
+                        }
+                        catch (Throwable verifyFailure) {
+                            if (verifyFailure != e) {
+                                verifyFailure.addSuppressed(e);
+                            }
+                            throw verifyFailure;
+                        }
+                    }
+                });
+                return null;
+            }));
+            // Other 4 threads continue try to read the same table, none of the reads should fail.
+            IntStream.range(0, threads)
+                    .forEach(threadNumber -> futures.add(executor.submit(() -> {
+                        barrier.await(30, SECONDS);
+                        IntStream.range(0, numOfReads).forEach(readIndex -> {
+                            try {
+                                MaterializedResult result = computeActual("SELECT * FROM " + tableName);
+                                if (result.getRowCount() == 1) {
+                                    assertEqualsIgnoreOrder(result.getMaterializedRows(), List.of(new MaterializedRow(List.of(1))));
+                                }
+                                else {
+                                    assertEqualsIgnoreOrder(result.getMaterializedRows(), List.of(new MaterializedRow(List.of(1)), new MaterializedRow(List.of(2))));
+                                }
+                            }
+                            catch (Exception e) {
+                                RuntimeException trinoException = getTrinoExceptionCause(e);
+                                try {
+                                    throw new AssertionError("Unexpected concurrent CREATE OR REPLACE failure", trinoException);
+                                }
+                                catch (Throwable verifyFailure) {
+                                    if (verifyFailure != e) {
+                                        verifyFailure.addSuppressed(e);
+                                    }
+                                    throw verifyFailure;
+                                }
+                            }
+                        });
+                        return null;
+                    })));
+            futures.forEach(Futures::getUnchecked);
+            getQueryRunner().execute("CREATE OR REPLACE TABLE " + tableName + " AS SELECT * FROM (VALUES (1), (2), (3)) AS t(a)");
+            assertThat(query("SELECT * FROM " + tableName)).matches("VALUES 1, 2, 3");
+        }
+        finally {
+            executor.shutdownNow();
+            executor.awaitTermination(30, SECONDS);
+        }
+    }
+
+    private void assertTableVersion(String tableName, long version)
+    {
+        assertThat(computeScalar(format("SELECT max(version) FROM \"%s$history\"", tableName))).isEqualTo(version);
+    }
+
+    private void assertTableOperation(String tableName, long version, String operation)
+    {
+        assertQuery("SELECT operation FROM \"%s$history\" WHERE version = %s".formatted(tableName, version),
+                "VALUES '%s'".formatted(operation));
+    }
+
     @RepeatedTest(3)
     public void testConcurrentInsertsReconciliationForBlindInserts()
             throws Exception
@@ -2328,6 +2468,137 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                                 (1, 'WRITE', 'WriteSerializable', 0),
                                 (2, 'WRITE', 'WriteSerializable', 1),
                                 (3, 'WRITE', 'WriteSerializable', 2)
+                            """);
+        }
+        finally {
+            assertUpdate("DROP TABLE " + tableName);
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, SECONDS));
+        }
+    }
+
+    @RepeatedTest(3)
+    public void testConcurrentInsertsSelectingFromTheSameTable()
+            throws Exception
+    {
+        testConcurrentInsertsSelectingFromTheSameTable(true);
+        testConcurrentInsertsSelectingFromTheSameTable(false);
+    }
+
+    private void testConcurrentInsertsSelectingFromTheSameTable(boolean partitioned)
+            throws Exception
+    {
+        int threads = 3;
+        CyclicBarrier barrier = new CyclicBarrier(threads);
+        ExecutorService executor = newFixedThreadPool(threads);
+        String tableName = "test_concurrent_inserts_select_from_same_table_" + randomNameSuffix();
+
+        assertUpdate(
+                "CREATE TABLE " + tableName + " (a, part) " + (partitioned ? " WITH (partitioned_by = ARRAY['part'])" : "") + "  AS VALUES (0, 10)",
+                1);
+
+        try {
+            // Considering T1, T2, T3 being the order of completion of the concurrent INSERT operations,
+            // if all the operations would eventually succeed, the entries inserted per thread would look like this:
+            // T1: (1, 10)
+            // T2: (2, 10)
+            // T3: (3, 10)
+            List<Future<Boolean>> futures = IntStream.range(0, threads)
+                    .mapToObj(threadNumber -> executor.submit(() -> {
+                        barrier.await(10, SECONDS);
+                        try {
+                            getQueryRunner().execute("INSERT INTO " + tableName + " SELECT COUNT(*), 10 AS part FROM " + tableName);
+                            return true;
+                        }
+                        catch (Exception e) {
+                            RuntimeException trinoException = getTrinoExceptionCause(e);
+                            try {
+                                assertThat(trinoException).hasMessage("Failed to write Delta Lake transaction log entry");
+                            }
+                            catch (Throwable verifyFailure) {
+                                if (verifyFailure != e) {
+                                    verifyFailure.addSuppressed(e);
+                                }
+                                throw verifyFailure;
+                            }
+                            return false;
+                        }
+                    }))
+                    .collect(toImmutableList());
+
+            long successfulInsertsCount = futures.stream()
+                    .map(MoreFutures::getFutureValue)
+                    .filter(success -> success)
+                    .count();
+
+            assertThat(successfulInsertsCount).isGreaterThanOrEqualTo(1);
+            assertQuery(
+                    "SELECT * FROM " + tableName,
+                    "VALUES (0, 10)" +
+                            LongStream.rangeClosed(1, successfulInsertsCount)
+                                    .boxed()
+                                    .map("(%d, 10)"::formatted)
+                                    .collect(joining(", ", ", ", "")));
+            assertQuery(
+                    "SELECT version, operation, isolation_level, read_version, is_blind_append FROM \"" + tableName + "$history\"",
+                    "VALUES (0, 'CREATE TABLE AS SELECT', 'WriteSerializable', 0, true)" +
+                            LongStream.rangeClosed(1, successfulInsertsCount)
+                                    .boxed()
+                                    .map(version -> "(%s, 'WRITE', 'WriteSerializable', %s, false)".formatted(version, version - 1))
+                                    .collect(joining(", ", ", ", "")));
+        }
+        finally {
+            assertUpdate("DROP TABLE " + tableName);
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, SECONDS));
+        }
+    }
+
+    @RepeatedTest(3)
+    public void testConcurrentInsertsReconciliationForMixedInserts()
+            throws Exception
+    {
+        int threads = 3;
+        CyclicBarrier barrier = new CyclicBarrier(threads);
+        ExecutorService executor = newFixedThreadPool(threads);
+        String tableName = "test_concurrent_mixed_inserts_table_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + " (a, part) WITH (partitioned_by = ARRAY['part']) AS VALUES (0, 10), (11, 20)", 2);
+
+        try {
+            // insert data concurrently
+            executor.invokeAll(ImmutableList.<Callable<Void>>builder()
+                            .add(() -> {
+                                // Read from the partition `10` of the same table to avoid reconciliation failures
+                                barrier.await(10, SECONDS);
+                                getQueryRunner().execute("INSERT INTO " + tableName + " SELECT COUNT(*) AS a, 10 AS part FROM " + tableName + " WHERE part = 10");
+                                return null;
+                            })
+                            .add(() -> {
+                                // Read from the partition `20` of the same table to avoid reconciliation failures
+                                barrier.await(10, SECONDS);
+                                getQueryRunner().execute("INSERT INTO " + tableName + " SELECT COUNT(*) AS a, 20 AS part FROM " + tableName + " WHERE part = 20");
+                                return null;
+                            })
+                            .add(() -> {
+                                barrier.await(10, SECONDS);
+                                getQueryRunner().execute("INSERT INTO " + tableName + " VALUES (22, 30)");
+                                return null;
+                            })
+                            .build())
+                    .forEach(MoreFutures::getDone);
+
+            assertQuery(
+                    "SELECT * FROM " + tableName,
+                    "VALUES (0, 10), (1, 10), (11, 20), (1, 20), (22, 30)");
+            assertQuery(
+                    "SELECT operation, isolation_level, is_blind_append FROM \"" + tableName + "$history\"",
+                    """
+                            VALUES
+                                ('CREATE TABLE AS SELECT', 'WriteSerializable', true),
+                                ('WRITE', 'WriteSerializable', false),
+                                ('WRITE', 'WriteSerializable', false),
+                                ('WRITE', 'WriteSerializable', true)
                             """);
         }
         finally {

@@ -14,11 +14,11 @@
 package io.trino.cost;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.sql.ir.ComparisonExpression;
-import io.trino.sql.ir.LogicalExpression;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.Not;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.PlanNodeId;
@@ -26,10 +26,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
-import static io.trino.sql.ir.LogicalExpression.Operator.AND;
+import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
+import static io.trino.sql.ir.Logical.Operator.AND;
 
 public class TestSimpleFilterProjectSemiJoinStatsRule
         extends BaseStatsCalculatorTest
@@ -83,9 +83,9 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
     public void testFilterPositiveSemiJoin()
     {
         tester().assertStatsFor(pb -> {
-            Symbol a = pb.symbol("a", BIGINT);
-            Symbol b = pb.symbol("b", BIGINT);
-            Symbol c = pb.symbol("c", BIGINT);
+            Symbol a = pb.symbol("a", DOUBLE);
+            Symbol b = pb.symbol("b", DOUBLE);
+            Symbol c = pb.symbol("c", DOUBLE);
             Symbol semiJoinOutput = pb.symbol("sjo", BOOLEAN);
             return pb.filter(
                     semiJoinOutput.toSymbolReference(),
@@ -101,19 +101,19 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
         })
                 .withSourceStats(LEFT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(1000)
-                        .addSymbolStatistics(new Symbol("a"), aStats)
-                        .addSymbolStatistics(new Symbol("b"), bStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "a"), aStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "b"), bStats)
                         .build())
                 .withSourceStats(RIGHT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(2000)
-                        .addSymbolStatistics(new Symbol("c"), cStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "c"), cStats)
                         .build())
                 .check(check -> {
                     check.outputRowsCount(180)
                             .symbolStats("a", assertion -> assertion.isEqualTo(expectedAInC))
                             .symbolStats("b", assertion -> assertion.isEqualTo(bStats))
-                            .symbolStatsUnknown("c")
-                            .symbolStatsUnknown("sjo");
+                            .symbolStatsUnknown("c", DOUBLE)
+                            .symbolStatsUnknown("sjo", BOOLEAN);
                 });
     }
 
@@ -121,12 +121,12 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
     public void testFilterPositiveNarrowingProjectSemiJoin()
     {
         tester().assertStatsFor(pb -> {
-            Symbol a = pb.symbol("a", BIGINT);
-            Symbol b = pb.symbol("b", BIGINT);
-            Symbol c = pb.symbol("c", BIGINT);
+            Symbol a = pb.symbol("a", DOUBLE);
+            Symbol b = pb.symbol("b", DOUBLE);
+            Symbol c = pb.symbol("c", DOUBLE);
             Symbol semiJoinOutput = pb.symbol("sjo", BOOLEAN);
             return pb.filter(
-                    new SymbolReference("sjo"),
+                    new Reference(BOOLEAN, "sjo"),
                     pb.project(Assignments.identity(semiJoinOutput, a),
                             pb.semiJoin(
                                     pb.values(LEFT_SOURCE_ID, a, b),
@@ -140,19 +140,19 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
         })
                 .withSourceStats(LEFT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(1000)
-                        .addSymbolStatistics(new Symbol("a"), aStats)
-                        .addSymbolStatistics(new Symbol("b"), bStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "a"), aStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "b"), bStats)
                         .build())
                 .withSourceStats(RIGHT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(2000)
-                        .addSymbolStatistics(new Symbol("c"), cStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "c"), cStats)
                         .build())
                 .check(check -> {
                     check.outputRowsCount(180)
                             .symbolStats("a", assertion -> assertion.isEqualTo(expectedAInC))
-                            .symbolStatsUnknown("b")
-                            .symbolStatsUnknown("c")
-                            .symbolStatsUnknown("sjo");
+                            .symbolStatsUnknown("b", DOUBLE)
+                            .symbolStatsUnknown("c", DOUBLE)
+                            .symbolStatsUnknown("sjo", DOUBLE);
                 });
     }
 
@@ -160,12 +160,12 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
     public void testFilterPositivePlusExtraConjunctSemiJoin()
     {
         tester().assertStatsFor(pb -> {
-            Symbol a = pb.symbol("a", BIGINT);
-            Symbol b = pb.symbol("b", BIGINT);
-            Symbol c = pb.symbol("c", BIGINT);
+            Symbol a = pb.symbol("a", DOUBLE);
+            Symbol b = pb.symbol("b", DOUBLE);
+            Symbol c = pb.symbol("c", DOUBLE);
             Symbol semiJoinOutput = pb.symbol("sjo", BOOLEAN);
             return pb.filter(
-                    new LogicalExpression(AND, ImmutableList.of(new SymbolReference("sjo"), new ComparisonExpression(LESS_THAN, new SymbolReference("a"), new LongLiteral(8)))),
+                    new Logical(AND, ImmutableList.of(new Reference(BOOLEAN, "sjo"), new Comparison(LESS_THAN, new Reference(DOUBLE, "a"), new Constant(DOUBLE, 8.0)))),
                     pb.semiJoin(
                             pb.values(LEFT_SOURCE_ID, a, b),
                             pb.values(RIGHT_SOURCE_ID, c),
@@ -178,19 +178,19 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
         })
                 .withSourceStats(LEFT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(1000)
-                        .addSymbolStatistics(new Symbol("a"), aStats)
-                        .addSymbolStatistics(new Symbol("b"), bStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "a"), aStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "b"), bStats)
                         .build())
                 .withSourceStats(RIGHT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(2000)
-                        .addSymbolStatistics(new Symbol("c"), cStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "c"), cStats)
                         .build())
                 .check(check -> {
                     check.outputRowsCount(144)
                             .symbolStats("a", assertion -> assertion.isEqualTo(expectedANotInC))
                             .symbolStats("b", assertion -> assertion.isEqualTo(bStats))
-                            .symbolStatsUnknown("c")
-                            .symbolStatsUnknown("sjo");
+                            .symbolStatsUnknown("c", DOUBLE)
+                            .symbolStatsUnknown("sjo", BOOLEAN);
                 });
     }
 
@@ -198,12 +198,12 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
     public void testFilterNegativeSemiJoin()
     {
         tester().assertStatsFor(pb -> {
-            Symbol a = pb.symbol("a", BIGINT);
-            Symbol b = pb.symbol("b", BIGINT);
-            Symbol c = pb.symbol("c", BIGINT);
+            Symbol a = pb.symbol("a", DOUBLE);
+            Symbol b = pb.symbol("b", DOUBLE);
+            Symbol c = pb.symbol("c", DOUBLE);
             Symbol semiJoinOutput = pb.symbol("sjo", BOOLEAN);
             return pb.filter(
-                    new NotExpression(new SymbolReference("sjo")),
+                    new Not(new Reference(BOOLEAN, "sjo")),
                     pb.semiJoin(
                             pb.values(LEFT_SOURCE_ID, a, b),
                             pb.values(RIGHT_SOURCE_ID, c),
@@ -216,19 +216,19 @@ public class TestSimpleFilterProjectSemiJoinStatsRule
         })
                 .withSourceStats(LEFT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(1000)
-                        .addSymbolStatistics(new Symbol("a"), aStats)
-                        .addSymbolStatistics(new Symbol("b"), bStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "a"), aStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "b"), bStats)
                         .build())
                 .withSourceStats(RIGHT_SOURCE_ID, PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(2000)
-                        .addSymbolStatistics(new Symbol("c"), cStats)
+                        .addSymbolStatistics(new Symbol(DOUBLE, "c"), cStats)
                         .build())
                 .check(check -> {
                     check.outputRowsCount(720)
                             .symbolStats("a", assertion -> assertion.isEqualTo(expectedANotInCWithExtraFilter))
                             .symbolStats("b", assertion -> assertion.isEqualTo(bStats))
-                            .symbolStatsUnknown("c")
-                            .symbolStatsUnknown("sjo");
+                            .symbolStatsUnknown("c", DOUBLE)
+                            .symbolStatsUnknown("sjo", BOOLEAN);
                 });
     }
 }

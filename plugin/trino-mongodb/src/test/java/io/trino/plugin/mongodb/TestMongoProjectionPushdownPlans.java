@@ -20,18 +20,20 @@ import com.google.common.io.Closer;
 import com.mongodb.client.MongoClient;
 import io.trino.Session;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TableHandle;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.connector.ColumnHandle;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
-import io.trino.sql.ir.ComparisonExpression;
-import io.trino.sql.ir.GenericLiteral;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.BasePushdownPlanTest;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.testing.PlanTester;
@@ -49,9 +51,9 @@ import static com.google.common.base.Predicates.equalTo;
 import static io.airlift.testing.Closeables.closeAllSuppress;
 import static io.trino.plugin.mongodb.MongoQueryRunner.createMongoClient;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -70,6 +72,9 @@ import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 public class TestMongoProjectionPushdownPlans
         extends BasePushdownPlanTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
+
     private static final String CATALOG = "mongodb";
     private static final String SCHEMA = "test";
 
@@ -127,7 +132,7 @@ public class TestMongoProjectionPushdownPlans
                 session,
                 any(
                         project(
-                                ImmutableMap.of("expr_1", expression(new SubscriptExpression(new SymbolReference("col0"), new LongLiteral(1))), "expr_2", expression(new SubscriptExpression(new SymbolReference("col0"), new LongLiteral(2)))),
+                                ImmutableMap.of("expr_1", expression(new FieldReference(new Reference(RowType.anonymousRow(BIGINT, BIGINT), "col0"), 0)), "expr_2", expression(new FieldReference(new Reference(RowType.anonymousRow(BIGINT, BIGINT), "col0"), 1))),
                                 tableScan(tableName, ImmutableMap.of("col0", "col0")))));
     }
 
@@ -145,7 +150,7 @@ public class TestMongoProjectionPushdownPlans
         Optional<TableHandle> tableHandle = getTableHandle(session, completeTableName);
         assertThat(tableHandle).as("expected the table handle to be present").isPresent();
 
-        MongoTableHandle mongoTableHandle = (MongoTableHandle) tableHandle.get().getConnectorHandle();
+        MongoTableHandle mongoTableHandle = (MongoTableHandle) tableHandle.get().connectorHandle();
         Map<String, ColumnHandle> columns = getColumnHandles(session, completeTableName);
 
         MongoColumnHandle column0Handle = (MongoColumnHandle) columns.get("col0");
@@ -168,12 +173,12 @@ public class TestMongoProjectionPushdownPlans
                 "SELECT col0.x FROM " + tableName + " WHERE col0.x = col1 + 3 and col0.y = 2",
                 anyTree(
                         filter(
-                                new ComparisonExpression(EQUAL, new SymbolReference("x"), new ArithmeticBinaryExpression(ADD, new SymbolReference("col1"), new GenericLiteral(BIGINT, "3"))),
+                                new Comparison(EQUAL, new Reference(BIGINT, "x"), new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "col1"), new Constant(BIGINT, 3L)))),
                                 tableScan(
                                         table -> {
                                             MongoTableHandle actualTableHandle = (MongoTableHandle) table;
-                                            TupleDomain<ColumnHandle> constraint = actualTableHandle.getConstraint();
-                                            return actualTableHandle.getProjectedColumns().equals(ImmutableSet.of(column1Handle, columnX))
+                                            TupleDomain<ColumnHandle> constraint = actualTableHandle.constraint();
+                                            return actualTableHandle.projectedColumns().equals(ImmutableSet.of(column1Handle, columnX))
                                                     && constraint.equals(TupleDomain.withColumnDomains(ImmutableMap.of(columnY, Domain.singleValue(BIGINT, 2L))));
                                         },
                                         TupleDomain.all(),
@@ -186,8 +191,8 @@ public class TestMongoProjectionPushdownPlans
                         tableScan(
                                 table -> {
                                     MongoTableHandle actualTableHandle = (MongoTableHandle) table;
-                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.getConstraint();
-                                    return actualTableHandle.getProjectedColumns().equals(ImmutableSet.of(column0Handle, columnY))
+                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.constraint();
+                                    return actualTableHandle.projectedColumns().equals(ImmutableSet.of(column0Handle, columnY))
                                             && constraint.equals(TupleDomain.withColumnDomains(ImmutableMap.of(columnX, Domain.singleValue(BIGINT, 5L))));
                                 },
                                 TupleDomain.all(),
@@ -199,9 +204,9 @@ public class TestMongoProjectionPushdownPlans
                 anyTree(
                         project(
                                 ImmutableMap.of(
-                                        "expr_0_x", expression(new SubscriptExpression(new SymbolReference("expr_0"), new LongLiteral(1))),
-                                        "expr_0", expression(new SymbolReference("expr_0")),
-                                        "expr_0_y", expression(new SubscriptExpression(new SymbolReference("expr_0"), new LongLiteral(2)))),
+                                        "expr_0_x", expression(new FieldReference(new Reference(RowType.anonymousRow(INTEGER), "expr_0"), 0)),
+                                        "expr_0", expression(new Reference(RowType.anonymousRow(INTEGER), "expr_0")),
+                                        "expr_0_y", expression(new FieldReference(new Reference(RowType.anonymousRow(INTEGER, INTEGER), "expr_0"), 1))),
                                 PlanMatchPattern.join(INNER, builder -> builder
                                         .equiCriteria("t_expr_1", "s_expr_1")
                                         .left(
@@ -209,11 +214,11 @@ public class TestMongoProjectionPushdownPlans
                                                         tableScan(
                                                                 table -> {
                                                                     MongoTableHandle actualTableHandle = (MongoTableHandle) table;
-                                                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.getConstraint();
+                                                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.constraint();
                                                                     Set<MongoColumnHandle> expectedProjections = ImmutableSet.of(column0Handle, column1Handle);
                                                                     TupleDomain<MongoColumnHandle> expectedConstraint = TupleDomain.withColumnDomains(
                                                                             ImmutableMap.of(columnX, Domain.singleValue(BIGINT, 2L)));
-                                                                    return actualTableHandle.getProjectedColumns().equals(expectedProjections)
+                                                                    return actualTableHandle.projectedColumns().equals(expectedProjections)
                                                                             && constraint.equals(expectedConstraint);
                                                                 },
                                                                 TupleDomain.all(),
@@ -242,7 +247,7 @@ public class TestMongoProjectionPushdownPlans
         Optional<TableHandle> tableHandle = getTableHandle(session, completeTableName);
         assertThat(tableHandle).as("expected the table handle to be present").isPresent();
 
-        MongoTableHandle mongoTableHandle = (MongoTableHandle) tableHandle.get().getConnectorHandle();
+        MongoTableHandle mongoTableHandle = (MongoTableHandle) tableHandle.get().connectorHandle();
         Map<String, ColumnHandle> columns = getColumnHandles(session, completeTableName);
 
         RowType rowType = RowType.rowType(
@@ -277,8 +282,8 @@ public class TestMongoProjectionPushdownPlans
                         tableScan(
                                 table -> {
                                     MongoTableHandle actualTableHandle = (MongoTableHandle) table;
-                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.getConstraint();
-                                    return actualTableHandle.getProjectedColumns().equals(ImmutableSet.of(columnRoot3))
+                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.constraint();
+                                    return actualTableHandle.projectedColumns().equals(ImmutableSet.of(columnRoot3))
                                             && constraint.equals(TupleDomain.all()); // Predicate will not get pushdown for dollar containing field
                                 },
                                 TupleDomain.all(),
@@ -290,8 +295,8 @@ public class TestMongoProjectionPushdownPlans
                         tableScan(
                                 table -> {
                                     MongoTableHandle actualTableHandle = (MongoTableHandle) table;
-                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.getConstraint();
-                                    return actualTableHandle.getProjectedColumns().equals(ImmutableSet.of(columnRoot3))
+                                    TupleDomain<ColumnHandle> constraint = actualTableHandle.constraint();
+                                    return actualTableHandle.projectedColumns().equals(ImmutableSet.of(columnRoot3))
                                             && constraint.equals(TupleDomain.all()); // Predicate will not get pushdown for dollar containing field
                                 },
                                 TupleDomain.all(),
@@ -304,11 +309,11 @@ public class TestMongoProjectionPushdownPlans
             Type type)
     {
         return new MongoColumnHandle(
-                baseColumnHandle.getBaseName(),
+                baseColumnHandle.baseName(),
                 dereferenceNames,
                 type,
-                baseColumnHandle.isHidden(),
-                baseColumnHandle.isDbRefField(),
-                baseColumnHandle.getComment());
+                baseColumnHandle.hidden(),
+                baseColumnHandle.dbRefField(),
+                baseColumnHandle.comment());
     }
 }

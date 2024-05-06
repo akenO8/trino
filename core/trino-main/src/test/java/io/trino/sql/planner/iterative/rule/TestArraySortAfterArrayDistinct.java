@@ -14,14 +14,16 @@
 package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
+import io.airlift.slice.Slices;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.type.ArrayType;
+import io.trino.sql.ir.Array;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.LambdaExpression;
-import io.trino.sql.ir.LongLiteral;
-import io.trino.sql.ir.StringLiteral;
+import io.trino.sql.ir.Lambda;
+import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -40,7 +42,6 @@ public class TestArraySortAfterArrayDistinct
         extends BaseRuleTest
 {
     private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
-    private static final ResolvedFunction ARRAY = FUNCTIONS.resolveFunction("$array", fromTypes(new ArrayType(VARCHAR)));
     private static final ResolvedFunction SORT = FUNCTIONS.resolveFunction("array_sort", fromTypes(new ArrayType(VARCHAR)));
     private static final ResolvedFunction SORT_WITH_LAMBDA = FUNCTIONS.resolveFunction("array_sort", fromTypes(new ArrayType(VARCHAR), new FunctionType(ImmutableList.of(VARCHAR, VARCHAR), INTEGER)));
     private static final ResolvedFunction DISTINCT = FUNCTIONS.resolveFunction("array_distinct", fromTypes(new ArrayType(VARCHAR)));
@@ -49,22 +50,22 @@ public class TestArraySortAfterArrayDistinct
     public void testArrayDistinctAfterArraySort()
     {
         test(
-                new FunctionCall(DISTINCT.toQualifiedName(), ImmutableList.of(new FunctionCall(SORT.toQualifiedName(), ImmutableList.of(new FunctionCall(ARRAY.toQualifiedName(), ImmutableList.of(new StringLiteral("a"))))))),
-                new FunctionCall(SORT.toQualifiedName(), ImmutableList.of(new FunctionCall(DISTINCT.toQualifiedName(), ImmutableList.of(new FunctionCall(ARRAY.toQualifiedName(), ImmutableList.of(new StringLiteral("a"))))))));
+                new Call(DISTINCT, ImmutableList.of(new Call(SORT, ImmutableList.of(new Array(VARCHAR, ImmutableList.of(new Constant(VARCHAR, Slices.utf8Slice("a")))))))),
+                new Call(SORT, ImmutableList.of(new Call(DISTINCT, ImmutableList.of(new Array(VARCHAR, ImmutableList.of(new Constant(VARCHAR, Slices.utf8Slice("a")))))))));
     }
 
     @Test
     public void testArrayDistinctAfterArraySortWithLambda()
     {
         test(
-                new FunctionCall(DISTINCT.toQualifiedName(), ImmutableList.of(
-                        new FunctionCall(SORT_WITH_LAMBDA.toQualifiedName(), ImmutableList.of(
-                                new FunctionCall(ARRAY.toQualifiedName(), ImmutableList.of(new StringLiteral("a"))),
-                                new LambdaExpression(ImmutableList.of("a", "b"), new LongLiteral(1)))))),
-                new FunctionCall(SORT_WITH_LAMBDA.toQualifiedName(), ImmutableList.of(
-                        new FunctionCall(DISTINCT.toQualifiedName(), ImmutableList.of(
-                                new FunctionCall(ARRAY.toQualifiedName(), ImmutableList.of(new StringLiteral("a"))))),
-                        new LambdaExpression(ImmutableList.of("a", "b"), new LongLiteral(1)))));
+                new Call(DISTINCT, ImmutableList.of(
+                        new Call(SORT_WITH_LAMBDA, ImmutableList.of(
+                                new Array(VARCHAR, ImmutableList.of(new Constant(VARCHAR, Slices.utf8Slice("a")))),
+                                new Lambda(ImmutableList.of(new Symbol(VARCHAR, "a"), new Symbol(VARCHAR, "b")), new Constant(INTEGER, 1L)))))),
+                new Call(SORT_WITH_LAMBDA, ImmutableList.of(
+                        new Call(DISTINCT, ImmutableList.of(
+                                new Array(VARCHAR, ImmutableList.of(new Constant(VARCHAR, Slices.utf8Slice("a")))))),
+                        new Lambda(ImmutableList.of(new Symbol(VARCHAR, "a"), new Symbol(VARCHAR, "b")), new Constant(INTEGER, 1L)))));
     }
 
     private void test(Expression original, Expression rewritten)
@@ -72,7 +73,7 @@ public class TestArraySortAfterArrayDistinct
         tester().assertThat(new ArraySortAfterArrayDistinct(tester().getPlannerContext()).projectExpressionRewrite())
                 .on(p -> p.project(
                         Assignments.builder()
-                                .put(p.symbol("output"), original)
+                                .put(p.symbol("output", original.type()), original)
                                 .build(),
                         p.values()))
                 .matches(

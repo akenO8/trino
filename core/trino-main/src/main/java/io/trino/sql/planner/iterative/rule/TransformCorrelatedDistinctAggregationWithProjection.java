@@ -41,7 +41,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.sql.planner.plan.JoinType.LEFT;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.filter;
@@ -57,22 +57,22 @@ import static java.util.Objects.requireNonNull;
  * This rule decorrelates a correlated subquery of LEFT correlated join with distinct operator (grouped aggregation with no aggregation assignments)
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - CorrelatedJoin LEFT (correlation: [c], filter: true, output: a, x)
  *      - Input (a, c)
  *      - Project (x <- b + 100)
  *           - Aggregation "distinct operator" group by [b]
  *                - Source (b) with correlated filter (b > c)
- * </pre>
+ * }</pre>
  * Into:
- * <pre>
+ * <pre>{@code
  * - Project (a <- a, x <- b + 100)
  *      - Aggregation "distinct operator" group by [a, c, unique, b]
  *           - LEFT join (filter: b > c)
  *                - UniqueId (unique)
  *                     - Input (a, c)
  *                - Source (b) decorrelated
- * </pre>
+ * }</pre>
  */
 public class TransformCorrelatedDistinctAggregationWithProjection
         implements Rule<CorrelatedJoinNode>
@@ -83,7 +83,7 @@ public class TransformCorrelatedDistinctAggregationWithProjection
     private static final Pattern<CorrelatedJoinNode> PATTERN = correlatedJoin()
             .with(type().equalTo(LEFT))
             .with(nonEmpty(Patterns.CorrelatedJoin.correlation()))
-            .with(filter().equalTo(TRUE_LITERAL))
+            .with(filter().equalTo(TRUE))
             .with(subquery().matching(project()
                     .capturedAs(PROJECTION)
                     .with(source().matching(aggregation()

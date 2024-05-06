@@ -15,15 +15,14 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.Session;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
-import io.trino.sql.ir.ArithmeticUnaryExpression;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
+import io.trino.spi.function.OperatorType;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
-import io.trino.sql.planner.IrTypeAnalyzer;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.GroupReference;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
@@ -45,8 +44,7 @@ import java.util.function.Function;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.ir.ArithmeticUnaryExpression.Sign.MINUS;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
@@ -56,26 +54,29 @@ import static io.trino.sql.planner.iterative.Lookup.noLookup;
 import static io.trino.sql.planner.iterative.rule.EliminateCrossJoins.getJoinOrder;
 import static io.trino.sql.planner.iterative.rule.EliminateCrossJoins.isOriginalOrder;
 import static io.trino.sql.planner.plan.JoinType.INNER;
-import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestEliminateCrossJoins
         extends BaseRuleTest
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
+    private static final ResolvedFunction NEGATION_BIGINT = FUNCTIONS.resolveOperator(OperatorType.NEGATION, ImmutableList.of(BIGINT));
+
     private final PlanNodeIdAllocator idAllocator = new PlanNodeIdAllocator();
 
     @Test
     public void testEliminateCrossJoin()
     {
-        tester().assertThat(new EliminateCrossJoins(tester().getPlannerContext(), tester().getTypeAnalyzer()))
+        tester().assertThat(new EliminateCrossJoins())
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, "ELIMINATE_CROSS_JOINS")
                 .on(crossJoinAndJoin(INNER))
                 .matches(
                         join(INNER, builder -> builder
-                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol("cySymbol"), new Symbol("bySymbol"))))
+                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol(BIGINT, "cySymbol"), new Symbol(BIGINT, "bySymbol"))))
                                 .left(
                                         join(INNER, leftJoinBuilder -> leftJoinBuilder
-                                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol("axSymbol"), new Symbol("cxSymbol"))))
+                                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol(BIGINT, "axSymbol"), new Symbol(BIGINT, "cxSymbol"))))
                                                 .left(any())
                                                 .right(any())))
                                 .right(any())));
@@ -84,7 +85,7 @@ public class TestEliminateCrossJoins
     @Test
     public void testRetainOutgoingGroupReferences()
     {
-        tester().assertThat(new EliminateCrossJoins(tester().getPlannerContext(), tester().getTypeAnalyzer()))
+        tester().assertThat(new EliminateCrossJoins())
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, "ELIMINATE_CROSS_JOINS")
                 .on(crossJoinAndJoin(INNER))
                 .matches(
@@ -98,7 +99,7 @@ public class TestEliminateCrossJoins
     @Test
     public void testDoNotReorderOuterJoin()
     {
-        tester().assertThat(new EliminateCrossJoins(tester().getPlannerContext(), tester().getTypeAnalyzer()))
+        tester().assertThat(new EliminateCrossJoins())
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, "ELIMINATE_CROSS_JOINS")
                 .on(crossJoinAndJoin(JoinType.LEFT))
                 .doesNotFire();
@@ -114,8 +115,6 @@ public class TestEliminateCrossJoins
     @Test
     public void testJoinOrder()
     {
-        Session session = testSessionBuilder().build();
-
         PlanNode plan =
                 joinNode(
                         joinNode(
@@ -125,7 +124,7 @@ public class TestEliminateCrossJoins
                         "a", "c",
                         "b", "c");
 
-        JoinGraph joinGraph = JoinGraph.buildFrom(tester().getPlannerContext(), plan, noLookup(), new PlanNodeIdAllocator(), session, new IrTypeAnalyzer(tester().getPlannerContext()), TypeProvider.empty());
+        JoinGraph joinGraph = JoinGraph.buildFrom(plan, noLookup(), new PlanNodeIdAllocator());
 
         assertThat(getJoinOrder(joinGraph)).isEqualTo(ImmutableList.of(0, 2, 1));
     }
@@ -133,8 +132,6 @@ public class TestEliminateCrossJoins
     @Test
     public void testJoinOrderWithRealCrossJoin()
     {
-        Session session = testSessionBuilder().build();
-
         PlanNode leftPlan =
                 joinNode(
                         joinNode(
@@ -155,7 +152,7 @@ public class TestEliminateCrossJoins
 
         PlanNode plan = joinNode(leftPlan, rightPlan);
 
-        JoinGraph joinGraph = JoinGraph.buildFrom(tester().getPlannerContext(), plan, noLookup(), new PlanNodeIdAllocator(), session, new IrTypeAnalyzer(tester().getPlannerContext()), TypeProvider.empty());
+        JoinGraph joinGraph = JoinGraph.buildFrom(plan, noLookup(), new PlanNodeIdAllocator());
 
         assertThat(getJoinOrder(joinGraph)).isEqualTo(ImmutableList.of(0, 2, 1, 3, 5, 4));
     }
@@ -163,8 +160,6 @@ public class TestEliminateCrossJoins
     @Test
     public void testJoinOrderWithMultipleEdgesBetweenNodes()
     {
-        Session session = testSessionBuilder().build();
-
         PlanNode plan =
                 joinNode(
                         joinNode(
@@ -175,7 +170,7 @@ public class TestEliminateCrossJoins
                         "b1", "c1",
                         "b2", "c2");
 
-        JoinGraph joinGraph = JoinGraph.buildFrom(tester().getPlannerContext(), plan, noLookup(), new PlanNodeIdAllocator(), session, new IrTypeAnalyzer(tester().getPlannerContext()), TypeProvider.empty());
+        JoinGraph joinGraph = JoinGraph.buildFrom(plan, noLookup(), new PlanNodeIdAllocator());
 
         assertThat(getJoinOrder(joinGraph)).isEqualTo(ImmutableList.of(0, 2, 1));
     }
@@ -183,8 +178,6 @@ public class TestEliminateCrossJoins
     @Test
     public void testDoesNotChangeOrderWithoutCrossJoin()
     {
-        Session session = testSessionBuilder().build();
-
         PlanNode plan =
                 joinNode(
                         joinNode(
@@ -194,7 +187,7 @@ public class TestEliminateCrossJoins
                         values("c"),
                         "b", "c");
 
-        JoinGraph joinGraph = JoinGraph.buildFrom(tester().getPlannerContext(), plan, noLookup(), new PlanNodeIdAllocator(), session, new IrTypeAnalyzer(tester().getPlannerContext()), TypeProvider.empty());
+        JoinGraph joinGraph = JoinGraph.buildFrom(plan, noLookup(), new PlanNodeIdAllocator());
 
         assertThat(getJoinOrder(joinGraph)).isEqualTo(ImmutableList.of(0, 1, 2));
     }
@@ -202,8 +195,6 @@ public class TestEliminateCrossJoins
     @Test
     public void testDoNotReorderCrossJoins()
     {
-        Session session = testSessionBuilder().build();
-
         PlanNode plan =
                 joinNode(
                         joinNode(
@@ -212,7 +203,7 @@ public class TestEliminateCrossJoins
                         values("c"),
                         "b", "c");
 
-        JoinGraph joinGraph = JoinGraph.buildFrom(tester().getPlannerContext(), plan, noLookup(), new PlanNodeIdAllocator(), session, new IrTypeAnalyzer(tester().getPlannerContext()), TypeProvider.empty());
+        JoinGraph joinGraph = JoinGraph.buildFrom(plan, noLookup(), new PlanNodeIdAllocator());
 
         assertThat(getJoinOrder(joinGraph)).isEqualTo(ImmutableList.of(0, 1, 2));
     }
@@ -220,7 +211,7 @@ public class TestEliminateCrossJoins
     @Test
     public void testEliminateCrossJoinWithNonIdentityProjections()
     {
-        tester().assertThat(new EliminateCrossJoins(tester().getPlannerContext(), tester().getTypeAnalyzer()))
+        tester().assertThat(new EliminateCrossJoins())
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, "ELIMINATE_CROSS_JOINS")
                 .on(p -> {
                     Symbol a1 = p.symbol("a1");
@@ -235,14 +226,14 @@ public class TestEliminateCrossJoins
                             INNER,
                             p.project(
                                     Assignments.of(
-                                            a2, new ArithmeticUnaryExpression(MINUS, new SymbolReference("a1")),
-                                            f, new SymbolReference("f")),
+                                            a2, new Call(NEGATION_BIGINT, ImmutableList.of(new Reference(BIGINT, "a1"))),
+                                            f, new Reference(BIGINT, "f")),
                                     p.join(
                                             INNER,
                                             p.project(
                                                     Assignments.of(
-                                                            a1, new SymbolReference("a1"),
-                                                            f, new ArithmeticUnaryExpression(MINUS, new SymbolReference("b"))),
+                                                            a1, new Reference(BIGINT, "a1"),
+                                                            f, new Call(NEGATION_BIGINT, ImmutableList.of(new Reference(BIGINT, "b")))),
                                                     p.join(
                                                             INNER,
                                                             p.values(a1),
@@ -256,35 +247,33 @@ public class TestEliminateCrossJoins
                 .matches(
                         node(ProjectNode.class,
                                 join(INNER, builder -> builder
-                                        .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol("d"), new Symbol("f"))))
+                                        .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol(BIGINT, "d"), new Symbol(BIGINT, "f"))))
                                         .left(join(INNER, leftJoinBuilder -> leftJoinBuilder
-                                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol("a2"), new Symbol("c"))))
+                                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol(BIGINT, "a2"), new Symbol(BIGINT, "c"))))
                                                 .left(
                                                         join(INNER, leftInnerJoinBuilder -> leftInnerJoinBuilder
-                                                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol("a1"), new Symbol("e"))))
+                                                                .equiCriteria(ImmutableList.of(aliases -> new EquiJoinClause(new Symbol(BIGINT, "a1"), new Symbol(BIGINT, "e"))))
                                                                 .left(
                                                                         strictProject(
                                                                                 ImmutableMap.of(
-                                                                                        "a2", expression(new ArithmeticUnaryExpression(MINUS, new SymbolReference("a1"))),
-                                                                                        "a1", expression(new SymbolReference("a1"))),
+                                                                                        "a2", expression(new Call(NEGATION_BIGINT, ImmutableList.of(new Reference(BIGINT, "a1")))),
+                                                                                        "a1", expression(new Reference(BIGINT, "a1"))),
                                                                                 PlanMatchPattern.values("a1")))
                                                                 .right(
                                                                         strictProject(
                                                                                 ImmutableMap.of(
-                                                                                        "e", expression(new SymbolReference("e"))),
+                                                                                        "e", expression(new Reference(BIGINT, "e"))),
                                                                                 PlanMatchPattern.values("e")))))
                                                 .right(any())))
                                         .right(
                                                 strictProject(
-                                                        ImmutableMap.of("f", expression(new ArithmeticUnaryExpression(MINUS, new SymbolReference("b")))),
+                                                        ImmutableMap.of("f", expression(new Call(NEGATION_BIGINT, ImmutableList.of(new Reference(BIGINT, "b"))))),
                                                         PlanMatchPattern.values("b"))))));
     }
 
     @Test
     public void testGiveUpOnComplexProjections()
     {
-        Session session = testSessionBuilder().build();
-
         PlanNode plan =
                 joinNode(
                         projectNode(
@@ -292,14 +281,14 @@ public class TestEliminateCrossJoins
                                         values("a1"),
                                         values("b")),
                                 "a2",
-                                new ArithmeticBinaryExpression(ADD, new SymbolReference("a1"), new SymbolReference("b")),
+                                new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "a1"), new Reference(BIGINT, "b"))),
                                 "b",
-                                new SymbolReference("b")),
+                                new Reference(BIGINT, "b")),
                         values("c"),
                         "a2", "c",
                         "b", "c");
 
-        assertThat(JoinGraph.buildFrom(tester().getPlannerContext(), plan, noLookup(), new PlanNodeIdAllocator(), session, new IrTypeAnalyzer(tester().getPlannerContext()), TypeProvider.empty()).size()).isEqualTo(2);
+        assertThat(JoinGraph.buildFrom(plan, noLookup(), new PlanNodeIdAllocator()).size()).isEqualTo(2);
     }
 
     private Function<PlanBuilder, PlanNode> crossJoinAndJoin(JoinType secondJoinType)
@@ -327,8 +316,8 @@ public class TestEliminateCrossJoins
                 idAllocator.getNextId(),
                 source,
                 Assignments.of(
-                        new Symbol(symbol1), expression1,
-                        new Symbol(symbol2), expression2));
+                        new Symbol(BIGINT, symbol1), expression1,
+                        new Symbol(BIGINT, symbol2), expression2));
     }
 
     private JoinNode joinNode(PlanNode left, PlanNode right, String... symbols)
@@ -337,7 +326,7 @@ public class TestEliminateCrossJoins
         ImmutableList.Builder<JoinNode.EquiJoinClause> criteria = ImmutableList.builder();
 
         for (int i = 0; i < symbols.length; i += 2) {
-            criteria.add(new JoinNode.EquiJoinClause(new Symbol(symbols[i]), new Symbol(symbols[i + 1])));
+            criteria.add(new JoinNode.EquiJoinClause(new Symbol(BIGINT, symbols[i]), new Symbol(BIGINT, symbols[i + 1])));
         }
 
         return new JoinNode(
@@ -362,7 +351,7 @@ public class TestEliminateCrossJoins
     {
         return new ValuesNode(
                 idAllocator.getNextId(),
-                Arrays.stream(symbols).map(Symbol::new).collect(toImmutableList()),
+                Arrays.stream(symbols).map(name -> new Symbol(BIGINT, name)).collect(toImmutableList()),
                 ImmutableList.of());
     }
 }

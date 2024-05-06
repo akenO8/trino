@@ -21,7 +21,6 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.trino.Session;
 import io.trino.connector.system.GlobalSystemConnector;
-import io.trino.metadata.ResolvedFunction.ResolvedFunctionDecoder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
@@ -80,7 +79,6 @@ import io.trino.spi.statistics.TableStatisticsMetadata;
 import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.planner.PartitioningHandle;
-import io.trino.sql.tree.QualifiedName;
 
 import java.util.Collection;
 import java.util.List;
@@ -99,7 +97,6 @@ import static io.trino.spi.function.FunctionDependencyDeclaration.NO_DEPENDENCIE
 import static io.trino.spi.function.FunctionId.toFunctionId;
 import static io.trino.spi.function.FunctionKind.SCALAR;
 import static io.trino.spi.type.DoubleType.DOUBLE;
-import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 
 public abstract class AbstractMockMetadata
         implements Metadata
@@ -110,8 +107,6 @@ public abstract class AbstractMockMetadata
     {
         return new AbstractMockMetadata() {};
     }
-
-    private final ResolvedFunctionDecoder functionDecoder = new ResolvedFunctionDecoder(TESTING_TYPE_MANAGER::getType);
 
     @Override
     public Set<ConnectorCapabilities> getConnectorCapabilities(Session session, CatalogHandle catalogHandle)
@@ -595,6 +590,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public Map<String, Object> getSchemaProperties(Session session, CatalogSchemaName schemaName)
     {
         throw new UnsupportedOperationException();
@@ -607,7 +608,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace)
+    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> viewProperties, boolean replace)
     {
         throw new UnsupportedOperationException();
     }
@@ -811,13 +812,6 @@ public abstract class AbstractMockMetadata
     public Collection<FunctionMetadata> listFunctions(Session session, CatalogSchemaName schema)
     {
         throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public ResolvedFunction decodeFunction(QualifiedName name)
-    {
-        return functionDecoder.fromQualifiedName(name)
-                .orElseThrow(() -> new IllegalArgumentException("Function is not resolved: " + name));
     }
 
     @Override

@@ -36,13 +36,16 @@ import static java.math.BigDecimal.TWO;
 
 @DefunctConfig({
         "experimental.big-query-max-task-memory",
-        "task.max-memory",
+        "sink.new-implementation",
         "task.http-notification-threads",
         "task.info-refresh-max-wait",
-        "task.operator-pre-allocated-memory",
-        "sink.new-implementation",
         "task.legacy-scheduling-behavior",
-        "task.level-absolute-priority"})
+        "task.level-absolute-priority",
+        "task.max-memory",
+        "task.operator-pre-allocated-memory",
+        "task.shard.max-threads",
+        "task.verbose-stats",
+})
 public class TaskManagerConfig
 {
     private boolean threadPerDriverSchedulerEnabled = true;
@@ -167,7 +170,6 @@ public class TaskManagerConfig
         return perOperatorCpuTimerEnabled;
     }
 
-    @LegacyConfig("task.verbose-stats")
     @Config("task.per-operator-cpu-timer-enabled")
     public TaskManagerConfig setPerOperatorCpuTimerEnabled(boolean perOperatorCpuTimerEnabled)
     {
@@ -251,7 +253,6 @@ public class TaskManagerConfig
         return this;
     }
 
-    @NotNull
     public boolean isShareIndexLoading()
     {
         return shareIndexLoading;
@@ -284,7 +285,6 @@ public class TaskManagerConfig
         return maxWorkerThreads;
     }
 
-    @LegacyConfig("task.shard.max-threads")
     @Config("task.max-worker-threads")
     public TaskManagerConfig setMaxWorkerThreads(String maxWorkerThreads)
     {

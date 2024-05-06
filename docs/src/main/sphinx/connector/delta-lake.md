@@ -328,7 +328,7 @@ No other types are supported.
 
 ## Delta Lake table features
 
-The connector supports the following [Delta Lake table 
+The connector supports the following [Delta Lake table
 features](https://github.com/delta-io/delta/blob/master/PROTOCOL.md#table-features):
 
 :::{list-table} Table features
@@ -351,6 +351,8 @@ features](https://github.com/delta-io/delta/blob/master/PROTOCOL.md#table-featur
   - Readers only
 * - Timestamp without time zone
   - Readers and writers
+* - V2 checkpoint
+  - Readers only
 :::
 
 No other features are supported.
@@ -387,7 +389,7 @@ security values in the following table:
   - Authorization checks are enforced using a catalog-level access control
     configuration file whose path is specified in the `security.config-file`
     catalog configuration property. See [](catalog-file-based-access-control)
-    for information on the authorization configuration file. :::
+    for information on the authorization configuration file.
 :::
 
 (delta-lake-sql-support)=
@@ -406,6 +408,31 @@ statements, the connector supports the following features:
   - {ref}`sql-schema-table-management`, see details for  {ref}`Delta Lake schema
     and table management <delta-lake-schema-table-management>`
   - {ref}`sql-view-management`
+
+(delta-time-travel)=
+
+### Time travel queries
+
+The connector offers the ability to query historical data. This allows to
+query the table as it was when a previous snapshot of the table was taken, even
+if the data has since been modified or deleted.
+
+The historical data of the table can be retrieved by specifying the version
+number corresponding to the version of the table to be retrieved:
+
+```
+SELECT *
+FROM example.testdb.customer_orders FOR VERSION AS OF 3
+```
+
+Use the `$history` metadata table to determine the snapshot ID of the
+table like in the following query:
+
+```
+SELECT version, operation
+FROM example.testdb."customer_orders$history"
+ORDER BY version DESC
+```
 
 ### Procedures
 
@@ -582,6 +609,25 @@ TABLE AS </sql/create-table-as>` syntax.
 
 The connector supports the following [](/sql/alter-table) statements.
 
+(delta-lake-create-or-replace)=
+#### Replace tables
+
+The connector supports replacing an existing table as an atomic operation.
+Atomic table replacement creates a new snapshot with the new table definition as
+part of the [table history](#delta-lake-history-table).
+
+To replace a table, use [`CREATE OR REPLACE TABLE`](/sql/create-table) or
+[`CREATE OR REPLACE TABLE AS`](/sql/create-table-as).
+
+In this example, a table `example_table` is replaced by a completely new
+definition and data from the source table:
+
+```sql
+CREATE OR REPLACE TABLE example_table
+WITH (partitioned_by = ARRAY['a'])
+AS SELECT * FROM another_table;
+```
+
 (delta-lake-alter-table-execute)=
 #### ALTER TABLE EXECUTE
 
@@ -600,7 +646,7 @@ one of the following conditions:
 
 * The table type is external.
 * The table is backed by a metastore that does not perform object storage
-  operations, for example, AWS Glue or Thrift.
+  operations, for example, AWS Glue.
 
 #### Table properties
 
@@ -655,6 +701,7 @@ metadata table name to the table name:
 SELECT * FROM "test_table$history"
 ```
 
+(delta-lake-history-table)=
 ##### `$history` table
 
 The `$history` table provides a log of the metadata changes performed on
@@ -754,7 +801,6 @@ directly or used in conditional statements.
   : Size of the file for this row.
 
 (delta-lake-fte-support)=
-
 ## Fault-tolerant execution support
 
 The connector supports {doc}`/admin/fault-tolerant-execution` of query
@@ -1084,17 +1130,6 @@ keep a backup of the original values if you change them.
     results in Trino maximizing the parallelization of data access by default.
     Attempting to set it higher results in Trino not being able to start.
   - `Integer.MAX_VALUE`
-* - `delta.max-initial-splits`
-  - For each query, the coordinator assigns file sections to read first at the
-    `initial-split-size` until the `max-initial-splits` is reached. Then it
-    starts issuing reads of the `max-split-size` size.
-  - `200`
-* - `delta.max-initial-split-size`
-  - Sets the initial [](prop-type-data-size) for a single read section
-    assigned to a worker until `max-initial-splits` have been processed. You can
-    also use the corresponding catalog session property
-    `<catalog-name>.max_initial_split_size`.
-  - `32MB`
 * - `delta.max-split-size`
   - Sets the largest [](prop-type-data-size) for a single read section
     assigned to a worker after `max-initial-splits` have been processed. You can

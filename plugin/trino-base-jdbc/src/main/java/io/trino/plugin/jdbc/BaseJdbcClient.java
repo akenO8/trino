@@ -35,6 +35,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
@@ -206,6 +207,34 @@ public abstract class BaseJdbcClient
     }
 
     @Override
+    public List<RelationCommentMetadata> getAllTableComments(ConnectorSession session, Optional<String> schema)
+    {
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            ConnectorIdentity identity = session.getIdentity();
+            Optional<String> remoteSchema = schema.map(schemaName -> identifierMapping.toRemoteSchemaName(getRemoteIdentifiers(connection), identity, schemaName));
+            if (remoteSchema.isPresent() && !filterSchema(remoteSchema.get())) {
+                return ImmutableList.of();
+            }
+
+            try (ResultSet resultSet = getTables(connection, remoteSchema, Optional.empty())) {
+                ImmutableList.Builder<RelationCommentMetadata> list = ImmutableList.builder();
+                while (resultSet.next()) {
+                    String remoteSchemaFromResultSet = getTableSchemaName(resultSet);
+                    String tableSchema = identifierMapping.fromRemoteSchemaName(remoteSchemaFromResultSet);
+                    String tableName = identifierMapping.fromRemoteTableName(remoteSchemaFromResultSet, resultSet.getString("TABLE_NAME"));
+                    if (filterSchema(tableSchema)) {
+                        list.add(RelationCommentMetadata.forRelation(new SchemaTableName(tableSchema, tableName), getTableComment(resultSet)));
+                    }
+                }
+                return list.build();
+            }
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
     public Optional<JdbcTableHandle> getTableHandle(ConnectorSession session, SchemaTableName schemaTableName)
     {
         try (Connection connection = connectionFactory.openConnection(session)) {
@@ -239,7 +268,7 @@ public abstract class BaseJdbcClient
                 PreparedStatement preparedStatement = queryBuilder.prepareStatement(this, session, connection, preparedQuery, Optional.empty())) {
             ResultSetMetaData metadata = preparedStatement.getMetaData();
             if (metadata == null) {
-                throw new TrinoException(NOT_SUPPORTED, "Query not supported: ResultSetMetaData not available for query: " + preparedQuery.getQuery());
+                throw new TrinoException(NOT_SUPPORTED, "Query not supported: ResultSetMetaData not available for query: " + preparedQuery.query());
             }
             return new JdbcTableHandle(
                     new JdbcQueryRelationHandle(preparedQuery),
@@ -394,7 +423,7 @@ public abstract class BaseJdbcClient
 
     protected Optional<ColumnMapping> getForcedMappingToVarchar(JdbcTypeHandle typeHandle)
     {
-        if (typeHandle.getJdbcTypeName().isPresent() && jdbcTypesMappedToVarchar.contains(typeHandle.getJdbcTypeName().get())) {
+        if (typeHandle.jdbcTypeName().isPresent() && jdbcTypesMappedToVarchar.contains(typeHandle.jdbcTypeName().get())) {
             return mapToUnboundedVarchar(typeHandle);
         }
         return Optional.empty();
@@ -409,7 +438,7 @@ public abstract class BaseJdbcClient
                 (statement, index, value) -> {
                     throw new TrinoException(
                             NOT_SUPPORTED,
-                            "Underlying type that is mapped to VARCHAR is not supported for INSERT: " + typeHandle.getJdbcTypeName().get());
+                            "Underlying type that is mapped to VARCHAR is not supported for INSERT: " + typeHandle.jdbcTypeName().get());
                 },
                 DISABLE_PUSHDOWN));
     }
@@ -1570,9 +1599,9 @@ public abstract class BaseJdbcClient
             return (query, sortItems, limit) -> {
                 String orderBy = sortItems.stream()
                         .map(sortItem -> {
-                            String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                            String nullsHandling = sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
-                            return format("%s %s %s", quote.apply(sortItem.getColumn().getColumnName()), ordering, nullsHandling);
+                            String ordering = sortItem.sortOrder().isAscending() ? "ASC" : "DESC";
+                            String nullsHandling = sortItem.sortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
+                            return format("%s %s %s", quote.apply(sortItem.column().getColumnName()), ordering, nullsHandling);
                         })
                         .collect(joining(", "));
 

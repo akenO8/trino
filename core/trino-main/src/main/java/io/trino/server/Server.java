@@ -20,7 +20,6 @@ import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.TypeLiteral;
-import com.google.inject.util.Types;
 import io.airlift.bootstrap.ApplicationConfigurationException;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.discovery.client.Announcer;
@@ -44,6 +43,7 @@ import io.trino.client.NodeVersion;
 import io.trino.connector.CatalogManagerConfig;
 import io.trino.connector.CatalogManagerConfig.CatalogMangerKind;
 import io.trino.connector.CatalogManagerModule;
+import io.trino.connector.CatalogStoreManager;
 import io.trino.connector.ConnectorServices;
 import io.trino.connector.ConnectorServicesProvider;
 import io.trino.eventlistener.EventListenerManager;
@@ -73,6 +73,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 
@@ -94,6 +95,10 @@ public class Server
 
     private void doStart(String trinoVersion)
     {
+        // Trino server behavior does not depend on locale settings.
+        // Use en_US as this is what Trino is tested with.
+        Locale.setDefault(Locale.US);
+
         long startTime = System.nanoTime();
         verifyJvmRequirements();
         verifySystemTimeIsReasonable();
@@ -142,6 +147,11 @@ public class Server
 
             injector.getInstance(PluginInstaller.class).loadPlugins();
 
+            var catalogStoreManager = injector.getInstance(Key.get(new TypeLiteral<Optional<CatalogStoreManager>>() {}));
+            if (catalogStoreManager.isPresent()) {
+                catalogStoreManager.get().loadConfiguredCatalogStore();
+            }
+
             ConnectorServicesProvider connectorServicesProvider = injector.getInstance(ConnectorServicesProvider.class);
             connectorServicesProvider.loadInitialCatalogs();
 
@@ -162,16 +172,17 @@ public class Server
             injector.getInstance(SessionPropertyDefaults.class).loadConfigurationManager();
             injector.getInstance(ResourceGroupManager.class).loadConfigurationManager();
             injector.getInstance(AccessControlManager.class).loadSystemAccessControl();
-            injector.getInstance(optionalKey(PasswordAuthenticatorManager.class))
+            injector.getInstance(Key.get(new TypeLiteral<Optional<PasswordAuthenticatorManager>>() {}))
                     .ifPresent(PasswordAuthenticatorManager::loadPasswordAuthenticator);
             injector.getInstance(EventListenerManager.class).loadEventListeners();
             injector.getInstance(GroupProviderManager.class).loadConfiguredGroupProvider();
             injector.getInstance(ExchangeManagerRegistry.class).loadExchangeManager();
             injector.getInstance(CertificateAuthenticatorManager.class).loadCertificateAuthenticator();
-            injector.getInstance(optionalKey(HeaderAuthenticatorManager.class))
+            injector.getInstance(Key.get(new TypeLiteral<Optional<HeaderAuthenticatorManager>>() {}))
                     .ifPresent(HeaderAuthenticatorManager::loadHeaderAuthenticator);
 
-            injector.getInstance(optionalKey(OAuth2Client.class)).ifPresent(OAuth2Client::load);
+            injector.getInstance(Key.get(new TypeLiteral<Optional<OAuth2Client>>() {}))
+                    .ifPresent(OAuth2Client::load);
 
             injector.getInstance(Announcer.class).start();
 
@@ -212,12 +223,6 @@ public class Server
                 .map(ConnectorServices::getEventListeners)
                 .flatMap(Collection::stream)
                 .forEach(eventListenerManager::addEventListener);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T> Key<Optional<T>> optionalKey(Class<T> type)
-    {
-        return Key.get((TypeLiteral<Optional<T>>) TypeLiteral.get(Types.newParameterizedType(Optional.class, type)));
     }
 
     private static void addMessages(StringBuilder output, String type, List<Object> messages)

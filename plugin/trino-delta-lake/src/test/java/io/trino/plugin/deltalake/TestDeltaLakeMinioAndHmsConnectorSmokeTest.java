@@ -184,7 +184,7 @@ public class TestDeltaLakeMinioAndHmsConnectorSmokeTest
     {
         String tableName = "test_invariants_" + randomNameSuffix();
         hiveMinioDataLake.copyResources("deltalake/invariants", tableName);
-        assertUpdate("CALL system.register_table('%s', '%s', '%s')".formatted(SCHEMA, tableName, getLocationForTable(bucketName, tableName)));
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, getLocationForTable(bucketName, tableName)));
 
         assertQuery("SELECT * FROM " + tableName, "VALUES 1");
         assertUpdate("INSERT INTO " + tableName + " VALUES(2)", 1);
@@ -206,7 +206,7 @@ public class TestDeltaLakeMinioAndHmsConnectorSmokeTest
     {
         String tableName = "test_invariants_writer_feature_" + randomNameSuffix();
         hiveMinioDataLake.copyResources("databricks122/invariants_writer_feature", tableName);
-        assertUpdate("CALL system.register_table('%s', '%s', '%s')".formatted(SCHEMA, tableName, getLocationForTable(bucketName, tableName)));
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, getLocationForTable(bucketName, tableName)));
 
         assertQuery("SELECT * FROM " + tableName, "VALUES 1");
         assertUpdate("INSERT INTO " + tableName + " VALUES 2", 1);
@@ -226,8 +226,7 @@ public class TestDeltaLakeMinioAndHmsConnectorSmokeTest
         String tableName = "test_schema_evolution_on_table_with_column_invariant_" + randomNameSuffix();
         hiveMinioDataLake.copyResources("deltalake/invariants", tableName);
         getQueryRunner().execute(format(
-                "CALL system.register_table('%s', '%s', '%s')",
-                SCHEMA,
+                "CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')",
                 tableName,
                 getLocationForTable(bucketName, tableName)));
 
@@ -251,6 +250,22 @@ public class TestDeltaLakeMinioAndHmsConnectorSmokeTest
     public void testConcurrentInsertsReconciliationForBlindInserts()
     {
         // testConcurrentInsertsReconciliation requires safe writes capability to avoid test flakiness
+    }
+
+    @Override
+    @Test
+    @Disabled
+    public void testConcurrentInsertsSelectingFromTheSameTable()
+    {
+        // testConcurrentInsertsSelectingFromTheSameTable requires safe writes capability to avoid test flakiness
+    }
+
+    @Override
+    @Test
+    @Disabled
+    public void testConcurrentInsertsReconciliationForMixedInserts()
+    {
+        // testConcurrentInsertsReconciliationForMixedInserts requires safe writes capability to avoid test flakiness
     }
 
     private String lockTable(String tableName, java.time.Duration lockDuration)

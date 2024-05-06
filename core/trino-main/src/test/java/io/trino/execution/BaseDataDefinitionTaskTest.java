@@ -37,6 +37,7 @@ import io.trino.metadata.ViewDefinition;
 import io.trino.security.AccessControl;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
@@ -180,7 +181,7 @@ public abstract class BaseDataDefinitionTaskTest
 
     protected static QualifiedName asQualifiedName(QualifiedObjectName qualifiedObjectName)
     {
-        return QualifiedName.of(qualifiedObjectName.getCatalogName(), qualifiedObjectName.getSchemaName(), qualifiedObjectName.getObjectName());
+        return QualifiedName.of(qualifiedObjectName.catalogName(), qualifiedObjectName.schemaName(), qualifiedObjectName.objectName());
     }
 
     protected MaterializedViewDefinition someMaterializedView()
@@ -326,7 +327,7 @@ public abstract class BaseDataDefinitionTaskTest
         @Override
         public TableSchema getTableSchema(Session session, TableHandle tableHandle)
         {
-            return new TableSchema(TEST_CATALOG_NAME, getTableMetadata(tableHandle).getTableSchema());
+            return new TableSchema(new CatalogName(TEST_CATALOG_NAME), getTableMetadata(tableHandle).getTableSchema());
         }
 
         @Override
@@ -342,7 +343,7 @@ public abstract class BaseDataDefinitionTaskTest
         @Override
         public TableMetadata getTableMetadata(Session session, TableHandle tableHandle)
         {
-            return new TableMetadata(TEST_CATALOG_NAME, getTableMetadata(tableHandle));
+            return new TableMetadata(new CatalogName(TEST_CATALOG_NAME), getTableMetadata(tableHandle));
         }
 
         @Override
@@ -443,7 +444,7 @@ public abstract class BaseDataDefinitionTaskTest
 
         private SchemaTableName getTableName(TableHandle tableHandle)
         {
-            return ((TestingTableHandle) tableHandle.getConnectorHandle()).getTableName();
+            return ((TestingTableHandle) tableHandle.connectorHandle()).getTableName();
         }
 
         @Override
@@ -519,7 +520,7 @@ public abstract class BaseDataDefinitionTaskTest
                             view.getCatalog(),
                             view.getSchema(),
                             view.getColumns().stream()
-                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.getName()) ? new ViewColumn(currentViewColumn.getName(), currentViewColumn.getType(), comment) : currentViewColumn)
+                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.name()) ? new ViewColumn(currentViewColumn.name(), currentViewColumn.type(), comment) : currentViewColumn)
                                     .collect(toImmutableList()),
                             view.getGracePeriod(),
                             view.getComment(),
@@ -541,7 +542,7 @@ public abstract class BaseDataDefinitionTaskTest
         }
 
         @Override
-        public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace)
+        public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> viewProperties, boolean replace)
         {
             checkArgument(replace || !views.containsKey(viewName.asSchemaTableName()));
             views.put(viewName.asSchemaTableName(), definition);
@@ -615,7 +616,7 @@ public abstract class BaseDataDefinitionTaskTest
                             view.getCatalog(),
                             view.getSchema(),
                             view.getColumns().stream()
-                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.getName()) ? new ViewColumn(currentViewColumn.getName(), currentViewColumn.getType(), comment) : currentViewColumn)
+                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.name()) ? new ViewColumn(currentViewColumn.name(), currentViewColumn.type(), comment) : currentViewColumn)
                                     .collect(toImmutableList()),
                             view.getComment(),
                             view.getRunAsIdentity(),

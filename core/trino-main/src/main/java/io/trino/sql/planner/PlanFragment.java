@@ -16,17 +16,19 @@ package io.trino.sql.planner;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.Immutable;
-import io.trino.connector.CatalogProperties;
 import io.trino.cost.StatsAndCosts;
-import io.trino.metadata.LanguageScalarFunctionData;
+import io.trino.spi.catalog.CatalogProperties;
+import io.trino.spi.function.FunctionId;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.RemoteSourceNode;
 import io.trino.sql.planner.plan.TableScanNode;
+import io.trino.sql.routine.ir.IrRoutine;
 
 import java.util.List;
 import java.util.Map;
@@ -43,7 +45,7 @@ public class PlanFragment
 {
     private final PlanFragmentId id;
     private final PlanNode root;
-    private final Map<Symbol, Type> symbols;
+    private final Set<Symbol> symbols;
     private final PartitioningHandle partitioning;
     private final Optional<Integer> partitionCount;
     private final List<PlanNodeId> partitionedSources;
@@ -54,7 +56,7 @@ public class PlanFragment
     private final PartitioningScheme outputPartitioningScheme;
     private final StatsAndCosts statsAndCosts;
     private final List<CatalogProperties> activeCatalogs;
-    private final List<LanguageScalarFunctionData> languageFunctions;
+    private final Map<FunctionId, IrRoutine> languageFunctions;
     private final Optional<String> jsonRepresentation;
     private final boolean containsTableScanNode;
 
@@ -62,7 +64,7 @@ public class PlanFragment
     private PlanFragment(
             PlanFragmentId id,
             PlanNode root,
-            Map<Symbol, Type> symbols,
+            Set<Symbol> symbols,
             PartitioningHandle partitioning,
             Optional<Integer> partitionCount,
             List<PlanNodeId> partitionedSources,
@@ -73,7 +75,7 @@ public class PlanFragment
             PartitioningScheme outputPartitioningScheme,
             StatsAndCosts statsAndCosts,
             List<CatalogProperties> activeCatalogs,
-            List<LanguageScalarFunctionData> languageFunctions)
+            Map<FunctionId, IrRoutine> languageFunctions)
     {
         this.id = requireNonNull(id, "id is null");
         this.root = requireNonNull(root, "root is null");
@@ -88,7 +90,7 @@ public class PlanFragment
         this.outputPartitioningScheme = requireNonNull(outputPartitioningScheme, "outputPartitioningScheme is null");
         this.statsAndCosts = requireNonNull(statsAndCosts, "statsAndCosts is null");
         this.activeCatalogs = requireNonNull(activeCatalogs, "activeCatalogs is null");
-        this.languageFunctions = requireNonNull(languageFunctions, "languageFunctions is null");
+        this.languageFunctions = ImmutableMap.copyOf(languageFunctions);
         this.jsonRepresentation = Optional.empty();
         this.containsTableScanNode = partitionedSourceNodes.stream().anyMatch(TableScanNode.class::isInstance);
     }
@@ -97,14 +99,14 @@ public class PlanFragment
     public PlanFragment(
             @JsonProperty("id") PlanFragmentId id,
             @JsonProperty("root") PlanNode root,
-            @JsonProperty("symbols") Map<Symbol, Type> symbols,
+            @JsonProperty("symbols") Set<Symbol> symbols,
             @JsonProperty("partitioning") PartitioningHandle partitioning,
             @JsonProperty("partitionCount") Optional<Integer> partitionCount,
             @JsonProperty("partitionedSources") List<PlanNodeId> partitionedSources,
             @JsonProperty("outputPartitioningScheme") PartitioningScheme outputPartitioningScheme,
             @JsonProperty("statsAndCosts") StatsAndCosts statsAndCosts,
             @JsonProperty("activeCatalogs") List<CatalogProperties> activeCatalogs,
-            @JsonProperty("languageFunctions") List<LanguageScalarFunctionData> languageFunctions,
+            @JsonProperty("languageFunctions") Map<FunctionId, IrRoutine> languageFunctions,
             @JsonProperty("jsonRepresentation") Optional<String> jsonRepresentation)
     {
         this.id = requireNonNull(id, "id is null");
@@ -116,7 +118,7 @@ public class PlanFragment
         this.partitionedSourcesSet = ImmutableSet.copyOf(partitionedSources);
         this.statsAndCosts = requireNonNull(statsAndCosts, "statsAndCosts is null");
         this.activeCatalogs = requireNonNull(activeCatalogs, "activeCatalogs is null");
-        this.languageFunctions = requireNonNull(languageFunctions, "languageFunctions is null");
+        this.languageFunctions = ImmutableMap.copyOf(languageFunctions);
         this.jsonRepresentation = requireNonNull(jsonRepresentation, "jsonRepresentation is null");
 
         checkArgument(
@@ -128,7 +130,7 @@ public class PlanFragment
                 "Root node outputs (%s) does not include all fragment outputs (%s)", root.getOutputSymbols(), outputPartitioningScheme.getOutputLayout());
 
         types = outputPartitioningScheme.getOutputLayout().stream()
-                .map(symbols::get)
+                .map(Symbol::type)
                 .collect(toImmutableList());
 
         this.partitionedSourceNodes = findSources(root, partitionedSources);
@@ -154,7 +156,7 @@ public class PlanFragment
     }
 
     @JsonProperty
-    public Map<Symbol, Type> getSymbols()
+    public Set<Symbol> getSymbols()
     {
         return symbols;
     }
@@ -201,7 +203,7 @@ public class PlanFragment
     }
 
     @JsonProperty
-    public List<LanguageScalarFunctionData> getLanguageFunctions()
+    public Map<FunctionId, IrRoutine> getLanguageFunctions()
     {
         return languageFunctions;
     }
@@ -311,54 +313,6 @@ public class PlanFragment
                 .add("partitionedSource", partitionedSources)
                 .add("outputPartitioningScheme", outputPartitioningScheme)
                 .toString();
-    }
-
-    public PlanFragment withPartitionCount(Optional<Integer> partitionCount)
-    {
-        return new PlanFragment(
-                this.id,
-                this.root,
-                this.symbols,
-                this.partitioning,
-                partitionCount,
-                this.partitionedSources,
-                this.outputPartitioningScheme,
-                this.statsAndCosts,
-                this.activeCatalogs,
-                this.languageFunctions,
-                this.jsonRepresentation);
-    }
-
-    public PlanFragment withOutputPartitioningScheme(PartitioningScheme outputPartitioningScheme)
-    {
-        return new PlanFragment(
-                this.id,
-                this.root,
-                this.symbols,
-                this.partitioning,
-                this.partitionCount,
-                this.partitionedSources,
-                outputPartitioningScheme,
-                this.statsAndCosts,
-                this.activeCatalogs,
-                this.languageFunctions,
-                this.jsonRepresentation);
-    }
-
-    public PlanFragment withRoot(PlanNode root)
-    {
-        return new PlanFragment(
-                this.id,
-                root,
-                this.symbols,
-                this.partitioning,
-                this.partitionCount,
-                this.partitionedSources,
-                this.outputPartitioningScheme,
-                this.statsAndCosts,
-                this.activeCatalogs,
-                this.languageFunctions,
-                this.jsonRepresentation);
     }
 
     public PlanFragment withActiveCatalogs(List<CatalogProperties> activeCatalogs)

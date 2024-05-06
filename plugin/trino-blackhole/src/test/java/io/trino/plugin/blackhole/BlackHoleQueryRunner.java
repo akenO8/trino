@@ -44,7 +44,6 @@ public final class BlackHoleQueryRunner
                 .build();
 
         QueryRunner queryRunner = DistributedQueryRunner.builder(session)
-                .setNodeCount(4)
                 .setExtraProperties(extraProperties)
                 .build();
 
@@ -67,7 +66,6 @@ public final class BlackHoleQueryRunner
             throws Exception
     {
         QueryRunner queryRunner = createQueryRunner(ImmutableMap.of("http-server.http.port", "8080"));
-        Thread.sleep(10);
         Logger log = Logger.get(BlackHoleQueryRunner.class);
         log.info("======== SERVER STARTED ========");
         log.info("\n====\n%s\n====", queryRunner.getCoordinator().getBaseUrl());

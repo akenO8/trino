@@ -104,11 +104,13 @@ public final class DeltaLakeSchemaSupport
     private static final String IDENTITY_COLUMNS_FEATURE_NAME = "identityColumns";
     private static final String INVARIANTS_FEATURE_NAME = "invariants";
     public static final String TIMESTAMP_NTZ_FEATURE_NAME = "timestampNtz";
+    public static final String V2_CHECKPOINT_FEATURE_NAME = "v2Checkpoint";
 
     private static final Set<String> SUPPORTED_READER_FEATURES = ImmutableSet.<String>builder()
             .add(COLUMN_MAPPING_FEATURE_NAME)
             .add(TIMESTAMP_NTZ_FEATURE_NAME)
             .add(DELETION_VECTORS_FEATURE_NAME)
+            .add(V2_CHECKPOINT_FEATURE_NAME)
             .build();
     private static final Set<String> SUPPORTED_WRITER_FEATURES = ImmutableSet.<String>builder()
             .add(APPEND_ONLY_FEATURE_NAME)
@@ -219,8 +221,8 @@ public final class DeltaLakeSchemaSupport
             return ImmutableList.of();
         }
         return schema.stream()
-                .filter(entry -> originalPartitionColumns.contains(entry.getName()))
-                .map(entry -> new DeltaLakeColumnHandle(entry.getName(), entry.getType(), OptionalInt.empty(), entry.getPhysicalName(), entry.getPhysicalColumnType(), PARTITION_KEY, Optional.empty()))
+                .filter(entry -> originalPartitionColumns.contains(entry.name()))
+                .map(entry -> new DeltaLakeColumnHandle(entry.name(), entry.type(), OptionalInt.empty(), entry.physicalName(), entry.physicalColumnType(), PARTITION_KEY, Optional.empty()))
                 .collect(toImmutableList());
     }
 
@@ -420,7 +422,7 @@ public final class DeltaLakeSchemaSupport
     public static List<ColumnMetadata> extractColumnMetadata(MetadataEntry metadataEntry, ProtocolEntry protocolEntry, TypeManager typeManager)
     {
         return extractSchema(metadataEntry, protocolEntry, typeManager).stream()
-                .map(DeltaLakeColumnMetadata::getColumnMetadata)
+                .map(DeltaLakeColumnMetadata::columnMetadata)
                 .collect(toImmutableList());
     }
 

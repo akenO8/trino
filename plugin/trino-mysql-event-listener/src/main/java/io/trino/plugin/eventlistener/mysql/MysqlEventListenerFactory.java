@@ -86,6 +86,7 @@ public class MysqlEventListenerFactory
         @Singleton
         @Provides
         public ConnectionFactory createConnectionFactory(MysqlEventListenerConfig config)
+                throws SQLException
         {
             return () -> new Driver().connect(config.getUrl(), new Properties());
         }

@@ -145,6 +145,7 @@ import io.trino.split.PageSourceManager;
 import io.trino.split.SplitManager;
 import io.trino.split.SplitSource;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.SqlEnvironmentConfig;
 import io.trino.sql.analyzer.Analysis;
 import io.trino.sql.analyzer.Analyzer;
 import io.trino.sql.analyzer.AnalyzerFactory;
@@ -222,7 +223,7 @@ import static io.trino.connector.CatalogServiceProviderModule.createIndexProvide
 import static io.trino.connector.CatalogServiceProviderModule.createMaterializedViewPropertyManager;
 import static io.trino.connector.CatalogServiceProviderModule.createNodePartitioningProvider;
 import static io.trino.connector.CatalogServiceProviderModule.createPageSinkProvider;
-import static io.trino.connector.CatalogServiceProviderModule.createPageSourceProvider;
+import static io.trino.connector.CatalogServiceProviderModule.createPageSourceProviderFactory;
 import static io.trino.connector.CatalogServiceProviderModule.createSchemaPropertyManager;
 import static io.trino.connector.CatalogServiceProviderModule.createSplitManagerProvider;
 import static io.trino.connector.CatalogServiceProviderModule.createTableFunctionProvider;
@@ -375,7 +376,7 @@ public class PlanTester
                 nodeSchedulerConfig,
                 optimizerConfig));
         this.splitManager = new SplitManager(createSplitManagerProvider(catalogManager), tracer, new QueryManagerConfig());
-        this.pageSourceManager = new PageSourceManager(createPageSourceProvider(catalogManager));
+        this.pageSourceManager = new PageSourceManager(createPageSourceProviderFactory(catalogManager));
         this.pageSinkManager = new PageSinkManager(createPageSinkProvider(catalogManager));
         this.indexManager = new IndexManager(createIndexProvider(catalogManager));
         NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(nodeManager, nodeSchedulerConfig, new NodeTaskMap(finalizerService)));
@@ -926,6 +927,7 @@ public class PlanTester
                         new DescribeInputRewrite(sqlParser),
                         new DescribeOutputRewrite(sqlParser),
                         new ShowQueriesRewrite(
+                                new SqlEnvironmentConfig(),
                                 plannerContext.getMetadata(),
                                 sqlParser,
                                 accessControl,

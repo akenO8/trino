@@ -272,10 +272,14 @@ public class TaskInfoFetcher
             newTaskInfo = newTaskInfo.withEstimatedMemory(estimatedMemory.get());
         }
 
+        boolean missingSpoolingOutputStats = false;
         if (newTaskInfo.taskStatus().getState().isDone()) {
             boolean wasSet = spoolingOutputStats.compareAndSet(null, newTaskInfo.outputBuffers().getSpoolingOutputStats().orElse(null));
-            if (retryPolicy == TASK && wasSet && spoolingOutputStats.get() == null) {
-                log.debug("Task %s was updated to null spoolingOutputStats. Future calls to retrieveAndDropSpoolingOutputStats will fail.", taskId);
+            if (newTaskInfo.taskStatus().getState() == TaskState.FINISHED && retryPolicy == TASK && wasSet && spoolingOutputStats.get() == null) {
+                missingSpoolingOutputStats = true;
+                if (log.isDebugEnabled()) {
+                    log.debug("Task %s was updated to null spoolingOutputStats. Future calls to retrieveAndDropSpoolingOutputStats will fail; taskInfo=%s", taskId, taskInfoCodec.toJson(newTaskInfo));
+                }
             }
             newTaskInfo = newTaskInfo.pruneSpoolingOutputStats();
         }
@@ -294,7 +298,10 @@ public class TaskInfoFetcher
 
         if (updated && newValue.taskStatus().getState().isDone()) {
             taskStatusFetcher.updateTaskStatus(newTaskInfo.taskStatus());
-            finalTaskInfo.compareAndSet(Optional.empty(), Optional.of(newValue));
+            boolean finalTaskInfoUpdated = finalTaskInfo.compareAndSet(Optional.empty(), Optional.of(newValue));
+            if (missingSpoolingOutputStats && finalTaskInfoUpdated) {
+                log.debug("Updated finalTaskInfo for task %s to one with missing spoolingOutputStats", taskId);
+            }
             stop();
         }
     }
@@ -307,7 +314,7 @@ public class TaskInfoFetcher
         @Override
         public void success(TaskInfo newValue)
         {
-            try (SetThreadName ignored = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
                 lastUpdateNanos.set(System.nanoTime());
 
                 updateStats(requestStartNanos);
@@ -322,22 +329,20 @@ public class TaskInfoFetcher
         @Override
         public void failed(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
                 lastUpdateNanos.set(System.nanoTime());
 
-                try {
-                    // if task not already done, record error
-                    if (!isDone(getTaskInfo())) {
-                        errorTracker.requestFailed(cause);
-                    }
+                // if task not already done, record error
+                if (!isDone(getTaskInfo())) {
+                    errorTracker.requestFailed(cause);
                 }
-                catch (Error e) {
-                    onFail.accept(e);
-                    throw e;
-                }
-                catch (RuntimeException e) {
-                    onFail.accept(e);
-                }
+            }
+            catch (Error e) {
+                onFail.accept(e);
+                throw e;
+            }
+            catch (RuntimeException e) {
+                onFail.accept(e);
             }
             finally {
                 cleanupRequest();
@@ -347,7 +352,7 @@ public class TaskInfoFetcher
         @Override
         public void fatal(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
                 onFail.accept(cause);
             }
             finally {

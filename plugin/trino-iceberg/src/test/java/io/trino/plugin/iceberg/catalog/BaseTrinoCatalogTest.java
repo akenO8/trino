@@ -16,6 +16,7 @@ package io.trino.plugin.iceberg.catalog;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.metastore.TableInfo;
 import io.trino.plugin.iceberg.CommitTaskData;
@@ -30,7 +31,6 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.type.VarcharType;
-import io.trino.util.AutoCloseableCloser;
 import org.apache.iceberg.NullOrder;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -77,7 +77,7 @@ public abstract class BaseTrinoCatalogTest
         TrinoCatalog catalog = createTrinoCatalog(false);
         String namespace = "test_create_namespace_with_location_" + randomNameSuffix();
         Map<String, Object> namespaceProperties = new HashMap<>(defaultNamespaceProperties(namespace));
-        String namespaceLocation = (String) namespaceProperties.computeIfAbsent(LOCATION_PROPERTY, ignored -> "local:///a/path/");
+        String namespaceLocation = (String) namespaceProperties.computeIfAbsent(LOCATION_PROPERTY, _ -> "local:///a/path/");
         namespaceProperties = ImmutableMap.copyOf(namespaceProperties);
         catalog.createNamespace(SESSION, namespace, namespaceProperties, new TrinoPrincipal(PrincipalType.USER, SESSION.getUser()));
         assertThat(catalog.listNamespaces(SESSION)).contains(namespace);
@@ -305,7 +305,7 @@ public abstract class BaseTrinoCatalogTest
         Map<String, Object> namespaceProperties = new HashMap<>(defaultNamespaceProperties(namespace));
         String namespaceLocation = (String) namespaceProperties.computeIfAbsent(
                 LOCATION_PROPERTY,
-                ignored -> "local:///iceberg_catalog_test_rename_table_" + UUID.randomUUID());
+                _ -> "local:///iceberg_catalog_test_rename_table_" + UUID.randomUUID());
 
         catalog.createNamespace(SESSION, namespace, namespaceProperties, new TrinoPrincipal(PrincipalType.USER, SESSION.getUser()));
         try {
@@ -347,7 +347,7 @@ public abstract class BaseTrinoCatalogTest
                 Optional.empty(),
                 Optional.empty(),
                 ImmutableList.of(
-                        new ConnectorViewDefinition.ViewColumn("name", VarcharType.createVarcharType(25).getTypeId(), Optional.empty())),
+                        new ConnectorViewDefinition.ViewColumn("name", VarcharType.createUnboundedVarcharType().getTypeId(), Optional.empty())),
                 Optional.empty(),
                 Optional.of(SESSION.getUser()),
                 false,
@@ -434,6 +434,19 @@ public abstract class BaseTrinoCatalogTest
         }
     }
 
+    protected void assertViewDefinition(ConnectorViewDefinition actualView, ConnectorViewDefinition expectedView)
+    {
+        assertThat(actualView.getOriginalSql()).isEqualTo(expectedView.getOriginalSql());
+        assertThat(actualView.getCatalog()).isEqualTo(expectedView.getCatalog());
+        assertThat(actualView.getSchema()).isEqualTo(expectedView.getSchema());
+        assertThat(actualView.getColumns().size()).isEqualTo(expectedView.getColumns().size());
+        for (int i = 0; i < actualView.getColumns().size(); i++) {
+            assertViewColumnDefinition(actualView.getColumns().get(i), expectedView.getColumns().get(i));
+        }
+        assertThat(actualView.getOwner()).isEqualTo(expectedView.getOwner());
+        assertThat(actualView.isRunAsInvoker()).isEqualTo(expectedView.isRunAsInvoker());
+    }
+
     private String arbitraryTableLocation(TrinoCatalog catalog, ConnectorSession session, SchemaTableName schemaTableName)
             throws Exception
     {
@@ -448,19 +461,6 @@ public abstract class BaseTrinoCatalogTest
         Path tmpDirectory = Files.createTempDirectory("iceberg_catalog_test_arbitrary_location");
         tmpDirectory.toFile().deleteOnExit();
         return tmpDirectory.toString();
-    }
-
-    private void assertViewDefinition(ConnectorViewDefinition actualView, ConnectorViewDefinition expectedView)
-    {
-        assertThat(actualView.getOriginalSql()).isEqualTo(expectedView.getOriginalSql());
-        assertThat(actualView.getCatalog()).isEqualTo(expectedView.getCatalog());
-        assertThat(actualView.getSchema()).isEqualTo(expectedView.getSchema());
-        assertThat(actualView.getColumns().size()).isEqualTo(expectedView.getColumns().size());
-        for (int i = 0; i < actualView.getColumns().size(); i++) {
-            assertViewColumnDefinition(actualView.getColumns().get(i), expectedView.getColumns().get(i));
-        }
-        assertThat(actualView.getOwner()).isEqualTo(expectedView.getOwner());
-        assertThat(actualView.isRunAsInvoker()).isEqualTo(expectedView.isRunAsInvoker());
     }
 
     private void assertViewColumnDefinition(ConnectorViewDefinition.ViewColumn actualViewColumn, ConnectorViewDefinition.ViewColumn expectedViewColumn)

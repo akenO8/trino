@@ -51,7 +51,6 @@ import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.FieldReference;
 import io.trino.sql.ir.IsNull;
 import io.trino.sql.ir.Logical;
-import io.trino.sql.ir.Not;
 import io.trino.sql.ir.Row;
 import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.RelationPlanner.PatternRecognitionComponents;
@@ -152,6 +151,7 @@ import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
 import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
 import static io.trino.sql.ir.IrExpressions.ifExpression;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.planner.GroupingOperationRewriter.rewriteGroupingOperation;
 import static io.trino.sql.planner.LogicalPlanner.failFunction;
@@ -823,7 +823,7 @@ class QueryPlanner
             // Build the match condition for the MERGE case
 
             // Add a boolean column which is true if a target table row was matched
-            rowBuilder.add(new Not(new IsNull(presentColumn.toSymbolReference())));
+            rowBuilder.add(not(metadata, new IsNull(presentColumn.toSymbolReference())));
 
             // Add the operation number
             rowBuilder.add(new Constant(TINYINT, (long) getMergeCaseOperationNumber(mergeCase)));
@@ -862,7 +862,7 @@ class QueryPlanner
         ImmutableList.Builder<Expression> rowBuilder = ImmutableList.builder();
         dataColumnSchemas.forEach(columnSchema ->
                 rowBuilder.add(new Constant(columnSchema.getType(), null)));
-        rowBuilder.add(new Not(new IsNull(presentColumn.toSymbolReference())));
+        rowBuilder.add(not(metadata, new IsNull(presentColumn.toSymbolReference())));
         // The operation number
         rowBuilder.add(new Constant(TINYINT, -1L));
         // The case number
@@ -905,8 +905,8 @@ class QueryPlanner
         // Raise an error if unique_id symbol is non-null and the unique_id/case_number combination was not distinct
         Expression filter = ifExpression(
                 Logical.and(
-                        new Not(isDistinctSymbol.toSymbolReference()),
-                        new Not(new IsNull(uniqueIdSymbol.toSymbolReference()))),
+                        not(metadata, isDistinctSymbol.toSymbolReference()),
+                        not(metadata, new IsNull(uniqueIdSymbol.toSymbolReference()))),
                 new Cast(
                         failFunction(metadata, MERGE_TARGET_ROW_MULTIPLE_MATCHES, "One MERGE target table row matched more than one source row"),
                         BOOLEAN),
@@ -1553,10 +1553,7 @@ class QueryPlanner
                 sortKeyCoercedForFrameBoundCalculation = alreadyCoerced;
             }
             else {
-                Expression cast = new Cast(
-                        coercions.get(sortKey).toSymbolReference(),
-                        expectedType,
-                        false);
+                Expression cast = new Cast(coercions.get(sortKey).toSymbolReference(), expectedType);
                 sortKeyCoercedForFrameBoundCalculation = symbolAllocator.newSymbol(cast);
                 sortKeyCoercions.put(expectedType, sortKeyCoercedForFrameBoundCalculation);
                 subPlan = subPlan.withNewRoot(new ProjectNode(
@@ -1596,10 +1593,7 @@ class QueryPlanner
                 sortKeyCoercedForFrameBoundComparison = Optional.of(alreadyCoerced);
             }
             else {
-                Expression cast = new Cast(
-                        coercions.get(sortKey).toSymbolReference(),
-                        expectedType,
-                        false);
+                Expression cast = new Cast(coercions.get(sortKey).toSymbolReference(), expectedType);
                 Symbol castSymbol = symbolAllocator.newSymbol(cast);
                 sortKeyCoercions.put(expectedType, castSymbol);
                 subPlan = subPlan.withNewRoot(new ProjectNode(
@@ -1664,10 +1658,7 @@ class QueryPlanner
             }
         }
         else {
-            offsetToBigint = new Cast(
-                    offsetSymbol.toSymbolReference(),
-                    BIGINT,
-                    false);
+            offsetToBigint = new Cast(offsetSymbol.toSymbolReference(), BIGINT);
         }
 
         Symbol coercedOffsetSymbol = symbolAllocator.newSymbol(offsetToBigint);
@@ -2050,10 +2041,7 @@ class QueryPlanner
                 if (coercion != null) {
                     Symbol symbol = symbolAllocator.newSymbol("expr", coercion);
 
-                    assignments.put(symbol, new Cast(
-                            subPlan.rewrite(expression),
-                            coercion,
-                            false));
+                    assignments.put(symbol, new Cast(subPlan.rewrite(expression), coercion));
 
                     mappings.put(NodeRef.of(expression), symbol);
                 }
@@ -2079,7 +2067,7 @@ class QueryPlanner
             return rewritten;
         }
 
-        return new Cast(rewritten, coercion, false);
+        return new Cast(rewritten, coercion);
     }
 
     public static NodeAndMappings coerce(RelationPlan plan, List<Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)

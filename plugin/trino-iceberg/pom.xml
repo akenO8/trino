@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>446</version>
+        <version>449</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -16,8 +16,7 @@
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <!-- Nessie version (compatible with Iceberg release) must be bumped along with Iceberg version bump to avoid compatibility issues -->
-        <dep.nessie.version>0.80.0</dep.nessie.version>
-        <air.test.jvm.additional-arguments>${air.test.jvm.additional-arguments.default} --add-opens=java.base/java.nio=ALL-UNNAMED</air.test.jvm.additional-arguments>
+        <dep.nessie.version>0.83.2</dep.nessie.version>
     </properties>
 
     <dependencies>
@@ -244,6 +243,12 @@
         <dependency>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-format-structures</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>javax.annotation</groupId>
+                    <artifactId>javax.annotation-api</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -624,7 +629,7 @@
         <dependency>
             <groupId>org.keycloak</groupId>
             <artifactId>keycloak-core</artifactId>
-            <version>24.0.3</version>
+            <version>24.0.4</version>
             <scope>test</scope>
         </dependency>
 
@@ -637,6 +642,20 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <!-- Allow running tests when locally `aws sso login` is required to access AWS services -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sso</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <!-- Allow running tests when locally `aws sso login` is required to access AWS services -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>ssooidc</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

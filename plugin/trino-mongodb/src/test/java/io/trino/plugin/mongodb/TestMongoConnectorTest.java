@@ -100,16 +100,16 @@ public class TestMongoConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_ADD_FIELD,
-                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
-                    SUPPORTS_CREATE_VIEW,
-                    SUPPORTS_DROP_FIELD,
-                    SUPPORTS_MERGE,
-                    SUPPORTS_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_RENAME_FIELD,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_SET_FIELD_TYPE,
-                    SUPPORTS_TRUNCATE,
-                    SUPPORTS_UPDATE -> false;
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_DROP_FIELD,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_RENAME_FIELD,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_SET_FIELD_TYPE,
+                 SUPPORTS_TRUNCATE,
+                 SUPPORTS_UPDATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -692,9 +692,8 @@ public class TestMongoConnectorTest
                 .append("x", new DBRef("test_db", "test_collection", 1));
         client.getDatabase("test").getCollection(tableName).insertOne(document);
 
-        // TODO Fix MongoPageSource to throw TrinoException
         assertThat(query("SELECT * FROM test." + tableName))
-                .nonTrinoExceptionFailure().hasMessageContaining("DBRef should have 3 fields : row(databaseName varchar, collectionName varchar)");
+                .failure().hasMessageContaining("DBRef should have 3 fields : row(databaseName varchar, collectionName varchar)");
 
         assertUpdate("DROP TABLE test." + tableName);
     }

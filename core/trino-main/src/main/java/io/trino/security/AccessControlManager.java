@@ -32,6 +32,7 @@ import io.trino.plugin.base.security.DefaultSystemAccessControl;
 import io.trino.plugin.base.security.FileBasedSystemAccessControl;
 import io.trino.plugin.base.security.ForwardingSystemAccessControl;
 import io.trino.plugin.base.security.ReadOnlySystemAccessControl;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
 import io.trino.spi.classloader.ThreadContextClassLoader;
@@ -57,7 +58,6 @@ import io.trino.spi.security.ViewExpression;
 import io.trino.spi.type.Type;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionManager;
-import io.trino.util.AutoCloseableCloser;
 import jakarta.annotation.PreDestroy;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
@@ -213,7 +213,7 @@ public class AccessControlManager
         checkState(factory != null, "Access control '%s' is not registered: %s", name, configFile);
 
         SystemAccessControl systemAccessControl;
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
             systemAccessControl = factory.create(ImmutableMap.copyOf(properties), createContext(name));
         }
 
@@ -231,7 +231,7 @@ public class AccessControlManager
         checkState(factory != null, "Access control '%s' is not registered", name);
 
         SystemAccessControl systemAccessControl;
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
             systemAccessControl = factory.create(ImmutableMap.copyOf(properties), createContext(name));
         }
 
@@ -1376,6 +1376,19 @@ public class AccessControlManager
     }
 
     @Override
+    public void checkCanShowCreateFunction(SecurityContext context, QualifiedObjectName functionName)
+    {
+        requireNonNull(context, "context is null");
+        requireNonNull(functionName, "functionName is null");
+
+        checkCanAccessCatalog(context, functionName.catalogName());
+
+        systemAuthorizationCheck(control -> control.checkCanShowCreateFunction(context.toSystemSecurityContext(), functionName.asCatalogSchemaRoutineName()));
+
+        catalogAuthorizationCheck(functionName.catalogName(), context, (control, connectorContext) -> control.checkCanShowCreateFunction(connectorContext, functionName.asSchemaRoutineName()));
+    }
+
+    @Override
     public List<ViewExpression> getRowFilters(SecurityContext context, QualifiedObjectName tableName)
     {
         requireNonNull(context, "context is null");
@@ -1579,7 +1592,7 @@ public class AccessControlManager
                     clazz.getName(),
                     name, Arrays.stream(parameterTypes).map(Class::getName).collect(Collectors.joining(", "))));
         }
-        catch (ReflectiveOperationException ignored) {
+        catch (ReflectiveOperationException _) {
         }
     }
 

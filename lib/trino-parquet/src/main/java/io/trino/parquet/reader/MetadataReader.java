@@ -34,13 +34,11 @@ import org.apache.parquet.format.KeyValue;
 import org.apache.parquet.format.RowGroup;
 import org.apache.parquet.format.SchemaElement;
 import org.apache.parquet.format.Statistics;
-import org.apache.parquet.format.Type;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
-import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type.Repetition;
 import org.apache.parquet.schema.Types;
 
@@ -62,6 +60,7 @@ import static io.trino.parquet.ParquetMetadataConverter.convertEncodingStats;
 import static io.trino.parquet.ParquetMetadataConverter.fromParquetStatistics;
 import static io.trino.parquet.ParquetMetadataConverter.getEncoding;
 import static io.trino.parquet.ParquetMetadataConverter.getLogicalTypeAnnotation;
+import static io.trino.parquet.ParquetMetadataConverter.getPrimitive;
 import static io.trino.parquet.ParquetMetadataConverter.toColumnIndexReference;
 import static io.trino.parquet.ParquetMetadataConverter.toOffsetIndexReference;
 import static io.trino.parquet.ParquetValidationUtils.validateParquet;
@@ -208,7 +207,7 @@ public final class MetadataReader
                 readTypeSchema((Types.GroupBuilder<?>) typeBuilder, schemaIterator, element.num_children);
             }
             else {
-                Types.PrimitiveBuilder<?> primitiveBuilder = builder.primitive(getTypeName(element.type), Repetition.valueOf(element.repetition_type.name()));
+                Types.PrimitiveBuilder<?> primitiveBuilder = builder.primitive(getPrimitive(element.type), Repetition.valueOf(element.repetition_type.name()));
                 if (element.isSetType_length()) {
                     primitiveBuilder.length(element.type_length);
                 }
@@ -271,7 +270,7 @@ public final class MetadataReader
                 && statistics.isSetMin() && statistics.isSetMax()  // the min,max fields used for UTF8 before Parquet PARQUET-1025
                 && columnStatistics.genericGetMin() == null && columnStatistics.genericGetMax() == null
                 && !CorruptStatistics.shouldIgnoreStatistics(fileCreatedBy.orElse(null), type.getPrimitiveTypeName())) {
-            tryReadOldUtf8Stats(statistics, (BinaryStatistics) columnStatistics);
+            columnStatistics = tryReadOldUtf8Stats(statistics, (BinaryStatistics) columnStatistics);
         }
 
         return columnStatistics;
@@ -295,7 +294,7 @@ public final class MetadataReader
                 .orElse(FALSE);
     }
 
-    private static void tryReadOldUtf8Stats(Statistics statistics, BinaryStatistics columnStatistics)
+    private static org.apache.parquet.column.statistics.Statistics<?> tryReadOldUtf8Stats(Statistics statistics, BinaryStatistics columnStatistics)
     {
         byte[] min = statistics.getMin();
         byte[] max = statistics.getMax();
@@ -325,7 +324,7 @@ public final class MetadataReader
             }
             if (maxGoodLength == 0) {
                 // We can return just min bound, but code downstream likely expects both are present or both are absent.
-                return;
+                return columnStatistics;
             }
 
             min = Arrays.copyOf(min, minGoodLength);
@@ -333,10 +332,12 @@ public final class MetadataReader
             max[maxGoodLength - 1]++;
         }
 
-        columnStatistics.setMinMaxFromBytes(min, max);
-        if (!columnStatistics.isNumNullsSet() && statistics.isSetNull_count()) {
-            columnStatistics.setNumNulls(statistics.getNull_count());
-        }
+        return org.apache.parquet.column.statistics.Statistics
+                .getBuilderForReading(columnStatistics.type())
+                       .withMin(min)
+                       .withMax(max)
+                       .withNumNulls(!columnStatistics.isNumNullsSet() && statistics.isSetNull_count() ? statistics.getNull_count() : columnStatistics.getNumNulls())
+                       .build();
     }
 
     private static boolean isAscii(byte b)
@@ -360,20 +361,6 @@ public final class MetadataReader
             columnEncodings.add(getEncoding(encoding));
         }
         return Collections.unmodifiableSet(columnEncodings);
-    }
-
-    private static PrimitiveTypeName getTypeName(Type type)
-    {
-        return switch (type) {
-            case BYTE_ARRAY -> PrimitiveTypeName.BINARY;
-            case INT64 -> PrimitiveTypeName.INT64;
-            case INT32 -> PrimitiveTypeName.INT32;
-            case BOOLEAN -> PrimitiveTypeName.BOOLEAN;
-            case FLOAT -> PrimitiveTypeName.FLOAT;
-            case DOUBLE -> PrimitiveTypeName.DOUBLE;
-            case INT96 -> PrimitiveTypeName.INT96;
-            case FIXED_LEN_BYTE_ARRAY -> PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY;
-        };
     }
 
     private static void validateFileMetadata(ParquetDataSourceId dataSourceId, FileMetadata fileMetaData, Optional<ParquetWriteValidation> parquetWriteValidation)

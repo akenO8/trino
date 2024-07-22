@@ -590,6 +590,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public boolean isView(Session session, QualifiedObjectName viewName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName)
     {
         throw new UnsupportedOperationException();
@@ -878,6 +884,12 @@ public abstract class AbstractMockMetadata
     public FunctionDependencyDeclaration getFunctionDependencies(Session session, CatalogHandle catalogHandle, FunctionId functionId, BoundSignature boundSignature)
     {
         return NO_DEPENDENCIES;
+    }
+
+    @Override
+    public Collection<LanguageFunction> getLanguageFunctions(Session session, QualifiedObjectName name)
+    {
+        throw new UnsupportedOperationException();
     }
 
     @Override

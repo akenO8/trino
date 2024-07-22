@@ -47,6 +47,7 @@ public final class DeleteFile
     private final List<Integer> equalityFieldIds;
     private final Map<Integer, byte[]> lowerBounds;
     private final Map<Integer, byte[]> upperBounds;
+    private final long dataSequenceNumber;
 
     public static DeleteFile fromIceberg(org.apache.iceberg.DeleteFile deleteFile)
     {
@@ -63,7 +64,8 @@ public final class DeleteFile
                 deleteFile.fileSizeInBytes(),
                 Optional.ofNullable(deleteFile.equalityFieldIds()).orElseGet(ImmutableList::of),
                 lowerBounds,
-                upperBounds);
+                upperBounds,
+                deleteFile.dataSequenceNumber());
     }
 
     @JsonCreator
@@ -75,7 +77,8 @@ public final class DeleteFile
             long fileSizeInBytes,
             List<Integer> equalityFieldIds,
             Map<Integer, byte[]> lowerBounds,
-            Map<Integer, byte[]> upperBounds)
+            Map<Integer, byte[]> upperBounds,
+            long dataSequenceNumber)
     {
         this.content = requireNonNull(content, "content is null");
         this.path = requireNonNull(path, "path is null");
@@ -85,6 +88,7 @@ public final class DeleteFile
         this.equalityFieldIds = ImmutableList.copyOf(requireNonNull(equalityFieldIds, "equalityFieldIds is null"));
         this.lowerBounds = ImmutableMap.copyOf(requireNonNull(lowerBounds, "lowerBounds is null"));
         this.upperBounds = ImmutableMap.copyOf(requireNonNull(upperBounds, "upperBounds is null"));
+        this.dataSequenceNumber = dataSequenceNumber;
     }
 
     @JsonProperty
@@ -135,11 +139,17 @@ public final class DeleteFile
         return upperBounds;
     }
 
+    @JsonProperty
+    public long getDataSequenceNumber()
+    {
+        return dataSequenceNumber;
+    }
+
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE
                 + estimatedSizeOf(path)
-                + estimatedSizeOf(equalityFieldIds, ignored -> SIZE_OF_INT)
+                + estimatedSizeOf(equalityFieldIds, _ -> SIZE_OF_INT)
                 + estimatedSizeOf(lowerBounds, entry -> SIZE_OF_INT, SizeOf::sizeOf)
                 + estimatedSizeOf(upperBounds, entry -> SIZE_OF_INT, SizeOf::sizeOf);
     }

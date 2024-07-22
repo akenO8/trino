@@ -35,7 +35,6 @@ import io.trino.sql.ir.IrVisitor;
 import io.trino.sql.ir.IsNull;
 import io.trino.sql.ir.Lambda;
 import io.trino.sql.ir.Logical;
-import io.trino.sql.ir.Not;
 import io.trino.sql.ir.NullIf;
 import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
@@ -49,7 +48,6 @@ import java.util.List;
 import java.util.Map;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
@@ -134,7 +132,7 @@ public final class SqlToRowExpressionTranslator
 
             return switch (node.operator()) {
                 case NOT_EQUAL -> new CallExpression(
-                        metadata.resolveBuiltinFunction("not", fromTypes(BOOLEAN)),
+                        metadata.resolveBuiltinFunction("$not", fromTypes(BOOLEAN)),
                         ImmutableList.of(visitComparisonExpression(Operator.EQUAL, left, right)));
                 case GREATER_THAN -> visitComparisonExpression(Operator.LESS_THAN, right, left);
                 case GREATER_THAN_OR_EQUAL -> visitComparisonExpression(Operator.LESS_THAN_OR_EQUAL, right, left);
@@ -220,12 +218,6 @@ public final class SqlToRowExpressionTranslator
             Type returnType = ((Expression) node).type();
             if (typeCoercion.isTypeOnlyCoercion(value.type(), returnType)) {
                 return changeType(value, returnType);
-            }
-
-            if (node.safe()) {
-                return call(
-                        metadata.getCoercion(builtinFunctionName("TRY_CAST"), value.type(), returnType),
-                        value);
             }
 
             return call(
@@ -389,19 +381,6 @@ public final class SqlToRowExpressionTranslator
             RowExpression expression = process(node.value(), context);
 
             return new SpecialForm(IS_NULL, BOOLEAN, ImmutableList.of(expression), ImmutableList.of());
-        }
-
-        @Override
-        protected RowExpression visitNot(Not node, Void context)
-        {
-            return notExpression(process(node.value(), context));
-        }
-
-        private RowExpression notExpression(RowExpression value)
-        {
-            return new CallExpression(
-                    metadata.resolveBuiltinFunction("not", fromTypes(BOOLEAN)),
-                    ImmutableList.of(value));
         }
 
         @Override

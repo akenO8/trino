@@ -47,7 +47,6 @@ import io.trino.sql.ir.IrVisitor;
 import io.trino.sql.ir.IsNull;
 import io.trino.sql.ir.Lambda;
 import io.trino.sql.ir.Logical;
-import io.trino.sql.ir.Not;
 import io.trino.sql.ir.NullIf;
 import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
@@ -85,7 +84,7 @@ import static io.trino.spi.function.InvocationConvention.InvocationReturnConvent
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.NEGATION;
@@ -431,19 +430,19 @@ public class IrExpressionInterpreter
             Expression left = processWithExceptionHandling(node.left(), context);
             Expression right = processWithExceptionHandling(node.right(), context);
 
-            if (operator == Operator.IS_DISTINCT_FROM) {
+            if (operator == Operator.IDENTICAL) {
                 if (left instanceof Constant(Type leftType, Object leftValue) && right instanceof Constant(Type rightType, Object rightValue)) {
                     return new Constant(
                             BOOLEAN,
-                            invokeOperator(IS_DISTINCT_FROM, ImmutableList.of(leftType, rightType), Arrays.asList(leftValue, rightValue)));
+                            invokeOperator(IDENTICAL, ImmutableList.of(leftType, rightType), Arrays.asList(leftValue, rightValue)));
                 }
 
                 if (isConstantNull(left)) {
-                    return new Not(new IsNull(right));
+                    return new IsNull(right);
                 }
 
                 if (isConstantNull(right)) {
-                    return new Not(new IsNull(left));
+                    return new IsNull(left);
                 }
             }
 
@@ -480,7 +479,7 @@ public class IrExpressionInterpreter
 
             if (min instanceof Constant minConstant && max instanceof Constant maxConstant) {
                 if (!isConstantNull(minConstant) && !isConstantNull(maxConstant) && !Boolean.TRUE.equals(functionInvoker.invoke(lessThanOrEqual, connectorSession, minConstant.value(), maxConstant.value()))) {
-                    return ifExpression(new Not(new IsNull(value)), FALSE);
+                    return ifExpression(new IsNull(value), NULL_BOOLEAN, FALSE);
                 }
 
                 if (value instanceof Constant valueConstant) {
@@ -539,18 +538,6 @@ public class IrExpressionInterpreter
             }
 
             return new NullIf(first, second);
-        }
-
-        @Override
-        protected Expression visitNot(Not node, SymbolResolver context)
-        {
-            Expression argument = processWithExceptionHandling(node.value(), context);
-
-            return switch (argument) {
-                case Constant constant when constant.value() == null -> NULL_BOOLEAN;
-                case Constant(Type type, Boolean value) -> new Constant(BOOLEAN, !value);
-                default -> new Not(argument);
-            };
         }
 
         @Override
@@ -754,10 +741,6 @@ public class IrExpressionInterpreter
                         yield new Constant(node.type(), functionInvoker.invoke(metadata.getCoercion(constant.type(), node.type()), connectorSession, ImmutableList.of(constant.value())));
                     }
                     catch (TrinoException e) {
-                        if (node.safe()) {
-                            yield new Constant(node.type(), null);
-                        }
-
                         if (evaluate) {
                             throw e;
                         }
@@ -765,7 +748,7 @@ public class IrExpressionInterpreter
                         yield new Cast(constant, node.type());
                     }
                 }
-                default -> new Cast(value, node.type(), node.safe());
+                default -> new Cast(value, node.type());
             };
         }
 

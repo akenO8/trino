@@ -20,6 +20,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.zookeeper.MiniZooKeeperCluster;
 
 import java.io.IOException;
@@ -64,7 +65,7 @@ public final class TestingPhoenixServer
         securityLogger = java.util.logging.Logger.getLogger("SecurityLogger.org.apache");
         securityLogger.setLevel(Level.SEVERE);
         // to squelch the SecurityLogger,
-        // instantiate logger with config above before config is overriden again in HBase test franework
+        // instantiate logger with config above before config is overridden again in HBase test franework
         org.apache.commons.logging.LogFactory.getLog("SecurityLogger.org.apache.hadoop.hbase.server");
         this.conf.set("hbase.security.logger", "ERROR");
         this.conf.setInt(MASTER_INFO_PORT, -1);
@@ -78,7 +79,8 @@ public final class TestingPhoenixServer
             MiniZooKeeperCluster zkCluster = this.hbaseTestingUtility.startMiniZKCluster();
             port = zkCluster.getClientPort();
 
-            MiniHBaseCluster hbaseCluster = hbaseTestingUtility.startMiniHBaseCluster(1, 4);
+            StartMiniClusterOption option = StartMiniClusterOption.builder().numMasters(1).numRegionServers(4).build();
+            MiniHBaseCluster hbaseCluster = hbaseTestingUtility.startMiniHBaseCluster(option);
             hbaseCluster.waitForActiveAndReadyMaster();
             LOG.info("Phoenix server ready: %s", getJdbcUrl());
         }

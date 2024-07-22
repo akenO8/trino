@@ -14,14 +14,17 @@
 package io.trino.sql.ir;
 
 import com.google.common.collect.ImmutableList;
+import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.sql.PlannerContext;
 import io.trino.type.TypeCoercion;
 
 import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
+import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.DynamicFilters.isDynamicFilterFunction;
+import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.type.LikeFunctions.LIKE_FUNCTION_NAME;
 
 public class IrExpressions
@@ -56,7 +59,6 @@ public class IrExpressions
             case IsNull e -> mayFail(plannerContext, e.value());
             case Lambda e -> false;
             case Logical e -> e.terms().stream().anyMatch(argument -> mayFail(plannerContext, argument));
-            case Not e -> mayFail(plannerContext, e.value());
             case NullIf e -> mayFail(plannerContext, e.first()) || mayFail(plannerContext, e.second());
             case Reference e -> false;
             case Row e -> e.items().stream().anyMatch(argument -> mayFail(plannerContext, argument));
@@ -65,11 +67,11 @@ public class IrExpressions
         };
     }
 
-    // TODO: record "safety" (can the cast fail at runtime) in Cast node (separate from "may return null" that's currently implied by try_cast)
+    // TODO: record "safety" (can the cast fail at runtime) in Cast node
     private static boolean mayFail(PlannerContext plannerContext, Cast cast)
     {
-        if (cast.safe()) {
-            return false;
+        if (mayFail(plannerContext, cast.expression())) {
+            return true;
         }
 
         TypeCoercion coercions = new TypeCoercion(plannerContext.getTypeManager()::getType);
@@ -89,8 +91,17 @@ public class IrExpressions
         // TODO: these should be attributes of the function
         CatalogSchemaFunctionName name = function.name();
         return !name.equals(builtinFunctionName("length")) &&
+                !name.equals(builtinFunctionName("try_cast")) &&
+                !name.equals(builtinFunctionName("$not")) &&
                 !name.equals(builtinFunctionName("substring")) &&
                 !name.equals(builtinFunctionName(LIKE_FUNCTION_NAME)) &&
                 !isDynamicFilterFunction(function.name());
+    }
+
+    public static Expression not(Metadata metadata, Expression expression)
+    {
+        return new Call(
+                metadata.resolveBuiltinFunction("$not", fromTypes(BOOLEAN)),
+                ImmutableList.of(expression));
     }
 }

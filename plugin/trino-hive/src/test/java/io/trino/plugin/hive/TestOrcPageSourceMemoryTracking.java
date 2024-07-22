@@ -590,7 +590,7 @@ public class TestOrcPageSourceMemoryTracking
                     0,
                     new PlanNodeId("0"),
                     new PlanNodeId("0"),
-                    (session, split, table, columnHandles, dynamicFilter) -> pageSource,
+                    catalog -> (session, split, table, columnHandles, dynamicFilter) -> pageSource,
                     TEST_TABLE_HANDLE,
                     columns.stream().map(ColumnHandle.class::cast).collect(toImmutableList()),
                     DynamicFilter.EMPTY);
@@ -612,7 +612,7 @@ public class TestOrcPageSourceMemoryTracking
                     0,
                     new PlanNodeId("test"),
                     new PlanNodeId("0"),
-                    (session, split, table, columnHandles, dynamicFilter) -> pageSource,
+                    (catalog) -> (session, split, table, columnHandles, dynamicFilter) -> pageSource,
                     cursorProcessor,
                     pageProcessor,
                     TEST_TABLE_HANDLE,
@@ -722,7 +722,7 @@ public class TestOrcPageSourceMemoryTracking
 
     private static RecordWriter createRecordWriter(Path target, Configuration conf)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(FileSystem.class.getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(FileSystem.class.getClassLoader())) {
             WriterOptions options = OrcFile.writerOptions(conf)
                     .memory(new NullMemoryManager())
                     .compress(ZLIB);

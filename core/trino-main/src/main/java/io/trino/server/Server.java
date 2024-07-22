@@ -77,10 +77,10 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.google.common.collect.MoreCollectors.toOptional;
 import static io.airlift.discovery.client.ServiceAnnouncement.ServiceAnnouncementBuilder;
 import static io.airlift.discovery.client.ServiceAnnouncement.serviceAnnouncement;
-import static io.trino.server.TrinoSystemRequirements.verifyJvmRequirements;
-import static io.trino.server.TrinoSystemRequirements.verifySystemTimeIsReasonable;
+import static io.trino.server.TrinoSystemRequirements.verifySystemRequirements;
 import static java.lang.String.format;
 import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
 import static java.util.function.Predicate.not;
@@ -100,8 +100,7 @@ public class Server
         Locale.setDefault(Locale.US);
 
         long startTime = System.nanoTime();
-        verifyJvmRequirements();
-        verifySystemTimeIsReasonable();
+        verifySystemRequirements();
 
         Logger log = Logger.get(Server.class);
         log.info("Java version: %s", StandardSystemProperty.JAVA_VERSION.value());
@@ -268,12 +267,10 @@ public class Server
 
     private static ServiceAnnouncement getTrinoAnnouncement(Set<ServiceAnnouncement> announcements)
     {
-        for (ServiceAnnouncement announcement : announcements) {
-            if (announcement.getType().equals("trino")) {
-                return announcement;
-            }
-        }
-        throw new IllegalArgumentException("Trino announcement not found: " + announcements);
+        return announcements.stream()
+                .filter(announcement -> announcement.getType().equals("trino"))
+                .collect(toOptional())
+                .orElseThrow(() -> new IllegalArgumentException("Trino announcement not found: " + announcements));
     }
 
     private static void logLocation(Logger log, String name, Path path)

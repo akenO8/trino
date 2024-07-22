@@ -51,7 +51,6 @@ import io.trino.sql.ir.In;
 import io.trino.sql.ir.IsNull;
 import io.trino.sql.ir.Lambda;
 import io.trino.sql.ir.Logical;
-import io.trino.sql.ir.Not;
 import io.trino.sql.ir.NullIf;
 import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Switch;
@@ -132,6 +131,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.TimeWithTimeZoneType.createTimeWithTimeZoneType;
@@ -141,7 +141,15 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.ExpressionAnalyzer.JSON_NO_PARAMETERS_ROW_TYPE;
 import static io.trino.sql.ir.Booleans.FALSE;
 import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.IDENTICAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.NOT_EQUAL;
 import static io.trino.sql.ir.IrExpressions.ifExpression;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.planner.ScopeAware.scopeAwareKey;
 import static io.trino.sql.tree.JsonQuery.EmptyOrErrorBehavior.ERROR;
 import static io.trino.sql.tree.JsonQuery.QuotesBehavior.KEEP;
@@ -467,7 +475,8 @@ public class TranslationMap
 
     private io.trino.sql.ir.Expression translate(IsNotNullPredicate expression)
     {
-        return new Not(
+        return not(
+                plannerContext.getMetadata(),
                 new IsNull(
                         translateExpression(expression.getValue())));
     }
@@ -533,7 +542,7 @@ public class TranslationMap
 
     private io.trino.sql.ir.Expression translate(NotExpression expression)
     {
-        return new Not(translateExpression(expression.getValue()));
+        return not(plannerContext.getMetadata(), translateExpression(expression.getValue()));
     }
 
     private io.trino.sql.ir.Expression translate(Row expression)
@@ -545,26 +554,34 @@ public class TranslationMap
 
     private io.trino.sql.ir.Expression translate(ComparisonExpression expression)
     {
-        return new Comparison(
-                switch (expression.getOperator()) {
-                    case EQUAL -> Comparison.Operator.EQUAL;
-                    case NOT_EQUAL -> Comparison.Operator.NOT_EQUAL;
-                    case LESS_THAN -> Comparison.Operator.LESS_THAN;
-                    case LESS_THAN_OR_EQUAL -> Comparison.Operator.LESS_THAN_OR_EQUAL;
-                    case GREATER_THAN -> Comparison.Operator.GREATER_THAN;
-                    case GREATER_THAN_OR_EQUAL -> Comparison.Operator.GREATER_THAN_OR_EQUAL;
-                    case IS_DISTINCT_FROM -> Comparison.Operator.IS_DISTINCT_FROM;
-                },
-                translateExpression(expression.getLeft()),
-                translateExpression(expression.getRight()));
+        io.trino.sql.ir.Expression left = translateExpression(expression.getLeft());
+        io.trino.sql.ir.Expression right = translateExpression(expression.getRight());
+
+        return switch (expression.getOperator()) {
+            case EQUAL -> new Comparison(EQUAL, left, right);
+            case NOT_EQUAL -> new Comparison(NOT_EQUAL, left, right);
+            case LESS_THAN -> new Comparison(LESS_THAN, left, right);
+            case LESS_THAN_OR_EQUAL -> new Comparison(LESS_THAN_OR_EQUAL, left, right);
+            case GREATER_THAN -> new Comparison(GREATER_THAN, left, right);
+            case GREATER_THAN_OR_EQUAL -> new Comparison(GREATER_THAN_OR_EQUAL, left, right);
+            case IS_DISTINCT_FROM -> not(plannerContext.getMetadata(), new Comparison(IDENTICAL, left, right));
+        };
     }
 
     private io.trino.sql.ir.Expression translate(Cast expression)
     {
+        if (expression.isSafe()) {
+            return new Call(
+                    plannerContext.getMetadata().getCoercion(
+                            builtinFunctionName("$try_cast"),
+                            analysis.getType(expression.getExpression()),
+                    analysis.getType(expression)),
+                    ImmutableList.of(translateExpression(expression.getExpression())));
+        }
+
         return new io.trino.sql.ir.Cast(
                 translateExpression(expression.getExpression()),
-                analysis.getType(expression),
-                expression.isSafe());
+                analysis.getType(expression));
     }
 
     private io.trino.sql.ir.Expression translate(DoubleLiteral expression)

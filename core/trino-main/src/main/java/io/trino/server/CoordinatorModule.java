@@ -238,6 +238,7 @@ public class CoordinatorModule
 
         // node allocator
         binder.bind(BinPackingNodeAllocatorService.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(BinPackingNodeAllocatorService.class).withGeneratedName();
         binder.bind(NodeAllocatorService.class).to(BinPackingNodeAllocatorService.class);
         binder.bind(PartitionMemoryEstimatorFactory.class).to(NoMemoryAwarePartitionMemoryEstimator.Factory.class).in(Scopes.SINGLETON);
         binder.bind(PartitionMemoryEstimatorFactory.class)
@@ -264,9 +265,9 @@ public class CoordinatorModule
             List<OutputStatsEstimatorFactory> getCompositeOutputDataSizeEstimatorDelegateFactories(
                     ByTaskProgressOutputStatsEstimator.Factory byTaskProgressOutputDataSizeEstimatorFactory,
                     BySmallStageOutputStatsEstimator.Factory bySmallStageOutputDataSizeEstimatorFactory,
-                    ByEagerParentOutputStatsEstimator.Factory byEagerParentOutputDataSizeEstimatorFactoryy)
+                    ByEagerParentOutputStatsEstimator.Factory byEagerParentOutputDataSizeEstimatorFactory)
             {
-                return ImmutableList.of(byTaskProgressOutputDataSizeEstimatorFactory, bySmallStageOutputDataSizeEstimatorFactory, byEagerParentOutputDataSizeEstimatorFactoryy);
+                return ImmutableList.of(byTaskProgressOutputDataSizeEstimatorFactory, bySmallStageOutputDataSizeEstimatorFactory, byEagerParentOutputDataSizeEstimatorFactory);
             }
         });
 

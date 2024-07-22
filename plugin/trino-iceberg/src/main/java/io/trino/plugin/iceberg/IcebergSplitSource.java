@@ -195,7 +195,7 @@ public class IcebergSplitSource
         long timeLeft = dynamicFilteringWaitTimeoutMillis - dynamicFilterWaitStopwatch.elapsed(MILLISECONDS);
         if (dynamicFilter.isAwaitable() && timeLeft > 0) {
             return dynamicFilter.isBlocked()
-                    .thenApply(ignored -> EMPTY_BATCH)
+                    .thenApply(_ -> EMPTY_BATCH)
                     .completeOnTimeout(EMPTY_BATCH, timeLeft, MILLISECONDS);
         }
 
@@ -517,6 +517,7 @@ public class IcebergSplitSource
                 SplitWeight.fromProportion(clamp((double) task.length() / tableScan.targetSplitSize(), minimumAssignedSplitWeight, 1.0)),
                 fileStatisticsDomain,
                 fileIoProperties,
-                cachingHostAddressProvider.getHosts(task.file().path().toString(), ImmutableList.of()));
+                cachingHostAddressProvider.getHosts(task.file().path().toString(), ImmutableList.of()),
+                task.file().dataSequenceNumber());
     }
 }

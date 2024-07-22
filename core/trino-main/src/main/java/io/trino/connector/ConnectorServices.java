@@ -30,7 +30,7 @@ import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorIndexProvider;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
-import io.trino.spi.connector.ConnectorPageSourceProvider;
+import io.trino.spi.connector.ConnectorPageSourceProviderFactory;
 import io.trino.spi.connector.ConnectorRecordSetProvider;
 import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.ConnectorSplitManager;
@@ -78,7 +78,7 @@ public class ConnectorServices
     private final Optional<FunctionProvider> functionProvider;
     private final CatalogTableFunctions tableFunctions;
     private final Optional<ConnectorSplitManager> splitManager;
-    private final Optional<ConnectorPageSourceProvider> pageSourceProvider;
+    private final Optional<ConnectorPageSourceProviderFactory> pageSourceProviderFactory;
     private final Optional<ConnectorPageSinkProvider> pageSinkProvider;
     private final Optional<ConnectorIndexProvider> indexProvider;
     private final Optional<ConnectorNodePartitioningProvider> partitioningProvider;
@@ -125,34 +125,35 @@ public class ConnectorServices
         try {
             splitManager = connector.getSplitManager();
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.splitManager = Optional.ofNullable(splitManager);
 
-        ConnectorPageSourceProvider connectorPageSourceProvider = null;
+        ConnectorPageSourceProviderFactory connectorPageSourceProviderFactory = null;
         try {
-            connectorPageSourceProvider = connector.getPageSourceProvider();
-            requireNonNull(connectorPageSourceProvider, format("Connector '%s' returned a null page source provider", catalogHandle));
+            connectorPageSourceProviderFactory = connector.getPageSourceProviderFactory();
+            requireNonNull(connectorPageSourceProviderFactory, format("Connector '%s' returned a null page source provider factory", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
 
         try {
             ConnectorRecordSetProvider connectorRecordSetProvider = connector.getRecordSetProvider();
             requireNonNull(connectorRecordSetProvider, format("Connector '%s' returned a null record set provider", catalogHandle));
-            verify(connectorPageSourceProvider == null, "Connector '%s' returned both page source and record set providers", catalogHandle);
-            connectorPageSourceProvider = new RecordPageSourceProvider(connectorRecordSetProvider);
+            verify(connectorPageSourceProviderFactory == null, "Connector '%s' returned both page source and record set providers", catalogHandle);
+            var pageSourceProvider = new RecordPageSourceProvider(connectorRecordSetProvider);
+            connectorPageSourceProviderFactory = () -> pageSourceProvider;
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
-        this.pageSourceProvider = Optional.ofNullable(connectorPageSourceProvider);
+        this.pageSourceProviderFactory = Optional.ofNullable(connectorPageSourceProviderFactory);
 
         ConnectorPageSinkProvider connectorPageSinkProvider = null;
         try {
             connectorPageSinkProvider = connector.getPageSinkProvider();
             requireNonNull(connectorPageSinkProvider, format("Connector '%s' returned a null page sink provider", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.pageSinkProvider = Optional.ofNullable(connectorPageSinkProvider);
 
@@ -161,7 +162,7 @@ public class ConnectorServices
             indexProvider = connector.getIndexProvider();
             requireNonNull(indexProvider, format("Connector '%s' returned a null index provider", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.indexProvider = Optional.ofNullable(indexProvider);
 
@@ -170,7 +171,7 @@ public class ConnectorServices
             partitioningProvider = connector.getNodePartitioningProvider();
             requireNonNull(partitioningProvider, format("Connector '%s' returned a null partitioning provider", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.partitioningProvider = Optional.ofNullable(partitioningProvider);
 
@@ -178,7 +179,7 @@ public class ConnectorServices
         try {
             accessControl = connector.getAccessControl();
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         verifyAccessControl(accessControl);
         this.accessControl = Optional.ofNullable(accessControl);
@@ -266,9 +267,9 @@ public class ConnectorServices
         return splitManager;
     }
 
-    public Optional<ConnectorPageSourceProvider> getPageSourceProvider()
+    public Optional<ConnectorPageSourceProviderFactory> getPageSourceProviderFactory()
     {
-        return pageSourceProvider;
+        return pageSourceProviderFactory;
     }
 
     public Optional<ConnectorPageSinkProvider> getPageSinkProvider()
@@ -347,7 +348,7 @@ public class ConnectorServices
             return;
         }
 
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(connector.getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(connector.getClass().getClassLoader())) {
             connector.shutdown();
         }
         catch (Throwable t) {
@@ -403,7 +404,7 @@ public class ConnectorServices
                     clazz.getName(),
                     name, Arrays.stream(parameterTypes).map(Class::getName).collect(Collectors.joining(", "))));
         }
-        catch (ReflectiveOperationException ignored) {
+        catch (ReflectiveOperationException _) {
         }
     }
 }

@@ -222,11 +222,11 @@ public abstract class BaseIcebergConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_CREATE_OR_REPLACE_TABLE,
-                    SUPPORTS_REPORTING_WRITTEN_BYTES -> true;
+                 SUPPORTS_REPORTING_WRITTEN_BYTES -> true;
             case SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_RENAME_MATERIALIZED_VIEW_ACROSS_SCHEMAS,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_TRUNCATE -> false;
+                 SUPPORTS_RENAME_MATERIALIZED_VIEW_ACROSS_SCHEMAS,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_TRUNCATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -1297,8 +1297,7 @@ public abstract class BaseIcebergConnectorTest
     {
         String tableName = "test_sort_with_transform_" + randomNameSuffix();
         assertThat(query(format("CREATE TABLE %s (%s TIMESTAMP(6)) WITH (sorted_by = ARRAY['%s'])", tableName, columnName, sortField)))
-                // TODO throw TrinoException indicating user error
-                .nonTrinoExceptionFailure().hasMessageContaining("Unable to parse sort field");
+                .failure().hasMessageContaining("Unable to parse sort field");
     }
 
     @Test
@@ -1402,12 +1401,10 @@ public abstract class BaseIcebergConnectorTest
         String tableName = "test_sorting_on_nested_field" + randomNameSuffix();
         assertThat(query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
                 "WITH (sorted_by = ARRAY['row_t.comment'])"))
-                // TODO throw TrinoException indicating user error
-                .nonTrinoExceptionFailure().hasMessageContaining("Unable to parse sort field: [row_t.comment]");
+                .failure().hasMessageContaining("Unable to parse sort field: [row_t.comment]");
         assertThat(query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
                 "WITH (sorted_by = ARRAY['\"row_t\".\"comment\"'])"))
-                // TODO throw TrinoException indicating user error
-                .nonTrinoExceptionFailure().hasMessageContaining("Unable to parse sort field: [\"row_t\".\"comment\"]");
+                .failure().hasMessageContaining("Unable to parse sort field: [\"row_t\".\"comment\"]");
         assertThat(query("CREATE TABLE " + tableName + " (nationkey BIGINT, row_t ROW(name VARCHAR, regionkey BIGINT, comment VARCHAR)) " +
                 "WITH (sorted_by = ARRAY['\"row_t.comment\"'])"))
                 .failure().hasMessageContaining("Column not found: row_t.comment");
@@ -3236,6 +3233,7 @@ public abstract class BaseIcebergConnectorTest
                 "CAST('206caec7-68b9-4778-81b2-a12ece70c8b1' AS UUID)",
                 "CAST('906caec7-68b9-4778-81b2-a12ece70c8b1' AS UUID)",
                 "CAST('406caec7-68b9-4778-81b2-a12ece70c8b1' AS UUID)");
+        testBucketTransformForType("VARBINARY", "x'04'", "x'21'", "x'02'");
     }
 
     protected void testBucketTransformForType(
@@ -4952,7 +4950,7 @@ public abstract class BaseIcebergConnectorTest
         assertQuery("SELECT a.b FROM " + tableName, "VALUES NULL");
         assertUpdate("DROP TABLE " + tableName);
 
-        // Very changing subfield ordering does not revive dropped data
+        // Verify changing subfield ordering does not revive dropped data
         assertUpdate("CREATE TABLE " + tableName + " (dummy BIGINT, a ROW(b BIGINT, c VARCHAR), d BIGINT) with (partitioning = ARRAY['d'])");
         assertUpdate("INSERT INTO " + tableName + " VALUES (1, ROW(2, 'abc'), 3)", 1);
         assertUpdate("ALTER TABLE " + tableName + " DROP COLUMN a");
@@ -5339,10 +5337,10 @@ public abstract class BaseIcebergConnectorTest
                 "\\Qline 1:7: Table 'iceberg.tpch.no_such_table_exists' does not exist");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE OPTIMIZE (file_size_threshold => '33')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'OPTIMIZE' property 'file_size_threshold' to ['33']: size is not a valid data size string: 33");
+                "\\Qline 1:38: Unable to set catalog 'iceberg' table procedure 'OPTIMIZE' property 'file_size_threshold' to ['33']: size is not a valid data size string: 33");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE OPTIMIZE (file_size_threshold => '33s')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'OPTIMIZE' property 'file_size_threshold' to ['33s']: Unknown unit: s");
+                "\\Qline 1:38: Unable to set catalog 'iceberg' table procedure 'OPTIMIZE' property 'file_size_threshold' to ['33s']: Unknown unit: s");
     }
 
     @Test
@@ -5940,10 +5938,10 @@ public abstract class BaseIcebergConnectorTest
                 "\\Qline 1:7: Table 'iceberg.tpch.no_such_table_exists' does not exist");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE EXPIRE_SNAPSHOTS (retention_threshold => '33')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'EXPIRE_SNAPSHOTS' property 'retention_threshold' to ['33']: duration is not a valid data duration string: 33");
+                "\\Qline 1:46: Unable to set catalog 'iceberg' table procedure 'EXPIRE_SNAPSHOTS' property 'retention_threshold' to ['33']: duration is not a valid data duration string: 33");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE EXPIRE_SNAPSHOTS (retention_threshold => '33mb')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'EXPIRE_SNAPSHOTS' property 'retention_threshold' to ['33mb']: Unknown time unit: mb");
+                "\\Qline 1:46: Unable to set catalog 'iceberg' table procedure 'EXPIRE_SNAPSHOTS' property 'retention_threshold' to ['33mb']: Unknown time unit: mb");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE EXPIRE_SNAPSHOTS (retention_threshold => '33s')",
                 "\\QRetention specified (33.00s) is shorter than the minimum retention configured in the system (7.00d). Minimum retention can be changed with iceberg.expire_snapshots.min-retention configuration property or iceberg.expire_snapshots_min_retention session property");
@@ -6078,10 +6076,10 @@ public abstract class BaseIcebergConnectorTest
                 "\\Qline 1:7: Table 'iceberg.tpch.no_such_table_exists' does not exist");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '33')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'REMOVE_ORPHAN_FILES' property 'retention_threshold' to ['33']: duration is not a valid data duration string: 33");
+                "\\Qline 1:49: Unable to set catalog 'iceberg' table procedure 'REMOVE_ORPHAN_FILES' property 'retention_threshold' to ['33']: duration is not a valid data duration string: 33");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '33mb')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'REMOVE_ORPHAN_FILES' property 'retention_threshold' to ['33mb']: Unknown time unit: mb");
+                "\\Qline 1:49: Unable to set catalog 'iceberg' table procedure 'REMOVE_ORPHAN_FILES' property 'retention_threshold' to ['33mb']: Unknown time unit: mb");
         assertQueryFails(
                 "ALTER TABLE nation EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '33s')",
                 "\\QRetention specified (33.00s) is shorter than the minimum retention configured in the system (7.00d). Minimum retention can be changed with iceberg.remove_orphan_files.min-retention configuration property or iceberg.remove_orphan_files_min_retention session property");
@@ -6153,7 +6151,7 @@ public abstract class BaseIcebergConnectorTest
         String tableName = "test_updating_invalid_table_property_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (a INT, b INT)");
         assertThat(query("ALTER TABLE " + tableName + " SET PROPERTIES not_a_valid_table_property = 'a value'"))
-                .failure().hasMessage("Catalog 'iceberg' table property 'not_a_valid_table_property' does not exist");
+                .failure().hasMessage("line 1:76: Catalog 'iceberg' table property 'not_a_valid_table_property' does not exist");
         assertUpdate("DROP TABLE " + tableName);
     }
 
@@ -7812,9 +7810,10 @@ public abstract class BaseIcebergConnectorTest
                     "test_coercion_show_create_table",
                     format("AS SELECT %s a", setup.sourceValueLiteral))) {
                 assertThat(getColumnType(testTable.getName(), "a")).isEqualTo(setup.newColumnType);
-                assertQuery(
-                        format("SELECT * FROM %s", testTable.getName()),
-                        format("VALUES (%s)", setup.newValueLiteral));
+                assertThat(query("SELECT * FROM " + testTable.getName()))
+                        .as("source value: %s, new type: %s, new value: %s", setup.sourceValueLiteral, setup.newColumnType, setup.newValueLiteral)
+                        .skippingTypesCheck()
+                        .matches("SELECT " + setup.newValueLiteral);
             }
         }
     }
@@ -7902,10 +7901,17 @@ public abstract class BaseIcebergConnectorTest
                 .add(new TypeCoercionTestSetup("CHAR 'A '", "varchar", "'A '"))
                 .add(new TypeCoercionTestSetup("CHAR ' A'", "varchar", "' A'"))
                 .add(new TypeCoercionTestSetup("CHAR 'ABc'", "varchar", "'ABc'"))
+                .add(new TypeCoercionTestSetup("ARRAY[CHAR 'A']", "array(varchar)", "ARRAY['A']"))
+                .add(new TypeCoercionTestSetup("ARRAY[ARRAY[CHAR 'nested']]", "array(array(varchar))", "ARRAY[ARRAY['nested']]"))
+                .add(new TypeCoercionTestSetup("MAP(ARRAY[CHAR 'key'], ARRAY[CHAR 'value'])", "map(varchar, varchar)", "MAP(ARRAY['key'], ARRAY['value'])"))
+                .add(new TypeCoercionTestSetup("MAP(ARRAY[CHAR 'key'], ARRAY[ARRAY[CHAR 'value']])", "map(varchar, array(varchar))", "MAP(ARRAY['key'], ARRAY[ARRAY['value']])"))
+                // TODO Add test case for MAP type with ARRAY keys once https://github.com/trinodb/trino/issues/1146 is resolved
+                .add(new TypeCoercionTestSetup("CAST(ROW('a') AS ROW(x CHAR))", "row(x varchar)", "CAST(ROW('a') AS ROW(x VARCHAR))"))
+                .add(new TypeCoercionTestSetup("CAST(ROW(ROW('a')) AS ROW(x ROW(y CHAR)))", "row(x row(y varchar))", "CAST(ROW(ROW('a')) AS ROW(x ROW(y VARCHAR)))"))
                 .build();
     }
 
-    public record TypeCoercionTestSetup(String sourceValueLiteral, String newColumnType, String newValueLiteral)
+    public record TypeCoercionTestSetup(@Language("SQL") String sourceValueLiteral, String newColumnType, @Language("SQL") String newValueLiteral)
     {
         public TypeCoercionTestSetup
         {

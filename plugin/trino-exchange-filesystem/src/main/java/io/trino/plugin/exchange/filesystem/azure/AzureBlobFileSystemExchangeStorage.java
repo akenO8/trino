@@ -410,7 +410,7 @@ public class AzureBlobFileSystemExchangeStorage
                     int length = (int) min(blockSize, fileSize - fileOffset);
 
                     int finalBufferFill = bufferFill;
-                    FluentFuture<Void> downloadFuture = FluentFuture.from(toListenableFuture(blockBlobAsyncClient.downloadWithResponse(new BlobRange(fileOffset, (long) length), null, null, false).toFuture()))
+                    FluentFuture<Void> downloadFuture = FluentFuture.from(toListenableFuture(blockBlobAsyncClient.downloadStreamWithResponse(new BlobRange(fileOffset, (long) length), null, null, false).toFuture()))
                             .transformAsync(response -> toListenableFuture(response.getValue().collectList().toFuture()), directExecutor())
                             .transform(byteBuffers -> {
                                 int offset = finalBufferFill;
@@ -503,7 +503,7 @@ public class AzureBlobFileSystemExchangeStorage
 
             ListenableFuture<Void> finishFuture = translateFailures(Futures.transformAsync(
                     Futures.allAsList(multiPartUploadFutures),
-                    ignored -> toListenableFuture(blockBlobAsyncClient.commitBlockList(blockIds).toFuture()),
+                    _ -> toListenableFuture(blockBlobAsyncClient.commitBlockList(blockIds).toFuture()),
                     directExecutor()));
             Futures.addCallback(finishFuture, new FutureCallback<>() {
                 @Override

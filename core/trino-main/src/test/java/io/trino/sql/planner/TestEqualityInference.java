@@ -29,9 +29,9 @@ import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.In;
+import io.trino.sql.ir.IrExpressions;
 import io.trino.sql.ir.IsNull;
 import io.trino.sql.ir.Lambda;
-import io.trino.sql.ir.Not;
 import io.trino.sql.ir.NullIf;
 import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Switch;
@@ -307,14 +307,14 @@ public class TestEqualityInference
     public void testExpressionsThatMayReturnNullOnNonNullInput()
     {
         List<Expression> candidates = ImmutableList.of(
-                new Cast(new Reference(BIGINT, "b"), BIGINT, true), // try_cast
+                new Cast(new Reference(BIGINT, "b"), BIGINT),
                 functionResolution
                         .functionCallBuilder(TryFunction.NAME)
                         .addArgument(new FunctionType(ImmutableList.of(), BIGINT), new Lambda(ImmutableList.of(), new Reference(BIGINT, "b")))
                         .build(),
                 new NullIf(new Reference(BIGINT, "b"), number(1)),
                 new In(new Reference(BIGINT, "b"), ImmutableList.of(new Constant(BIGINT, null))),
-                new Case(ImmutableList.of(new WhenClause(new Not(new IsNull(new Reference(BIGINT, "b"))), new Constant(UnknownType.UNKNOWN, null))), new Constant(UnknownType.UNKNOWN, null)),
+                new Case(ImmutableList.of(new WhenClause(IrExpressions.not(functionResolution.getMetadata(), new IsNull(new Reference(BIGINT, "b"))), new Constant(UnknownType.UNKNOWN, null))), new Constant(UnknownType.UNKNOWN, null)),
                 new Switch(new Reference(INTEGER, "b"), ImmutableList.of(new WhenClause(number(1), new Constant(INTEGER, null))), new Constant(INTEGER, null)));
 
         for (Expression candidate : candidates) {

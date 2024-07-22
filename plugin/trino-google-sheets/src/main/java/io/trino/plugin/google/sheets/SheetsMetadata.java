@@ -26,7 +26,7 @@ import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
-import io.trino.spi.connector.ConnectorTableProperties;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.RetryMode;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
@@ -76,8 +76,12 @@ public class SheetsMetadata
     }
 
     @Override
-    public SheetsNamedTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
+    public SheetsNamedTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
+        if (startVersion.isPresent() || endVersion.isPresent()) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support versioned tables");
+        }
+
         requireNonNull(tableName, "tableName is null");
         if (!listSchemaNames(session).contains(tableName.getSchemaName())) {
             return null;
@@ -136,12 +140,6 @@ public class SheetsMetadata
             return Optional.of(new ConnectorTableMetadata(tableName, table.get().columnsMetadata()));
         }
         return Optional.empty();
-    }
-
-    @Override
-    public ConnectorTableProperties getTableProperties(ConnectorSession session, ConnectorTableHandle table)
-    {
-        return new ConnectorTableProperties();
     }
 
     @Override

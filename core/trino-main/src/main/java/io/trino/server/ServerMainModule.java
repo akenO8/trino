@@ -123,7 +123,7 @@ import io.trino.spiller.SpillerStats;
 import io.trino.split.PageSinkManager;
 import io.trino.split.PageSinkProvider;
 import io.trino.split.PageSourceManager;
-import io.trino.split.PageSourceProvider;
+import io.trino.split.PageSourceProviderFactory;
 import io.trino.split.SplitManager;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.SqlEnvironmentConfig;
@@ -215,9 +215,6 @@ public class ServerMainModule
 
         QueryManagerConfig queryManagerConfig = buildConfigObject(QueryManagerConfig.class);
         RetryPolicy retryPolicy = queryManagerConfig.getRetryPolicy();
-        if (retryPolicy == TASK) {
-            configBinder(binder).bindConfigDefaults(QueryManagerConfig.class, QueryManagerConfig::applyFaultTolerantExecutionDefaults);
-        }
 
         configBinder(binder).bindConfig(FeaturesConfig.class);
         if (retryPolicy == TASK) {
@@ -376,7 +373,7 @@ public class ServerMainModule
 
         // data stream provider
         binder.bind(PageSourceManager.class).in(Scopes.SINGLETON);
-        binder.bind(PageSourceProvider.class).to(PageSourceManager.class).in(Scopes.SINGLETON);
+        binder.bind(PageSourceProviderFactory.class).to(PageSourceManager.class).in(Scopes.SINGLETON);
 
         // page sink provider
         binder.bind(PageSinkManager.class).in(Scopes.SINGLETON);

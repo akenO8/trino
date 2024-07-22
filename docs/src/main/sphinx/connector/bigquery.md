@@ -154,7 +154,7 @@ a few caveats:
   - Use REST API to access views instead of Storage API. BigQuery `BIGNUMERIC` 
     and `TIMESTAMP` types are unsupported.
   - `false`
-* - `bigqueryview-materialization-with-filter`
+* - `bigquery.view-materialization-with-filter`
   - Use filter conditions when materializing views.
   - `false`
 * - `bigquery.views-cache-ttl`
@@ -213,7 +213,6 @@ a few caveats:
 :::
 
 (bigquery-type-mapping)=
-
 ## Type mapping
 
 Because Trino and BigQuery each support types that the other does not, this
@@ -336,7 +335,6 @@ you can send query `SELECT * example_view$view_definition` to see the SQL
 which defines view in BigQuery.
 
 (bigquery-special-columns)=
-
 ## Special columns
 
 In addition to the defined columns, the BigQuery connector exposes
@@ -367,7 +365,6 @@ Two special partitions `__NULL__` and `__UNPARTITIONED__` are not supported.
 :::
 
 (bigquery-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in the
@@ -390,7 +387,6 @@ the following features:
 ```
 
 (bigquery-fte-support)=
-
 ## Fault-tolerant execution support
 
 The connector supports {doc}`/admin/fault-tolerant-execution` of query
@@ -402,7 +398,6 @@ The connector provides specific {doc}`table functions </functions/table>` to
 access BigQuery.
 
 (bigquery-query-function)=
-
 ### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying BigQuery directly. It

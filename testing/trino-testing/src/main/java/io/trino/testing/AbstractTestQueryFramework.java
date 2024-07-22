@@ -35,6 +35,7 @@ import io.trino.memory.MemoryPool;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
 import io.trino.operator.OperatorStats;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.server.BasicQueryInfo;
 import io.trino.server.DynamicFilterService.DynamicFiltersStats;
 import io.trino.server.testing.TestingTrinoServer;
@@ -54,7 +55,6 @@ import io.trino.sql.query.QueryAssertions.QueryAssert;
 import io.trino.sql.tree.ExplainType;
 import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.TestingAccessControlManager.TestingPrivilege;
-import io.trino.util.AutoCloseableCloser;
 import org.assertj.core.api.AssertProvider;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
@@ -235,7 +235,7 @@ public abstract class AbstractTestQueryFramework
                                     String querySummary = createQueryDebuggingSummary(basicQueryInfo, queryInfo);
                                     fail("Task is expected to be in done state, found: %s - TaskId: %s, QueryId: %s".formatted(taskState, taskId, queryId) + "\n\n" + querySummary);
                                 }
-                                catch (NoSuchElementException ignored) {
+                                catch (NoSuchElementException _) {
                                 }
                                 fail("Task is expected to be in done state, found: %s - TaskId: %s, QueryId: %s, Query: unknown".formatted(taskState, taskId, queryId));
                             }

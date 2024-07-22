@@ -19,14 +19,17 @@ import org.jdbi.v3.sqlobject.statement.SqlUpdate;
 public interface QueryDao
 {
     @SqlUpdate("CREATE TABLE IF NOT EXISTS trino_queries (\n" +
+            "  create_time datetime NOT NULL,\n" +
+            "  start_time datetime NOT NULL,\n" +
+            "  end_time datetime NOT NULL,\n" +
             "  query_id VARCHAR(255) NOT NULL PRIMARY KEY,\n" +
             "  transaction_id VARCHAR(255) NULL,\n" +
             "  query MEDIUMTEXT NOT NULL,\n" +
             "  update_type VARCHAR(255) NULL,\n" +
             "  prepared_query MEDIUMTEXT NULL,\n" +
             "  query_state VARCHAR(255) NOT NULL,\n" +
-            "  plan MEDIUMTEXT NULL,\n" +
-            "  stage_info_json MEDIUMTEXT NULL,\n" +
+//            "  plan MEDIUMTEXT NULL,\n" +
+//            "  stage_info_json MEDIUMTEXT NULL,\n" +
             "  user VARCHAR(255) NOT NULL,\n" +
             "  principal VARCHAR(255) NULL,\n" +
             "  trace_token VARCHAR(255) NULL,\n" +
@@ -44,7 +47,7 @@ public interface QueryDao
             "  environment VARCHAR(255) NOT NULL,\n" +
             "  query_type VARCHAR(255) NULL,\n" +
             "  inputs_json MEDIUMTEXT NOT NULL,\n" +
-            "  output_json MEDIUMTEXT NULL,\n" +
+//            "  output_json MEDIUMTEXT NULL,\n" +
             "  error_code VARCHAR(255) NULL,\n" +
             "  error_type VARCHAR(255) NULL,\n" +
             "  failure_type VARCHAR(255) NULL,\n" +
@@ -84,21 +87,24 @@ public interface QueryDao
             "  cumulative_memory DOUBLE NOT NULL,\n" +
             "  failed_cumulative_memory DOUBLE NOT NULL,\n" +
             "  completed_splits BIGINT NOT NULL,\n" +
-            "  retry_policy VARCHAR(255) NOT NULL,\n" +
-            "  operator_summaries_json MEDIUMTEXT NOT NULL\n" +
+            "  retry_policy VARCHAR(255) NOT NULL\n" +
+//            "  operator_summaries_json MEDIUMTEXT NOT NULL\n" +
             ")\n" +
             "DEFAULT CHARACTER SET utf8")
     void createTable();
 
     @SqlUpdate("INSERT INTO trino_queries (\n" +
+            "  create_time,\n" +
+            "  start_time,\n" +
+            "  end_time,\n" +
             "  query_id,\n" +
             "  transaction_id,\n" +
             "  query,\n" +
             "  update_type,\n" +
             "  prepared_query,\n" +
             "  query_state,\n" +
-            "  plan,\n" +
-            "  stage_info_json,\n" +
+//            "  plan,\n" +
+//            "  stage_info_json,\n" +
             "  user,\n" +
             "  principal,\n" +
             "  trace_token,\n" +
@@ -116,7 +122,7 @@ public interface QueryDao
             "  environment,\n" +
             "  query_type,\n" +
             "  inputs_json,\n" +
-            "  output_json,\n" +
+//            "  output_json,\n" +
             "  error_code,\n" +
             "  error_type,\n" +
             "  failure_type,\n" +
@@ -156,18 +162,21 @@ public interface QueryDao
             "  cumulative_memory,\n" +
             "  failed_cumulative_memory,\n" +
             "  completed_splits,\n" +
-            "  retry_policy,\n" +
-            "  operator_summaries_json\n" +
+            "  retry_policy\n" +
+//            "  operator_summaries_json\n" +
             ")\n" +
             "VALUES (\n" +
+            " :createTime,\n" +
+            " :executionStartTime,\n" +
+            " :endTime,\n" +
             " :queryId,\n" +
             " :transactionId,\n" +
             " :query,\n" +
             " :updateType,\n" +
             " :preparedQuery,\n" +
             " :queryState,\n" +
-            " :plan,\n" +
-            " :stageInfoJson,\n" +
+//            " :plan,\n" +
+//            " :stageInfoJson,\n" +
             " :user,\n" +
             " :principal,\n" +
             " :traceToken,\n" +
@@ -185,7 +194,7 @@ public interface QueryDao
             " :environment,\n" +
             " :queryType,\n" +
             " :inputsJson,\n" +
-            " :outputJson,\n" +
+//            " :outputJson,\n" +
             " :errorCode,\n" +
             " :errorType,\n" +
             " :failureType,\n" +
@@ -225,8 +234,8 @@ public interface QueryDao
             " :cumulativeMemory,\n" +
             " :failedCumulativeMemory,\n" +
             " :completedSplits,\n" +
-            " :retryPolicy,\n" +
-            " :operatorSummariesJson\n" +
+            " :retryPolicy\n" +
+//            " :operatorSummariesJson\n" +
             ")")
     void store(@BindBean QueryEntity entity);
 }
